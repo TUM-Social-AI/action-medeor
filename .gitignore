@@ -1,0 +1,26 @@
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Frontend
+node_modules/
+.pnpm-store/
+dist/
+*.tsbuildinfo
+*.local
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Docker/runtime
+postgres-data/

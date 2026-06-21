@@ -1,0 +1,19 @@
+{
+  "name": "allocura",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev:frontend": "pnpm --filter @allocura/frontend dev",
+    "build:frontend": "pnpm --filter @allocura/frontend build",
+    "preview:frontend": "pnpm --filter @allocura/frontend preview"
+  },
+  "pnpm": {
+    "overrides": {
+      "vite": "6.3.5"
+    }
+  },
+  "workspaces": [
+    "apps/*"
+  ]
+}
