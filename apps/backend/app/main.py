@@ -4,17 +4,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from app.api.routes import router as api_router
 from app.core.config import get_settings
 from app.db.session import engine
 
 settings = get_settings()
 
 app = FastAPI(title=settings.service_name)
+app.include_router(api_router)
 
 if settings.cors_origin_list:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
+        allow_origin_regex=settings.cors_origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

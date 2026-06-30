@@ -42,18 +42,16 @@ Database only for local development:
 ```bash
 docker compose up -d db
 ```
+This starts only Postgres on `localhost:5432`. When running the backend directly on your machine, use:
 
+```bash
+DATABASE_URL=postgresql+asyncpg://allocura:allocura@localhost:5432/allocura
+```
 
 Docker:
 
 ```bash
 docker compose up --build
-```
-
-This starts only Postgres on `localhost:5432`. When running the backend directly on your machine, use:
-
-```bash
-DATABASE_URL=postgresql+asyncpg://allocura:allocura@localhost:5432/allocura
 ```
 
 The frontend runs at `http://localhost:3000`, and the backend runs at `http://localhost:8000`.
