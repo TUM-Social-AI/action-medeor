@@ -18,7 +18,7 @@ const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has('Content-Type')) {
+  if (init?.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -44,13 +44,12 @@ export function getRecentImports() {
 }
 
 export function createImport(file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+
   return requestJson<ReviewResponse>('/api/imports', {
     method: 'POST',
-    body: JSON.stringify({
-      fileName: file.name,
-      fileType: getFileType(file.name),
-      fileSize: file.size,
-    }),
+    body: formData,
   });
 }
 

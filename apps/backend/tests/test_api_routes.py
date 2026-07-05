@@ -65,10 +65,12 @@ async def test_create_import_returns_review_payload() -> None:
     response = await request(
         "POST",
         "/api/imports",
-        json={
-            "fileName": "Sudan_EmergencyRequest_MSF_June2024.xlsx",
-            "fileType": "xlsx",
-            "fileSize": 128000,
+        files={
+            "file": (
+                "Sudan_EmergencyRequest_MSF_June2024.xlsx",
+                b"mock workbook bytes",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
         },
     )
 
@@ -80,11 +82,28 @@ async def test_create_import_returns_review_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_import_rejects_mismatched_extension() -> None:
+async def test_create_import_rejects_mismatched_content_type() -> None:
     response = await request(
         "POST",
         "/api/imports",
-        json={"fileName": "request.pdf", "fileType": "xlsx", "fileSize": 128000},
+        files={
+            "file": (
+                "request.pdf",
+                b"mock workbook bytes",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+        },
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_import_rejects_unsupported_extension() -> None:
+    response = await request(
+        "POST",
+        "/api/imports",
+        files={"file": ("request.txt", b"not supported", "text/plain")},
     )
 
     assert response.status_code == 400

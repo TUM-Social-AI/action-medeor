@@ -1,11 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.api import fixtures
 from app.api.schemas import (
     ErpMatch,
     ExtractedItem,
     HomeResponse,
-    ImportRequest,
     ItemUpdate,
     MatchSelection,
     MatchSelectionResponse,
@@ -20,6 +19,14 @@ from app.api.schemas import (
 )
 
 router = APIRouter(prefix="/api")
+
+SUPPORTED_IMPORT_CONTENT_TYPES = {
+    "application/pdf": "pdf",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+}
+SUPPORTED_IMPORT_EXTENSIONS = {"pdf", "xlsx", "xls"}
+MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
 
 def require_mock_request(request_id: str) -> None:
@@ -52,10 +59,23 @@ async def recent_imports() -> list[RecentImport]:
 
 
 @router.post("/imports")
-async def create_import(payload: ImportRequest) -> ReviewResponse:
-    expected_suffix = f".{payload.fileType}"
-    if not payload.fileName.lower().endswith(expected_suffix):
-        raise HTTPException(status_code=400, detail="File extension does not match file type")
+async def create_import(file: UploadFile = File(...)) -> ReviewResponse:
+    file_name = file.filename or ""
+    file_extension = file_name.lower().rsplit(".", maxsplit=1)[-1] if "." in file_name else ""
+
+    if file_extension not in SUPPORTED_IMPORT_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+
+    content_type = file.content_type or ""
+    expected_extension = SUPPORTED_IMPORT_CONTENT_TYPES.get(content_type)
+    if expected_extension is not None and expected_extension != file_extension:
+        raise HTTPException(status_code=400, detail="File extension does not match content type")
+
+    size = 0
+    while chunk := await file.read(1024 * 1024):
+        size += len(chunk)
+        if size > MAX_IMPORT_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
 
     return fixtures.review_response()
 
@@ -137,4 +157,3 @@ async def create_offer(request_id: str) -> OfferResponse:
 @router.get("/trends")
 async def trends() -> TrendsResponse:
     return fixtures.TREND_RESPONSE
-

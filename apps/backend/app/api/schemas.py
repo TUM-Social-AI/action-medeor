@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 Priority = Literal["critical", "high", "medium", "low"]
@@ -41,12 +41,6 @@ class RecentImport(BaseModel):
     date: str
     items: int
     type: ImportFileType
-
-
-class ImportRequest(BaseModel):
-    fileName: str
-    fileType: ImportFileType
-    fileSize: int = Field(ge=0)
 
 
 class SourceInfo(BaseModel):
@@ -231,4 +225,3 @@ class TrendsResponse(BaseModel):
     regionalDemand: list[RegionalDemand]
     categoryDemand: list[CategoryDemand]
     topItems: list[TopRequestedItem]
-
