@@ -2,7 +2,7 @@ name: allocura
 
 services:
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-allocura}
       POSTGRES_USER: ${POSTGRES_USER:-allocura}

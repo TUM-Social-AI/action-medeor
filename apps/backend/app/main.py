@@ -6,10 +6,12 @@ from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.db.session import engine
+from app.matching.api import router as matching_router
 
 settings = get_settings()
 
 app = FastAPI(title=settings.service_name)
+app.include_router(matching_router)
 
 if settings.cors_origin_list:
     app.add_middleware(

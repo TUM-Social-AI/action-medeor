@@ -1,0 +1,17 @@
+{
+  "version": "matching-policy-v1",
+  "attribute_rules": {
+    "active_ingredient": {"on_missing": "review", "on_mismatch": "review"},
+    "strength": {"on_missing": "review", "on_mismatch": "review"},
+    "concentration": {"on_missing": "review", "on_mismatch": "review"},
+    "dosage_form": {"on_missing": "review", "on_mismatch": "review"},
+    "route": {"on_missing": "review", "on_mismatch": "review"},
+    "size": {"on_missing": "review", "on_mismatch": "review"},
+    "gauge": {"on_missing": "review", "on_mismatch": "review"},
+    "charriere": {"on_missing": "review", "on_mismatch": "review"},
+    "sterile": {"on_missing": "review", "on_mismatch": "review"},
+    "single_use": {"on_missing": "review", "on_mismatch": "review"},
+    "material": {"on_missing": "warning", "on_mismatch": "review"},
+    "compatibility": {"on_missing": "review", "on_mismatch": "review"}
+  }
+}

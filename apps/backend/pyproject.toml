@@ -27,6 +27,9 @@ package = false
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+  "integration: tests that require a migrated PostgreSQL/pgvector database",
+]
 
 [tool.ruff]
 line-length = 100
