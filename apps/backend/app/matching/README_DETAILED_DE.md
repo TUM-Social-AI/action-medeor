@@ -1,312 +1,702 @@
-# Allocura Matching: Architektur und Begründung
+# Allocura Matching: Detaillierter Ablauf, Architektur und Begründung
 
-[Englische Version](README_DETAILED.md)
+[Englische Version](README_DETAILED.md) · [Kurze verständliche Übersicht](README_DE.md)
 
-## 1. Zweck
+## 1. Was heute vorhanden ist
 
-Allocura unterstützt die Mitarbeitenden von action medeor dabei, mehrsprachige Anfragen nach
-Medikamenten und medizinischer Ausrüstung freigegebenen Katalogvarianten und bei Bedarf historischen
-Beschaffungsnachweisen zuzuordnen. Die Software ist ein Entscheidungsunterstützungssystem: Sie schlägt
-Kandidaten vor, erklärt diese und zeichnet die menschliche Entscheidung auf. Sie darf weder
-stillschweigend eine klinische Gleichwertigkeit behaupten noch unsichere Daten als bestätigte
-Tatsachen darstellen.
+Die aktuelle Implementierung ist ein funktionierender und getesteter Matching-Kern. Er kann eine
+bereits normalisierte Anfrageposition annehmen, vorbereitete Katalog- und Historiendaten durchsuchen,
+Kandidaten prüfen, eine erklärte Rangfolge zurückgeben und die spätere menschliche Entscheidung
+speichern.
 
-Das Framework ist auf Zuverlässigkeit, Testbarkeit, Prüfbarkeit, Modularität und schrittweise
-Skalierbarkeit ausgelegt. Es beginnt bewusst mit einem konservativen, deterministischen Verhalten und
-hält probabilistische Komponenten austauschbar.
+Es handelt sich noch nicht um einen vollständigen Produktionsablauf. Der Code liest weder die echte
+Lagerliste noch Outlook-E-Mails, synchronisiert kein ERP oder SharePoint, erzeugt keine produktiven
+Embeddings und ist nicht mit der Figma-UI verbunden. Die Datenbankmigration erstellt die benötigten
+Strukturen, befüllt sie aber nicht mit den Produkten von action medeor.
 
-## 2. Unverhandelbare Grundsätze
+Das hilfreichste mentale Modell lautet:
 
-1. **Rohwerte sind unveränderliche Nachweise.** Normalisierte oder abgeleitete Werte überschreiben
-   niemals die Quelldaten.
-2. **Unbekannt bedeutet weder falsch noch null.** Ein fehlender Preis bedeutet nicht kostenlos; eine
-   fehlende Haltbarkeit bedeutet nicht ausreichend.
-3. **Die Suche ist keine Freigabe.** Embeddings und Verlaufsdaten erzeugen Kandidaten, aber niemals
-   klinische Regeln.
-4. **Harte Regeln konkurrieren nicht mit dem Preis.** Ein bestätigter Ausschluss kann nicht durch ein
-   günstiges, verfügbares Produkt aufgewogen werden.
-5. **Jedes Ergebnis ist reproduzierbar.** Algorithmus-, Regelwerk-, Modell- und Datenversionen werden
-   aufgezeichnet.
-6. **Ein gültiges Ergebnis darf keinen Kandidaten enthalten.** Der Dienst füllt die Top 10 niemals mit
-   unsicheren Optionen auf.
-7. **Menschliche Entscheidungen sind separate Ereignisse.** Eine Empfehlung ist keine Bestätigung.
+> Die Engine und ihre Anschlussstellen sind vorhanden; die echten Datenpipelines und das ausgewählte
+> Produktivmodell müssen noch angebunden werden.
 
-## 3. Systemgrenze
+```mermaid
+flowchart LR
+    S["Excel, Outlook, ERP<br/>(außerhalb dieses Pakets)"] --> A["Normalisierte Anfrageposition"]
+    A --> B["Validieren"]
+    B --> C["Durchsuchbaren Text erzeugen"]
+    C --> D["Kandidaten auf<br/>vier Wegen suchen"]
+    D --> E["Ranglisten zusammenführen"]
+    E --> F["Regeln anwenden"]
+    F --> G["Verpackung und Bestand"]
+    G --> H["Deterministisch ordnen"]
+    H --> I["Erklärte Top K"]
+    I --> J["Menschliche Entscheidung"]
+    J --> K["Prüf- und künftige Lerndaten"]
+```
 
-Das Matching beginnt nach der Extraktion.
+### Das Sicherheitsversprechen
+
+Das System schlägt vor; ein Mensch entscheidet. Es darf weder stillschweigend klinische
+Gleichwertigkeit behaupten noch fehlende Daten verbergen oder zulassen, dass Preis, Bestand,
+Embeddings oder Kundenhistorie einen bestätigten Ausschluss überstimmen.
+
+Sieben Grundsätze sichern dies ab:
+
+1. Rohwerte aus Quellen bleiben unveränderliche Nachweise.
+2. Unbekannt bedeutet weder falsch noch null, kostenlos oder ausreichend.
+3. Suchrelevanz ist keine Produktfreigabe.
+4. Harte Ausschlüsse können nicht durch operative Vorteile aufgewogen werden.
+5. Versionen von Algorithmus, Regelwerk, Quelle und Modell werden aufgezeichnet.
+6. Ein gültiges Ergebnis darf weniger als zehn oder gar keine Kandidaten enthalten.
+7. Empfehlung und menschliche Bestätigung sind getrennt gespeicherte Ereignisse.
+
+## 2. Wie der Code aufgeteilt ist
+
+Das Paket verwendet kleine Module, damit sich Datenzugriff, Matching-Verhalten und HTTP-Anbindung
+unabhängig voneinander ändern lassen.
+
+| Verantwortung | Dateien | Rolle in einfacher Sprache |
+|---|---|---|
+| Öffentliche Datenformen | [`contracts.py`](contracts.py) | Legt genau fest, was in das Matching hinein- und herausgehen darf |
+| Interner Arbeitszustand | [`domain.py`](domain.py) | Hält Kandidaten, während der Algorithmus sie bewertet |
+| Austauschbare Schnittstellen | [`ports.py`](ports.py) | Beschreibt, was Katalog, Historie, Vektoren, Modelle und Speicher liefern müssen |
+| Ablaufsteuerung | [`service.py`](service.py) | Führt die vollständige Abfolge in der richtigen Reihenfolge aus |
+| Eingabeprüfungen | [`validation.py`](validation.py) | Ergänzt Warnungen und matching-spezifische Validierung |
+| Durchsuchbarer Text | [`representation.py`](representation.py) | Normalisiert Beschreibungen und strukturierte Attribute |
+| Kandidatensuche | [`retrieval/`](retrieval/) | Exakte, lexikalische, vektorbasierte und historische Suche sowie Fusion |
+| Sicherheits- und Attributregeln | [`constraints/`](constraints/) | Wertet das aktuelle versionierte Matching-Regelwerk aus |
+| Verpackung und Bestand | [`packaging.py`](packaging.py) | Berechnet Verpackungsalternativen und konservative Verfügbarkeit |
+| Rangfolge | [`ranking/`](ranking/) | Erzeugt nachvollziehbare Merkmale und eine deterministische Ordnung |
+| Datenbankimplementierungen | [`adapters/persistence.py`](adapters/persistence.py) | Liest PostgreSQL/pgvector und speichert Läufe und Entscheidungen |
+| Testimplementierungen | [`adapters/in_memory.py`](adapters/in_memory.py) | Stellt deterministische Speicher für Tests ohne PostgreSQL bereit |
+| HTTP-Endpunkte | [`api.py`](api.py) | Stellt Matching für eine künftige UI oder einen anderen Dienst bereit |
+| Prüfung menschlichen Feedbacks | [`feedback.py`](feedback.py) | Stellt sicher, dass eine Entscheidung zum richtigen Lauf und Kandidaten gehört |
+
+### Warum Schnittstellen und Adapter existieren
+
+[`ports.py`](ports.py) enthält Schnittstellen statt ERP-, SharePoint- oder PostgreSQL-spezifischer
+Logik. [`service.py`](service.py) fragt deshalb nach „Katalogartikeln“ oder „historischen Angeboten“,
+ohne deren Herkunft kennen zu müssen. Heute unterstützt ein In-Memory-Adapter die Tests und ein
+PostgreSQL-Adapter das echte Backend. Später kann sich die Datenquelle ändern, ohne die Matching-Regeln
+neu zu schreiben.
+
+Aus demselben Grund verarbeitet das Matching-Paket Excel und Outlook nicht selbst. Das Einlesen von
+Quellformaten und die Entscheidung, ob Produkte passen, sind unterschiedliche Fehlerbereiche und
+sollten getrennt getestet werden.
+
+## 3. Was in das Matching eingehen muss
+
+### Die Systemgrenze
 
 ```text
 Excel / Outlook / PDF / SharePoint / ERP
                     │
-            quellenspezifische Extraktion
+          quellenspezifische Extraktion
                     │
-       versionierte normalisierte Verträge
+     versionierte normalisierte JSON-Verträge
                     │
-             Matching-Framework
+            Matching-Framework
 ```
 
-Das Matching-Paket verarbeitet niemals Arbeitsmappen, E-Mail-Texte, PDF-Layouts, Zellfarben oder
-SharePoint-Ordner. Diese Aufgaben gehören in die Eingangs- und Extraktionsadapter. Diese Grenze
-verhindert, dass Änderungen an Quellformaten das sicherheitsrelevante Matching-Verhalten
-beeinträchtigen.
-
-### Outlook-Grenze
-
-Ein Outlook-Connector sollte künftig ein eigenes Postfach oder einen eigenen Ordner, unveränderliche
-Microsoft-Graph-Nachrichten-IDs, Änderungsbenachrichtigungen mit Delta-Abgleich sowie eine
-unveränderliche MIME- und Anhangsspeicherung verwenden. Sein Extraktor muss dieselben normalisierten
-Verträge wie die Excel-Extraktion ausgeben. Das Matching speichert lediglich eine generische
-`SourceReferenceV1`, sodass eine aus Outlook stammende Position dieselbe Pipeline durchläuft.
-
-## 4. Versionierte Verträge
+Der Extraktions-Arbeitsbereich muss Quellmaterial in die Verträge aus
+[`contracts.py`](contracts.py) umwandeln. Matching liest niemals Arbeitsmappen-Layouts, Zellfarben,
+MIME-Inhalte, PDF-Positionen oder SharePoint-Ordner.
 
 ### `InquiryLineV1`
 
-Enthält die ursprüngliche Beschreibung, eine optionale Übersetzung, die normalisierte Mengen- und
-Verpackungsanforderung, strukturierte Attribute, Partner- und Zielkontext, Extraktionswarnungen sowie
-eine präzise Quellenreferenz.
+Eine angefragte Position geht als `InquiryLineV1` ein. Wichtige Felder sind:
+
+- stabile Anfrage- und Positions-IDs;
+- Produktbereich `medicine` oder `equipment`;
+- Originalbeschreibung und optionale Übersetzung;
+- optionale angefragte Artikelnummer;
+- normalisierte Menge und Einheit bei Erhalt des Rohwerts;
+- strukturierte Attribute wie Wirkstoff, Wirkstärke, CH-Größe oder Sterilität;
+- Partner, Ziel, Dringlichkeit und Haltbarkeitsanforderung, sofern bekannt;
+- Extraktionswarnungen;
+- genaue Quellenreferenz.
 
 ### `InventoryItemV1`
 
-Enthält eine Artikelnummer als Zeichenkette, den Produktbereich, Beschreibungen, normalisierte
-Attribute, Hersteller, Marke, Verpackung, Nachbeschaffungs- und T1-Werte, maßgebliche Aktivitäts- und
-Qualitätskennzeichen, Bestandsrohwerte sowie die Quellversion.
+Jeder Katalogartikel liefert:
+
+- Artikelnummer als Zeichenkette, damit führende Nullen niemals verloren gehen;
+- Produktbereich und eine oder mehrere Beschreibungen;
+- normalisierte Produktattribute;
+- Hersteller, Marke, Familie und Verpackungsinformationen;
+- maßgebliche Aktiv- und Qualitätssperrkennzeichen;
+- einen getrennten aktuellen Bestandssnapshot;
+- Quellversion und Herkunftsnachweis.
 
 ### `HistoricalOfferV1`
 
-Enthält den historischen Anfragetext, den zugeordneten Artikel, sofern bekannt, Lieferantennachweise,
-Preisbasis, Verpackung, Datum, Kontext sowie SharePoint- beziehungsweise Quellenherkunft.
+Historische Nachweise liefern den alten Anfragetext, den zugeordneten Artikel, sofern bekannt,
+Kunden- und Zielkontext, Lieferant, Menge, Verpackung, Preisbasis, Datum und Quelle. Historie dient der
+Kandidatensuche und ist kein Beweis dafür, dass die frühere Auswahl weiterhin geeignet ist.
 
-### Warum die Verträge strikt sind
+### `SourceReferenceV1`
 
-Alle öffentlichen Modelle lehnen unerwartete Felder ab. Dadurch werden Abweichungen früh erkannt: Ein
-Extraktionsteam kann nicht unbemerkt `quantity.unit` umbenennen, eine Artikelnummer in eine
-Fließkommazahl umwandeln oder unbekannte Sterilität zu `false` zusammenfassen. Die Vertragsversion `1`
-ermöglicht eine spätere V2, ohne die historische Reproduzierbarkeit zu beeinträchtigen.
+Jede Eingabe kann Quellentyp, Dokument, Prüfsumme, Zeitstempel, Tabelle/Zeile oder eine andere
+Fundstelle angeben. Damit lässt sich die Frage „Woher stammt diese Tatsache?“ beantworten, ohne dass
+das Matching das Quellformat verstehen muss.
 
-## 5. Validierung
+Alle öffentlichen Modelle lehnen unerwartete Felder ab und verlangen Zeitstempel mit Zeitzone. Dadurch
+werden Vertragsabweichungen früh erkannt, statt eine umbenannte Einheit, eine Artikelnummer als
+Fließkommazahl oder einen mehrdeutigen Zeitstempel stillschweigend zu akzeptieren.
 
-Pydantic prüft Struktur und Typen. `validation.py` ergänzt matching-spezifische Diagnosen, zum
-Beispiel:
+### Outlook-Anfragen
 
-- normalisierte Menge fehlt;
-- Mengeneinheit fehlt;
-- keine strukturierten Attribute übergeben;
-- Warnungen aus der vorgelagerten Extraktion.
+Ein Outlook-Connector liegt bewusst außerhalb dieses Pakets. Er sollte später ein freigegebenes
+Postfach oder einen freigegebenen Ordner, unveränderliche Microsoft-Graph-Nachrichten-IDs,
+Benachrichtigungen mit Delta-Abgleich sowie unveränderliche Speicherung von MIME-Inhalt und Anhängen
+verwenden. Sein Extraktor sollte dieselben `InquiryLineV1`-Datensätze wie Excel ausgeben. Matching
+verarbeitet anschließend beide Quellen gleich; nur ihre `SourceReferenceV1` unterscheidet sich.
 
-Die Validierung liefert `valid`, `valid_with_warnings`, `review_required` oder `invalid`. Fehlende
-Verpackungsdaten verhindern die Textsuche nicht; das Ergebnis weist jedoch ausdrücklich darauf hin,
-dass die Verpackung nicht berechnet werden kann.
+## 4. Das verwendete Beispiel
 
-## 6. Suchrepräsentation
+**Zuständige Dateien:** [`tests/matching/factories.py`](../../tests/matching/factories.py) erzeugt die
+Daten und [`tests/matching/test_service.py`](../../tests/matching/test_service.py) führt die gesamte
+Pipeline aus. [`service.py`](service.py) steuert das gezeigte Verhalten.
 
-Das Framework erzeugt zwei deterministische Zeichenketten.
+Die Anfrage lautet:
+
+| Feld | Wert |
+|---|---|
+| Originalbeschreibung | `SONDE VESICALE FOLEY sterile CH18` |
+| Produktbereich | Ausrüstung |
+| Menge | 50 Stück |
+| Strukturierte Attribute | `charriere=18 CH`, `sterile=true` |
+| Partner | `partner-1` |
+| Ziel | `CD` |
+| Quelle | `request.xlsx`, Tabelle `Tabelle1`, Zeile 7 |
+
+Eine gekürzte Fassung der normalisierten Anfrage sieht so aus:
+
+```json
+{
+  "inquiry_id": "request-1",
+  "line_id": "line-1",
+  "domain": "equipment",
+  "raw_description": "SONDE VESICALE FOLEY sterile CH18",
+  "quantity": {"value": "50", "unit": "piece", "raw_expression": "50"},
+  "attributes": {
+    "charriere": {"value": 18, "unit": "CH"},
+    "sterile": {"value": true}
+  },
+  "partner_id": "partner-1",
+  "destination_country": "CD",
+  "source": {
+    "source_type": "excel",
+    "document_id": "request.xlsx",
+    "sheet": "Tabelle1",
+    "row": 7
+  }
+}
+```
+
+Der Testkatalog enthält:
+
+| Artikel | Beschreibung | Wichtige Fakten |
+|---|---|---|
+| `410001001` | Foley-Blasenkatheter steril CH18 | Aktiv, CH18, 80 Stück auf Lager |
+| `410001002` | Foley-Blasenkatheter steril CH12 | Aktiv, CH12, 500 Stück auf Lager |
+| `410001003` | Foley-Blasenkatheter steril CH18 | Inaktiv, CH18, 500 Stück auf Lager, kommt in Historie vor |
+
+Jeder Artikel enthält 12 Stück pro Verpackung. Der Test liefert außerdem ein einfaches
+zweidimensionales Anfrage-Embedding und gespeicherte Vektoren. Diese Vektoren beweisen die Mechanik;
+sie stellen kein produktives mehrsprachiges Embedding-Modell dar.
+
+## 5. Schritt 1 — Anfrage validieren
+
+**Zuständige Dateien:** [`contracts.py`](contracts.py), [`validation.py`](validation.py) und der erste
+Teil von [`service.py`](service.py).
+
+### Was geschieht
+
+Pydantic erzwingt zunächst den strukturellen Vertrag. Anschließend meldet die Matching-Validierung, ob
+Menge, Einheit, Attribute oder Informationen aus der vorgelagerten Extraktion fehlen. Ein
+Anfrage-Embedding wird nur zusammen mit seiner Modell-ID akzeptiert, und jede Vektorkomponente muss
+endlich sein.
+
+Das Ergebnis ist eines der folgenden:
+
+- `valid`;
+- `valid_with_warnings`;
+- `review_required`;
+- `invalid`.
+
+Das Beispiel ist `valid`. Eine fehlende normalisierte Menge würde eine Warnung erzeugen und die
+Verpackungsberechnung deaktivieren, aber nicht zwangsläufig die Textsuche verhindern.
+
+### Warum dieser Schritt existiert
+
+Ohne strikte Grenze könnten fehlerhafte Quelldaten wie ein legitimer Nullwert, ein falscher Wert oder
+eine gültige Einheit erscheinen. Die Validierung macht Unsicherheit sichtbar, bevor die Rangbildung
+beginnt, und hält nachfolgende Module einfacher.
+
+### Aktuelle Einschränkung
+
+Die matching-spezifische Validierung ist bewusst klein. Domänenspezifische Extraktionskonfidenz und
+Akzeptanzschwellen auf Feldebene gehören weiterhin in die künftige Extraktionsvereinbarung.
+
+## 6. Schritt 2 — Deterministischen durchsuchbaren Text erzeugen
+
+**Zuständige Datei:** [`representation.py`](representation.py).
+
+### Was geschieht
+
+Der Code verwendet Unicode-NFKC-Normalisierung, Kleinschreibung ohne Beachtung der Groß-/Kleinschreibung
+und ein deterministisches Tokenmuster. Er erzeugt:
 
 ```text
 semantischer Kern:
-  urinary Foley catheter sterile balloon
+  sonde vesicale foley sterile ch18
 
 kanonischer Text:
-  urinary Foley catheter sterile balloon; charriere=18 ch; single_use=true
+  sonde vesicale foley sterile ch18; charriere=18 ch; sterile=true
 ```
 
-Der semantische Kern unterstützt die mehrsprachige Bedeutung. Die kanonische Form bildet zusätzlich
-normalisierte Attribute ab, sodass Embedding-Inhalte versionierbar und prüfbar werden. Zahlen werden
-nicht pauschal entfernt: Sie verbessern die Trefferabdeckung, während strukturierte Regeln maßgeblich
-bleiben.
+Attributnamen werden sortiert, Werte und Einheiten einheitlich dargestellt, und SHA-256 erzeugt einen
+stabilen Inhalts-Hash. Katalogartikel werden mit ihren Beschreibungen, Hersteller, Marke und Attributen
+durch denselben Prozess dargestellt.
 
-Unicode wird mit NFKC normalisiert und die Tokens werden deterministisch erzeugt. Ein SHA-256-Inhalts-
-Hash kennzeichnet exakt, welche Repräsentation eingebettet wurde.
+### Warum zwei Formen existieren
 
-## 7. Suchkanäle
+Der semantische Kern bewahrt die natürliche Produktbeschreibung. Der kanonische Text enthält zusätzlich
+Fakten, die andernfalls verborgen oder uneinheitlich formuliert sein könnten. Der Inhalts-Hash teilt
+dem Embedding-Speicher genau mit, welche Textversion einen Vektor erzeugt hat. Unveränderte Produkte
+müssen deshalb nicht erneut eingebettet werden.
 
-### Exakte Suche
+### Aktuelle mehrsprachige Realität
 
-Findet eine ausdrücklich angefragte Artikelnummer oder eine identische normalisierte Beschreibung.
-Sie liefert ein starkes Signal, durchläuft aber weiterhin die Aktivitäts-, Qualitäts- und sonstigen
-Regeln.
+Diese Funktion übersetzt nicht. Sie kombiniert die Originalbeschreibung mit einer optionalen
+Übersetzung aus dem vorgelagerten Prozess. Lexikalisches Matching ist daher nur teilweise
+mehrsprachig. Echte sprachübergreifende Trefferabdeckung hängt von einem künftig freigegebenen
+mehrsprachigen Embedding-Modell oder einer vorgelagerten Übersetzung ab. In der produktiven API ist
+derzeit kein Embedding-Anbieter automatisch konfiguriert.
 
-### Lexikalische Suche
+## 7. Schritt 3 — Eine breite Kandidatenmenge suchen
 
-Verwendet einen von zusätzlichen Abhängigkeiten freien Zeichenähnlichkeitsvergleich und
-Tokenüberschneidungen. Damit werden Schreibvarianten, Teilüberschneidungen, Codes und technische Namen
-erfasst. Sie ist die transparente Basis und bleibt verfügbar, wenn maschinelles Lernen deaktiviert
-ist.
+**Zuständige Dateien:** [`retrieval/exact.py`](retrieval/exact.py),
+[`retrieval/lexical.py`](retrieval/lexical.py), [`retrieval/vector.py`](retrieval/vector.py),
+[`retrieval/history.py`](retrieval/history.py), [`ports.py`](ports.py) und
+[`adapters/persistence.py`](adapters/persistence.py).
 
-### Vektorsuche
+[`service.py`](service.py) fragt zunächst beim Katalog-Repository Artikel aus dem angefragten
+Produktbereich ab. Das Standardlimit beträgt 50 Treffer pro Kanal. Vier unabhängige Kanäle erstellen
+anschließend Ranglisten.
 
-Verwendet die Kosinusdistanz in PostgreSQL/pgvector. Vektoren werden nur verglichen, wenn die
-registrierte Modell-ID und die Dimensionen übereinstimmen. Die Datenbank speichert Vektoren mit
-variabler Dimension, sodass spätere Modellexperimente keine Neugestaltung des Schemas erfordern. Ein
-modellspezifischer approximativer Index kann später ergänzt werden.
+### 3A. Exakte Suche
 
-Das Framework enthält bewusst noch kein produktives Embedding-Modell. `EmbeddingProvider` ist eine
-Schnittstelle, und die Tests verwenden einen deterministischen Testanbieter. Ein echtes Modell muss
-einen mehrsprachigen, domänenspezifischen Benchmark gewinnen und die Prüfung von Lizenz, Kosten,
-Aufbewahrung und Datenresidenz bestehen.
+[`retrieval/exact.py`](retrieval/exact.py) findet:
 
-### Historische Suche
+- eine ausdrücklich angefragte Artikelnummer; oder
+- eine identische normalisierte semantische Beschreibung.
 
-Findet frühere Anfragetexte, die Katalogartikeln zugeordnet sind. Partner- und Zielkontext grenzen die
-Suche ein. Die Historie kann einen Artikel in den Kandidatenpool aufnehmen und einen prüfbaren Score
-beisteuern; sie darf weder aktuelle Regeln umgehen noch eine falsche Garantie als „historisch
-verifiziert“ erhalten.
+Ein Treffer über die Artikelnummer ist ein starkes Navigationssignal. Der Artikel durchläuft aber
+weiterhin Aktivitäts-, Qualitäts- und Attributprüfungen, weil Benutzer und Quelldateien veraltete
+Artikelnummern enthalten können.
 
-### Warum die Pipeline nicht einfach „erst filtern, dann bewerten“ verwendet
+Das Beispiel enthält weder eine angefragte Artikelnummer noch eine identische zweisprachige
+Beschreibung. Die exakte Suche fügt daher keinen Treffer hinzu.
 
-Die Pipeline filtert selektiv. Der vertrauenswürdige Produktbereich wird vor der Suche angewendet,
-weil ein Medikament und ein Ausrüstungsgegenstand nicht austauschbar sind. Detaillierte Attribute
-werden nicht als Datenbankfilter verwendet: Extrahierte Werte können unvollständig oder unterschiedlich
-normalisiert sein, und ein früher Filter würde unbemerkt die Trefferabdeckung verschlechtern.
-Stattdessen erzeugen exakte, lexikalische, vektorbasierte und historische Suche eine breite, aber
-begrenzte Vereinigungsmenge. Maßgebliche Sicherheits- und Statusregeln entfernen anschließend
-unzulässige Kandidaten, Prüfregeln kennzeichnen Unsicherheit und eine deterministische Rangfolge ordnet
-die verbleibenden Kandidaten. Bei der aktuellen Kataloggröße ist dieses Verfahren schnell und leichter
-prüfbar als eine vorschnell eingeführte Graph- oder approximative Suchschicht. Weitere nachweislich
-sichere Vorfilter können mit einer neuen Regelversion ergänzt werden, sobald Skalierung oder gemessene
-Latenz dies erfordern.
+### 3B. Lexikalische Suche
 
-## 8. Kandidatenfusion
+[`retrieval/lexical.py`](retrieval/lexical.py) kombiniert:
 
-Die Scores der Suchverfahren haben unterschiedliche Bedeutungen und Wertebereiche. Kosinusähnlichkeit,
-Textähnlichkeit, ein Exaktheitskennzeichen und historische Häufigkeit dürfen nicht direkt addiert
-werden.
+- Zeichenähnlichkeit mit `SequenceMatcher`;
+- Überschneidung der Tokenmengen;
+- Abdeckung der Anfrage-Tokens durch den Produkttext.
 
-Die erste Implementierung verwendet Reciprocal Rank Fusion (RRF):
+Dieser Kanal ist transparent, deterministisch und nützlich für Schreibvarianten, Codes, Zahlen und
+technische Namen. Er dient außerdem als Rückfalllösung, wenn keine Vektoren verfügbar sind.
+
+Er ist nicht wirklich sprachunabhängig. Deutsche oder französische Formulierungen und englische
+Katalogtexte passen nur dann, wenn sie genügend Begriffe, Codes oder Strukturen teilen. Derzeit gibt
+es keinen kalibrierten lexikalischen Mindestscore. Positive Ergebnisse können in den begrenzten
+Kandidatenpool gelangen und werden anschließend durch Regeln, Rangfolge und menschliche Prüfung
+kontrolliert.
+
+### 3C. Vektorsuche
+
+[`retrieval/vector.py`](retrieval/vector.py) übergibt die Vektorsuche an `VectorRepository`.
+[`PgVectorRepository`](adapters/persistence.py) führt dann folgende Schritte aus:
+
+1. Es lädt die registrierten Modelldimensionen.
+2. Es lehnt unbekannte Modelle oder abweichende Anfrage-Dimensionen ab.
+3. Es wählt für jeden Artikel die neueste Katalogversion.
+4. Es berechnet die exakte Kosinusähnlichkeit mit dem pgvector-Operator `<=>`.
+5. Es gibt die nächsten Artikel des angefragten Produktbereichs zurück.
+
+Nur Vektoren derselben Modell-ID und Dimension dürfen verglichen werden. Das Schema unterstützt
+bewusst mehrere Modellregistrierungen und variable Vektordimensionen.
+
+Im Test besitzen Artikel `410001001` und der inaktive Artikel `410001003` den stärksten künstlichen
+Vektortreffer. Das zeigt: Vektorrelevanz erzeugt nur Kandidaten; sie darf einen inaktiven Artikel nicht
+freigeben.
+
+### Was für produktive Vektoren noch fehlt
+
+- Es wurde noch kein mehrsprachiges Modell ausgewählt oder anhand eines Benchmarks verglichen.
+- Die API-Konfiguration in [`api.py`](api.py) richtet die Vektorsuche, aber keinen automatischen
+  `EmbeddingProvider` ein.
+- Ein Aufrufer muss daher aktuell sowohl `query_embedding` als auch `embedding_model_id` übergeben,
+  damit der Vektorkanal über die API verwendet wird.
+- Es gibt noch keinen produktiven Indexierungsprozess, der für alle Produkte der Lagerliste Vektoren
+  erzeugt und speichert.
+- Bei der aktuellen Kataloggröße ist kein approximativer HNSW-/IVFFlat-Index erforderlich.
+
+### 3D. Historische Suche
+
+[`PostgresHistoryRepository`](adapters/persistence.py) lädt aktuelle frühere Angebote und grenzt sie,
+sofern möglich, anhand von Partner und Zielland ein. [`retrieval/history.py`](retrieval/history.py)
+vergleicht die Tokens der aktuellen Anfrage mit früheren Anfrageformulierungen und gibt den mit einem
+ähnlichen historischen Angebot verbundenen Artikel zurück.
+
+Im Beispiel zeigt die Historie auf `410001003`. Das kann eine echte Kundenpräferenz, eine alte
+Ausnahme oder eine veraltete Auswahl sein. Historie verbessert daher die Trefferabdeckung, erhält aber
+keine Autorität über aktuelle Regeln.
+
+Historische Datensätze ohne Artikelnummer können keinen Katalogartikel finden. Ein historischer
+Artikel, der im aktuellen Katalog fehlt, wird von [`service.py`](service.py) ebenfalls verworfen.
+
+### Warum die Pipeline nicht einfach alle Attribute zuerst filtert
+
+Nur der vertrauenswürdige Produktbereich wird früh gefiltert. Detaillierte Attribute werden nach der
+Suche geprüft, weil die Extraktion unvollständig sein kann und Einheiten oder Vokabulare möglicherweise
+noch nicht normalisiert sind. Würde jedes Attribut als Datenbankfilter verwendet, entstünden falsche
+Negativtreffer: Der richtige Artikel könnte verschwinden, bevor das System die Unsicherheit erklären
+kann.
+
+Die gewählte Reihenfolge lautet daher:
 
 ```text
-RRF(Artikel) = Summe(1 / (k + Rang_im_Suchverfahren))
+sichere breite Suche → maßgebliche Ausschlüsse → Prüfhinweise → deterministische Rangfolge
 ```
 
-RRF bevorzugt Kandidaten, die von mehreren unabhängigen Kanälen weit oben gefunden wurden,
-dedupliziert Artikelnummern und gibt nicht vor, dass heterogene Scores kalibriert seien. Die einzelnen
-Nachweise bleiben am Kandidaten erhalten.
+Weitere Vorfilter sollten nur ergänzt werden, wenn ihre Sicherheit nachgewiesen ist und gemessene
+Skalierung oder Latenz sie erforderlich macht.
 
-## 9. Regelwerk
+## 8. Schritt 4 — Die vier Ranglisten zusammenführen
 
-Die Engine wird durch ein versioniertes Regelwerk gesteuert. Eine Regel liefert:
+**Zuständige Datei:** [`retrieval/fusion.py`](retrieval/fusion.py).
 
-- `pass`: bestanden;
-- `exclude`: ausschließen;
-- `review`: manuell prüfen;
-- `warning`: Warnung;
-- `unknown`: unbekannt.
+### Was geschieht
 
-Jedes Ergebnis enthält einen stabilen Begründungscode, eine verständliche Erklärung, die verglichenen
-Werte, den Attributnamen und die Regelwerkversion.
+Lexikalische, vektorbasierte, exakte und historische Scores verwenden unterschiedliche Skalen. Eine
+Addition wie `0,7 lexikalisch + 0,8 Vektor` würde so tun, als hätten diese Zahlen dieselbe Bedeutung.
+Das haben sie nicht.
 
-### Sicheres V1-Verhalten
+Das Framework verwendet deshalb Reciprocal Rank Fusion (RRF):
 
-Nur ein maßgeblicher Katalogstatus führt derzeit automatisch zu einem harten Ausschluss:
+```text
+RRF(Artikel) = Summe(1 / (60 + Rang_im_Kanal))
+```
+
+Das Verfahren betrachtet die Position eines Produkts in jeder Liste statt des Rohscores. Es
+dedupliziert einen Artikel innerhalb jedes Kanals, belohnt Produkte, die von mehreren unabhängigen
+Verfahren gefunden wurden, und erhält jeden zugrunde liegenden Suchtreffer als Nachweis.
+
+### Was im Beispiel geschieht
+
+Der inaktive Artikel `410001003` kann starke zusammengeführte Nachweise erhalten, weil ihn
+lexikalischer, vektorbasierter und historischer Kanal finden. `410001001` wird ebenfalls stark durch
+lexikalische und vektorbasierte Suche gefunden. `410001002` erscheint an schwächeren Text- und
+Vektorpositionen.
+
+In diesem Schritt wird nichts ausgeschlossen. RRF beantwortet ausschließlich die Frage: „Welche
+Artikel sind eine Prüfung wert?“
+
+### Warum RRF die konservative erste Wahl ist
+
+RRF ist deterministisch, leicht prüfbar und benötigt weder gelabelte Trainingsdaten noch eine
+Score-Kalibrierung. Eine erlernte Fusion oder ein Cross-Encoder kann später evaluiert werden, aber nur
+anhand eines Benchmarks, der eine Verbesserung ohne zusätzliche Verletzungen harter Regeln belegt.
+
+## 9. Schritt 5 — Sicherheits- und Attributregeln anwenden
+
+**Zuständige Dateien:** [`constraints/engine.py`](constraints/engine.py),
+[`config/default_policy_v1.json`](config/default_policy_v1.json),
+[`constraints/medicines.py`](constraints/medicines.py) und
+[`constraints/equipment.py`](constraints/equipment.py).
+
+### Mögliche Regelergebnisse
+
+Jede Regel erzeugt ein nachvollziehbares Ergebnis:
+
+| Ergebnis | Bedeutung |
+|---|---|
+| `pass` | Bestätigte kompatible Tatsache |
+| `exclude` | Kandidat darf nicht automatisch angeboten werden |
+| `review` | Wichtige Abweichung oder fehlende Tatsache erfordert einen Menschen |
+| `warning` | Relevanter Hinweis, der derzeit nicht blockiert |
+| `unknown` | Die vorhandenen Daten können die Frage nicht beantworten |
+
+Jedes Ergebnis enthält einen stabilen Code, eine Erklärung, den Attributnamen sowie die angefragten
+und beim Kandidaten vorhandenen Werte.
+
+### Aktuelle harte Ausschlüsse
+
+V1 schließt ausschließlich Tatsachen automatisch aus, die bereits maßgeblich sind:
 
 - falscher Produktbereich;
-- Artikel ausdrücklich inaktiv;
-- Artikel ausdrücklich aufgrund der Qualität gesperrt.
+- Katalogartikel ausdrücklich inaktiv;
+- Katalogartikel ausdrücklich wegen Qualität gesperrt.
 
-Potenziell kritische Attribute wie Wirkstoff, Wirkstärke, Konzentration, Darreichungsform,
-Verabreichungsweg, Größe, Gauge, Charrière, Sterilität, Material und Kompatibilität werden geprüft.
-Abweichungen führen jedoch standardmäßig zu `review`, bis action medeor genaue Substitutions- und
-Ausschlussregeln freigibt. Das JSON-Regelwerk macht spätere Änderungen ausdrücklich prüfbar und
-versionierbar.
+Diese Prüfungen können weder durch Suchrelevanz, Historie, Preis noch Bestand aufgewogen werden.
 
-Die Attributvokabulare für Medikamente und Ausrüstung bleiben getrennt, obwohl beide dieselbe
-allgemeine Vergleichs-Engine verwenden.
+### Attributvergleich
 
-## 10. Verpackungs- und Erfüllungsnachweise
+Das Regelwerk kennt derzeit Medikamentenattribute wie Wirkstoff, Wirkstärke, Konzentration,
+Darreichungsform und Verabreichungsweg sowie Ausrüstungsattribute wie Größe, Gauge, Charrière,
+Sterilität, Material und Kompatibilität.
 
-Sind Menge, Einheiten pro Verpackung und Einheiten vergleichbar, berechnet das Framework sowohl die
-abgerundete als auch die aufgerundete Verpackungsoption.
+Für jedes angefragte konfigurierte Attribut vergleicht die Engine normalisierten Wert und
+normalisierte Einheit. Fehlende oder abweichende kritische Werte führen normalerweise zu `review` und
+nicht zu `exclude`, weil action medeor noch keine genauen Substitutionsregeln freigegeben hat.
 
-Beispiel: 50 angefragte Stück, 12 Stück pro Verpackung.
+Der Vergleich erwartet derzeit, dass die Extraktion synonyme Einheiten und Konzepte normalisiert.
+`mg` und `milligram` werden beispielsweise noch nicht durch eine Ontologie innerhalb des Matchings
+zusammengeführt.
+
+### Entscheidungen im Beispiel
+
+| Artikel | Prüfungen | Ergebnis |
+|---|---|---|
+| `410001001` | Ausrüstung, aktiv, CH18 passt, steril passt | `pass` |
+| `410001002` | Ausrüstung, aktiv, CH12 weicht von angefragtem CH18 ab | `review` |
+| `410001003` | Ausrüstung und Attribute passen, Artikel ist aber inaktiv | `exclude` |
+
+Das CH12-Produkt bleibt für eine ausdrückliche Prüfung sichtbar. Das inaktive CH18-Produkt wird
+entfernt, obwohl seine Suchnachweise stärker sind.
+
+### Warum das Regelwerk Daten und keine versteckte Logik verwendet
+
+Der Schweregrad für fehlende und abweichende Werte liegt in einem versionierten JSON-Regelwerk. Eine
+künftig freigegebene Regeländerung kann geprüft, getestet und unter einer neuen Version veröffentlicht
+werden. Alte Matching-Läufe behalten die Regelwerkversion, mit der sie erzeugt wurden.
+
+## 10. Schritt 6 — Verpackungsalternativen berechnen
+
+**Zuständige Datei:** [`packaging.py`](packaging.py), Funktion `calculate_packaging`.
+
+### Was geschieht
+
+Die Verpackung wird nur berechnet, wenn angefragte Menge, Verpackungsgröße und Einheiten bekannt und
+vergleichbar sind. Bei 50 angefragten Stück und 12 Stück pro Verpackung ergibt sich:
 
 ```text
-4 Verpackungen = 48 Stück (Differenz -2)
-5 Verpackungen = 60 Stück (Differenz +10)
+abgerundet: 4 Verpackungen = 48 Stück = Differenz -2
+aufgerundet: 5 Verpackungen = 60 Stück = Differenz +10
 ```
 
-Es wird keine Option empfohlen, bevor action medeor eine Rundungsregel bestätigt. Exakte Divisionen
-können automatisch ausgewählt werden, weil sie keine Rundungsentscheidung erfordern.
+Beide Möglichkeiten werden zurückgegeben. Eine Möglichkeit wird nur dann automatisch ausgewählt, wenn
+die Division exakt aufgeht. Bei nicht exakter Division erzeugt der aktuelle Code eine Warnung und
+lässt `recommended_option` leer.
 
-Der Bestand wird nur verglichen, wenn seine Einheit beziehungsweise Bezugsbasis ausdrücklich mit der
-angefragten Menge oder der ausgewählten Verpackungsanzahl kompatibel ist. Die aktuelle Bestandsliste
-bestätigt diese Basis nicht. Deshalb ist der ehrliche Standard `unknown`, während die Rohwerte für
-Bestand, eingehende Bestellungen, Einkaufsanfragen und gebundene Aufträge erhalten bleiben. Das
-Framework implementiert keine erfundene Formel für den verfügbaren Angebotsbestand.
+### Warum der Code nicht automatisch rundet
 
-## 11. Rangfolge
+Unterschiedliche humanitäre Arbeitsabläufe können Fehlmengen vermeiden, Überschüsse vermeiden,
+Kartongrenzen einhalten oder den Kunden fragen wollen. Solange action medeor die Regel nicht festlegt,
+wäre die Wahl von vier oder fünf eine versteckte Geschäftsentscheidung. Die Rückgabe beider
+Möglichkeiten erhält die Entscheidung und macht sie nachvollziehbar.
 
-Die anfängliche Rangfolge ist lexikografisch und deterministisch statt eine undurchsichtige gewichtete
-Summe zu verwenden:
+### Rückfallverhalten
 
-1. Ausgeschlossene Kandidaten werden entfernt.
-2. Vollständig bestandene Kandidaten stehen vor Kandidaten mit Prüf- oder Warnstatus.
-3. Exakte Artikelreferenzen erhalten Vorrang.
-4. Eine stärkere Übereinstimmung strukturierter Attribute erhält Vorrang.
-5. Der zusammengeführte Suchrang löst verbleibende Unterschiede bei der Produkteignung auf.
-6. Vergleichbare operative Nachweise können ansonsten gleichwertige Kandidaten unterscheiden.
-7. Die Artikelnummer dient als stabiler letzter Gleichstandsentscheid.
+- angefragte Menge fehlt → Verpackung `unknown`;
+- Verpackungsgröße fehlt → Verpackung `unknown`;
+- Einheiten nicht vergleichbar → `unit_mismatch`;
+- exakte Division → exakte Verpackungsanzahl darf empfohlen werden.
 
-Das Framework zeichnet getrennte Komponenten auf (`exact_reference`, lexikalisch, Vektor, Historie,
-`attribute_match_ratio`, RRF). Sie sind Rangfolgenachweise und keine Wahrscheinlichkeiten für die
-Richtigkeit. Preis, Verfügbarkeit, Zuverlässigkeit, Aktualität, Haltbarkeit, Dokumentation und
-Partnerpräferenz besitzen ausdrückliche Erweiterungspunkte; fehlende oder nicht vergleichbare
-Nachweise werden jedoch niemals in null umgewandelt.
+## 11. Schritt 7 — Aktuelle Verfügbarkeit prüfen
 
-Top K ist standardmäßig zehn und wird durch den Anfragevertrag begrenzt. Weniger Kandidaten sind ein
-gültiges Ergebnis.
+**Zuständige Datei:** [`packaging.py`](packaging.py), Funktion `observed_availability`.
 
-## 12. Nachvollziehbarkeit
+### Was geschieht
 
-Jeder zurückgegebene Kandidat enthält:
+Der Code verwendet `on_hand` nur, wenn dessen Einheit nachweislich mit der angefragten Menge
+vergleichbar ist. Verpackungsanzahlen können ebenfalls verglichen werden, wenn der Bestand
+ausdrücklich in Verpackungen gemessen wird und die Verpackungsberechnung eine exakte empfohlene Option
+besitzt.
 
-- Suchkanal, Rang, Score und Details;
-- strukturierte Regelergebnisse;
-- übereinstimmende und abweichende Werte;
-- Verpackungsoptionen;
-- einen konservativ bewerteten Verfügbarkeitsstatus;
-- Warnungen zu fehlenden Daten;
-- den Herkunftsnachweis des Katalogeintrags;
-- Versionen von Algorithmus, Regelwerk, Quelle und Embedding-Modell über den übergeordneten
-  Matching-Lauf.
+Mögliche Ergebnisse sind:
 
-Es wird kein Feld namens „Konfidenz in Prozent“ ausgegeben. Konfidenz erfordert einen gelabelten
-Kalibrierungsdatensatz.
+- `on_hand_sufficient`;
+- `on_hand_partial`;
+- `procurement_indicated`, wenn der vergleichbare physische Bestand null ist;
+- `unknown`, wenn Daten oder Einheitenbasis fehlen;
+- `not_allowed` ist für künftige operative Regeln reserviert.
 
-## 13. Persistenzmodell
+Im Beispiel wird der Bestand beider verbleibender Artikel in Stück gemessen:
 
-### Quellen und Katalog
+```text
+410001001: 80 vorhanden gegenüber 50 angefragt → ausreichend
+410001002: 500 vorhanden gegenüber 50 angefragt → ausreichend
+```
 
-- `source_snapshots`: unveränderliche Quellenidentität, Prüfsumme, Erfassungszeit und Fundstelle;
-- `catalog_items`: stabile Artikelidentität und maßgeblicher Status;
-- `catalog_item_versions`: Beschreibungen, Attribute, Verpackung und Inhalts-Hash je Quellversion;
-- `inventory_snapshots`: zeitabhängige Bestandsrohwerte, getrennt von den Produktinhalten.
+### Warum eingehende und gebundene Mengen noch nicht kombiniert werden
 
-Diese Trennung verhindert, dass häufige Bestandsänderungen unnötige Neuberechnungen der Embeddings
-auslösen.
+Die Datenbank erhält physischen Bestand, eingehende Bestellungen, Einkaufsanfragen und gebundene
+Aufträge als getrennte Rohwerte. Sie erfindet keine Formel für den „verfügbaren Angebotsbestand“, weil
+Bedeutung, Zeitpunkt und Einheitenbasis dieser Spalten noch nicht bestätigt sind. Fehlende Daten
+bleiben `unknown`, statt als null behandelt zu werden.
 
-### Embeddings
+Die Lieferantenverfügbarkeit folgt demselben Grundsatz: Die Architektur kann eine Quelle ergänzen,
+aber es gibt noch keinen freigegebenen Lieferanten-Connector und keine gemeinsame Bestandssemantik.
 
-- `embedding_models`: Anbieter, Name, Version, Dimensionen und Distanzmetrik;
-- `product_embeddings`: Katalogversion, Modell, Inhalts-Hash und Vektor.
+## 12. Schritt 8 — Geeignete Kandidaten ordnen
 
-Bei der aktuellen Kataloggröße ist eine exakte Kosinussuche der Standard. pgvector verhindert die
-Notwendigkeit eines zweiten Datenbankdienstes und erhält gleichzeitig einen sauberen Skalierungspfad.
+**Zuständige Dateien:** [`ranking/features.py`](ranking/features.py) und
+[`ranking/ranker.py`](ranking/ranker.py).
 
-### Historie und Feedback
+### Nachvollziehbare Komponenten
 
-- `historical_offers`: normalisierte, mit Zeitstempel versehene Beschaffungsnachweise;
-- `match_runs`: unveränderliche Anfrage- und Ergebnisdaten einschließlich Versionen und Status;
-- `match_candidates`: normalisierte Prüfdatensätze für Analysen auf Kandidatenebene;
-- `match_decisions`: Entscheidung für Annahme, Alternative, manuelle Zuordnung, keine Zuordnung oder
-  erforderliche Beschaffung;
-- `partner_preferences`: ausdrücklich vorgeschlagene, freigegebene oder außer Kraft gesetzte
-  Präferenzen mit Quellnachweis.
+Die Merkmalsberechnung zeichnet verfügbare Nachweise getrennt auf:
 
-`partner_preferences` wird niemals automatisch aus Klicks befüllt.
+- zusammengeführter RRF-Wert;
+- stärkster Score aus jedem Suchkanal;
+- `exact_reference=1`, wenn die exakte Suche den Artikel gefunden hat;
+- Übereinstimmungsquote strukturierter Attribute, sofern diese vergleichbar sind.
 
-## 14. API
+Diese Werte erklären die Reihenfolge. Sie sind keine Wahrscheinlichkeiten für die Richtigkeit.
 
-Die Matching-API ist bewusst unabhängig vom Figma-UI-Branch.
+### Tatsächliche Rangfolgeregel
+
+Ausgeschlossene Produkte werden entfernt. Die übrigen werden lexikografisch sortiert:
+
+1. `pass` vor Kandidaten mit Prüf- oder Warnstatus;
+2. exakte Artikelreferenz zuerst;
+3. höhere Übereinstimmung strukturierter Attribute;
+4. höherer zusammengeführter Suchwert;
+5. bessere vergleichbare Verfügbarkeit;
+6. Artikelnummer als stabiler letzter Gleichstandsentscheid.
+
+Lexikografisch bedeutet, dass ein späterer Faktor einen früheren nicht ausgleichen kann. 500 Stück CH12
+stehen deshalb nicht vor einem vollständig passenden CH18-Produkt mit 80 Stück, nur weil der Bestand
+größer ist.
+
+### Ergebnis des Beispiels
+
+| Rang | Artikel | Prüfstatus | Verfügbarkeit | Begründung |
+|---:|---|---|---|---|
+| 1 | `410001001` | `pass` | Ausreichend | Alle angefragten Attribute passen |
+| 2 | `410001002` | `review` | Ausreichend | CH12 weicht vom angefragten CH18 ab |
+| — | `410001003` | `exclude` | Nicht zurückgegeben | Katalog kennzeichnet Artikel als inaktiv |
+
+Top K ist standardmäßig zehn und kann zwischen 1 und 50 liegen. Das Ergebnis wird nicht aufgefüllt:
+Zwei sichere beziehungsweise prüfbare Artikel bleiben zwei Ergebnisse.
+
+### Kennzahlen, die in der aktuellen Rangfolge bewusst fehlen
+
+Preis, Haltbarkeit, Lieferantenzuverlässigkeit, Aktualität des Einkaufs, Vollständigkeit der
+Dokumentation und freigegebene Partnerpräferenzen sind noch keine aktiven Rangfolgefaktoren. Rohdaten
+oder spätere Erweiterungspunkte existieren, aber vergleichbare Definitionen und maßgebliche Daten
+fehlen. Einen fehlenden Preis als null oder eine unbekannte Haltbarkeit als ausreichend zu behandeln,
+würde falsche Rangfolgen erzeugen.
+
+Vom Benutzer einstellbare Gewichte sind ebenfalls zurückgestellt. Unbegrenzte Gewichte könnten Preis
+einen kritischen Produktunterschied ausgleichen lassen und würden die Reproduzierbarkeit alter Läufe
+erschweren.
+
+## 13. Schritt 9 — Ein erklärtes Ergebnis erstellen und zurückgeben
+
+**Zuständige Dateien:** [`service.py`](service.py), [`contracts.py`](contracts.py) und
+[`api.py`](api.py).
+
+[`service.py`](service.py) erzeugt für jeden geordneten Artikel einen `MatchCandidateV1`. Jeder
+Kandidat enthält:
+
+- eine innerhalb des Laufs stabile Kandidaten-ID;
+- Artikelnummer, Beschreibungen und Hersteller;
+- Rang und Prüfstatus;
+- Verfügbarkeitsstatus;
+- jeden Suchtreffer mit Kanal, Rang, Score und Details;
+- getrennte Score-Komponenten;
+- jedes Regelergebnis und die verglichenen Werte;
+- Verpackungsalternativen und Warnungen;
+- Katalogherkunft.
+
+Der übergeordnete `MatchRunResponseV1` ergänzt Anfrage-/Positions-IDs, Laufstatus,
+Algorithmusversion, Regelwerkversion, Embedding-Modell-ID, Validierungsbericht und Zeitstempel.
+
+Eine gekürzte Antwort für das Beispiel lautet:
+
+```json
+{
+  "status": "completed",
+  "algorithm_version": "allocura-matching-v1",
+  "policy_version": "matching-policy-v1",
+  "candidates": [
+    {
+      "rank": 1,
+      "item_number": "410001001",
+      "review_status": "pass",
+      "availability_status": "on_hand_sufficient",
+      "packaging": {
+        "options": [
+          {"packages": 4, "total_units": "48", "difference": "-2"},
+          {"packages": 5, "total_units": "60", "difference": "10"}
+        ],
+        "recommended_option": null
+      }
+    },
+    {
+      "rank": 2,
+      "item_number": "410001002",
+      "review_status": "review",
+      "availability_status": "on_hand_sufficient"
+    }
+  ]
+}
+```
+
+### Warum es keine Konfidenz in Prozent gibt
+
+Kosinusähnlichkeit, lexikalische Ähnlichkeit, RRF und Attributübereinstimmung sind keine kalibrierten
+Wahrscheinlichkeiten. Eine Anzeige wie „zu 93 % richtig“ wäre irreführend, bis ein repräsentativer
+gelabelter Datensatz die Kalibrierung unterstützt und Fehler nach Produktbereich, Sprache und Muster
+fehlender Daten misst.
+
+## 14. Schritt 10 — Die menschliche Entscheidung sicher speichern
+
+**Zuständige Dateien:** [`feedback.py`](feedback.py), [`contracts.py`](contracts.py),
+[`adapters/persistence.py`](adapters/persistence.py) und [`api.py`](api.py).
+
+Das Ergebnis ist eine Empfehlung und kein Auftrag. Ein späterer `MatchDecisionRequestV1` kann folgende
+Entscheidungen aufzeichnen:
+
+- `accept_suggestion`;
+- `select_alternative`;
+- `manual_match`;
+- `no_match`;
+- `procurement_required`.
+
+Für Vorschlagsannahme, Alternative und manuelle Entscheidung ist ein ausgewähltes Produkt erforderlich.
+Die Auswahl einer Alternative verlangt eine Begründung. Bei angenommenen Vorschlägen und Alternativen
+prüft [`feedback.py`](feedback.py), ob der Artikel und die optionale Kandidaten-ID im angegebenen
+abgeschlossenen Lauf tatsächlich angezeigt wurden. Außerdem wird die Anfragepositions-ID geprüft.
+
+### Warum Empfehlung und Entscheidung getrennt sind
+
+Die Trennung zeichnet sowohl auf, was der Algorithmus gezeigt hat, als auch, was der Mensch gewählt
+hat. Dadurch werden Abweichungsanalysen möglich, und ein angenommener Artikel kann später nicht
+fälschlich als algorithmische Tatsache dargestellt werden.
+
+### Was „Lernen“ heute bedeutet
+
+Die Entscheidung wird als unveränderlicher Nachweis gespeichert. Nach einem Klick ändern sich weder
+Gewichte noch Regeln unmittelbar. Automatisches Online-Lernen würde Positionsverzerrung, versehentliche
+Klicks und möglicherweise unsichere Entscheidungen übernehmen. Später können geprüfte Entscheidungen
+einen zeitlichen Offline-Datensatz für Evaluation und kontrollierte Learning-to-Rank-Experimente
+bilden.
+
+`partner_preferences` ist für ausdrücklich vorgeschlagene, freigegebene und außer Kraft gesetzte
+Präferenzen vorbereitet. Die Tabelle wird niemals automatisch aus Klicks befüllt.
+
+## 15. HTTP-API und Anwendungsverdrahtung
+
+**Zuständige Dateien:** [`api.py`](api.py), [`service.py`](service.py),
+[`../db/session.py`](../db/session.py) und [`../main.py`](../main.py).
 
 ### Einen Lauf anlegen
 
@@ -314,10 +704,9 @@ Die Matching-API ist bewusst unabhängig vom Figma-UI-Branch.
 POST /api/v1/match-runs
 ```
 
-Akzeptiert `MatchRequestV1`. Die API speichert zunächst `running`, führt das Matching aus und speichert
-anschließend das vollständige Ergebnis oder markiert den Lauf mit einer Fehlermeldung als `failed`.
-Eine Anfrage kann optional ein vorberechnetes Anfrage-Embedding und eine registrierte Modell-ID
-enthalten.
+Akzeptiert `MatchRequestV1`, erstellt einen Prüfdatensatz im Status `running`, führt die Pipeline aus
+und gibt `MatchRunResponseV1` mit HTTP 201 zurück. Vertrags- oder Konfigurationsfehler werden zu HTTP
+422.
 
 ### Einen Lauf lesen
 
@@ -325,8 +714,9 @@ enthalten.
 GET /api/v1/match-runs/{match_run_id}
 ```
 
-Gibt das ursprünglich gespeicherte Ergebnis zurück und führt keine erneute Bewertung mit aktuellen
-Daten durch.
+Gibt das gespeicherte Ergebnis zurück. Das Matching wird nicht erneut gegen den heutigen Katalog
+ausgeführt, weil dies die historische Bedeutung des Ergebnisses verändern würde. Unbekannte Läufe
+geben HTTP 404 zurück.
 
 ### Eine Entscheidung aufzeichnen
 
@@ -334,139 +724,307 @@ Daten durch.
 POST /api/v1/match-decisions
 ```
 
-Unterstützt die Annahme eines Vorschlags, die Auswahl einer Alternative, eine manuelle Zuordnung,
-keine Zuordnung und erforderliche Beschaffung. Alternativen erfordern eine Begründung. Vorgeschlagene
-und alternative Kandidaten werden gegen den gespeicherten Matching-Lauf geprüft.
+Speichert eine validierte menschliche Entscheidung und gibt HTTP 201 zurück. Fehlende Läufe führen zu
+404, widersprüchliche Entscheidungen zu 422.
 
-## 15. Rückfallverhalten
+### Wie die Abhängigkeiten zusammengesetzt werden
 
-- Kein Vektoranbieter oder keine Vektordaten: Exakte, lexikalische und historische Suche laufen
-  weiter.
-- Keine Historie: Das Katalog-Matching wird fortgesetzt.
-- Fehlende Verpackung: Der Kandidat bleibt mit einer Verpackungswarnung erhalten.
-- Unbestätigte Bestandsbasis: Die Verfügbarkeit bleibt unbekannt.
-- Keine geeigneten Kandidaten: Der Lauf endet erfolgreich mit einer leeren Kandidatenliste.
-- Abweichende Modelldimensionen: Es entsteht ein sichtbarer Konfigurationsfehler und der Lauf schlägt
-  fehl.
-- Datenbankfehler: Der fehlgeschlagene Lauf wird nach Möglichkeit gespeichert; es wird kein
-  erfundenes Teilergebnis erzeugt.
+`get_matching_service` in [`api.py`](api.py) erhält eine asynchrone SQLAlchemy-Sitzung und erstellt:
 
-## 16. Teststrategie
+- `PostgresCatalogRepository`;
+- `PostgresHistoryRepository`;
+- `PostgresMatchRunRepository`;
+- `PgVectorRepository`;
+- das standardmäßige versionierte Matching-Regelwerk.
 
-Unit- und API-Tests prüfen:
+Ein produktiver `EmbeddingProvider` wird hier noch nicht eingebunden. Normale API-Anfragen verwenden
+daher exakte, lexikalische und historische Suche, sofern der Aufrufer nicht einen vorberechneten
+Anfragevektor mit Modell-ID übergibt.
 
-- strikte Validierung der Datenverträge;
-- das Verhalten der exakten, lexikalischen, vektorbasierten und historischen Suche;
-- Deduplizierung durch RRF;
-- konservative Regelergebnisse;
-- den Ausschluss inaktiver Artikel, auch wenn Verlauf oder Vektorsuche sie finden;
-- nachvollziehbare Verpackungsberechnung;
-- unbekannte Bestandsbasis;
-- deterministische Rangfolge und Rückfallverhalten;
-- den Abruf gespeicherter Matching-Läufe und die Validierung von Entscheidungen.
+Die API ist bewusst unabhängig von der UI. Sie akzeptiert Matching-Verträge und keine React-/Figma-
+Darstellungsmodelle oder hochgeladenen Quelldateien.
 
-Ein optionaler Integrationstest verwendet eine migrierte PostgreSQL-/pgvector-Datenbank, um die echte
-Zuordnung von Katalog-JSON und die exakte Kosinussuche zu prüfen. Er wird mit gesetzter Variable
-`MATCHING_TEST_DATABASE_URL` ausgeführt.
+## 16. Persistenz mit PostgreSQL und pgvector
 
-Künftig freigegebene Benchmarkdaten sollten Recall@1/3/10, MRR, Abdeckung, Latenz, Abweichungsrate und
-vor allem Verletzungen harter Regeln messen; das Ziel für Letztere ist null. Echte Partnerdateien
-werden nicht als Test-Fixtures in das Repository aufgenommen.
+**Zuständige Dateien:** [`adapters/persistence.py`](adapters/persistence.py),
+[`20260814_0001_matching_foundation.py`](../../migrations/versions/20260814_0001_matching_foundation.py)
+und [`docker-compose.yml`](../../../../docker-compose.yml).
 
-## 17. Integrationsgrenze zur Figma-UI
+Der Compose-Dienst verwendet weiterhin den Datenbanknamen `allocura`, Port 5432 und das vorhandene
+benannte Volume. Lediglich das Image wurde von reinem PostgreSQL 16 auf PostgreSQL 16 mit enthaltenem
+pgvector umgestellt. Dadurch wird `CREATE EXTENSION vector` möglich; die Datenbank wird weder umbenannt
+noch absichtlich gelöscht.
 
-Diese Implementierung verändert keine Frontend-Datei und keinen UI-Branch. Die vorherige UI-Analyse
-hat folgende Anforderungen an einen künftigen Adapter ergeben:
+### Tabellen für Quellen und Katalog
+
+| Tabelle | Gespeicherte Daten | Warum getrennt |
+|---|---|---|
+| `source_snapshots` | Quellenidentität, Prüfsumme, Erfassungszeit und Fundstelle | Unveränderliche Herkunft jeder importierten Version |
+| `catalog_items` | Stabile Artikelnummer, Produktbereich, Aktiv-/Qualitätsstatus | Identität und maßgeblicher Status überdauern Beschreibungsänderungen |
+| `catalog_item_versions` | Beschreibungen, Attribute, Verpackung, Inhalts-Hash und Gültigkeitszeit | Produktinhalt kann sich ändern, während die Identität stabil bleibt |
+| `inventory_snapshots` | Bestand, Eingang, Anfrage, Bindung, Einheit und Erfassungszeit | Häufige Bestandsänderungen dürfen kein erneutes Einbetten des Produkttexts erzwingen |
+
+`PostgresCatalogRepository` wählt für jeden Artikel die neueste Produktversion und den neuesten
+Bestandssnapshot. Eine optionale `catalog_snapshot_id` kann die Katalogquellversion einschränken.
+
+### Embedding-Tabellen
+
+| Tabelle | Gespeicherte Daten |
+|---|---|
+| `embedding_models` | Anbieter, Modellname/-version, Dimensionen und Kosinusmetrik |
+| `product_embeddings` | Paar aus Katalogversion und Modell, Inhalts-Hash und Vektor |
+
+Vektoren gehören zu einer Katalogartikelversion und nicht zum veränderlichen Bestand. Derzeit wird
+eine exakte Kosinussuche verwendet. Ein modellspezifischer approximativer Index kann später ergänzt
+werden, ohne die Schnittstelle des Matching-Dienstes zu ersetzen.
+
+### Tabellen für Historie, Läufe und Feedback
+
+| Tabelle | Zweck |
+|---|---|
+| `historical_offers` | Normalisierte, mit Zeitstempel versehene historische Anfrage- und Beschaffungsnachweise |
+| `match_runs` | Ursprüngliche Anfrage, Versionen, Status, vollständiges Ergebnis oder Fehler |
+| `match_candidates` | Kandidatenbezogene Nachweise für Analyse und Prüfung |
+| `match_decisions` | Spätere menschliche Entscheidung und Abweichungsbegründung |
+| `partner_preferences` | Ausdrückliche versionierte vorgeschlagene/freigegebene/außer Kraft gesetzte Präferenzen |
+
+### Transaktionsverhalten
+
+Der Lauf wird zunächst im Status `running` festgeschrieben. Beim Abschluss werden Ergebnis und
+Kandidatenzeilen gespeichert. Schlägt diese Transaktion fehl, setzt das Repository sie zurück, bevor
+es `failed` aufzeichnet. So bleibt ein abschließender Prüfstatus erhalten, statt eine teilweise
+gespeicherte Kandidatenliste zu hinterlassen.
+
+### Was die Migration nicht tut
+
+Sie importiert weder die Lagerliste noch erzeugt sie Produkt-Embeddings oder konfiguriert Live-Daten
+aus ERP und Historie. Nach der Migration existieren die Strukturen, können aber leer sein, bis ein
+Import- und Indexierungsprozess sie befüllt.
+
+## 17. Reproduzierbarkeit, Herkunft und Einschränkungen
+
+Das Framework zeichnet Folgendes auf:
+
+- Vertragsversion;
+- Algorithmusversion (`allocura-matching-v1`);
+- Regelwerkversion (`matching-policy-v1`);
+- Embedding-Modell-ID, sofern verwendet;
+- vollständige Anfrage- und Ergebnisdaten;
+- Quelldokument, Prüfsumme, Zeitstempel und Fundstelle;
+- Suchnachweise und verglichene Werte;
+- menschliche Entscheidung als separates Ereignis.
+
+Dadurch bleibt ein Ergebnis im Nachhinein erklärbar. Eine exakte Wiederholung ist am zuverlässigsten,
+wenn Aufrufer Katalogsnapshot und Embedding-Modell festlegen. Wird `catalog_snapshot_id` weggelassen,
+verwendet das Repository die zum Ausführungszeitpunkt neuesten Katalogversionen. Gespeicherte Daten und
+Kandidatenherkunft erhalten den Prüfdatensatz, aber eine spätere vollständige Wiederholung mit
+veränderten Daten erzeugt nicht garantiert denselben Kandidatenpool. Der produktive Import sollte
+daher ausdrückliche Snapshot-/Stichtagssemantik festlegen.
+
+Rohwerte und normalisierte Werte bleiben getrennt. Unbekannte Informationen werden nicht
+stillschweigend ergänzt. Fehler werden nach Möglichkeit mit dem Lauf gespeichert und auf eine sichere
+Datenbanklänge begrenzt.
+
+## 18. Rückfall- und Fehlerverhalten
+
+| Situation | Aktuelles Verhalten | Begründung |
+|---|---|---|
+| Kein Anfragevektor/Anbieter | Exakte, lexikalische und historische Suche laufen weiter | Matching bleibt ohne ML nutzbar |
+| Keine Historie | Katalogsuche läuft weiter | Neue Kunden bleiben matchbar |
+| Verpackungsgröße fehlt | Kandidat bleibt mit Verpackungswarnung erhalten | Produktrelevanz kann weiterhin nützlich sein |
+| Bestandseinheit unbestätigt | Verfügbarkeit ist `unknown` | Ungültigen Mengenvergleich vermeiden |
+| Alle Kandidaten ausgeschlossen | Abgeschlossener Lauf mit leerer Liste | Top 10 niemals mit unsicheren Artikeln auffüllen |
+| Unbekanntes Modell/abweichende Dimension | Lauf schlägt sichtbar fehl | Inkompatible Vektoren niemals vergleichen |
+| Datenbankfehler beim Abschluss | Teiltransaktion wird zurückgesetzt; Fehler möglichst gespeichert | Teilweise Prüfdaten vermeiden |
+| Historischer Artikel fehlt im aktuellen Katalog | Kandidat wird ignoriert | Historie darf entfernten Katalogeintrag nicht wiederbeleben |
+
+## 19. Tests: Was nachgewiesen ist
+
+**Zuständige Dateien:** [`tests/matching/`](../../tests/matching/),
+[`tests/test_matching_api.py`](../../tests/test_matching_api.py) und
+[`tests/integration/test_matching_postgres.py`](../../tests/integration/test_matching_postgres.py).
+
+Automatisierte Tests prüfen:
+
+- strikte Verträge, Embedding-Paare, endliche Vektoren und Quellenzeitstempel mit Zeitzone;
+- exakte und stabil geordnete lexikalische Suche;
+- RRF-Deduplizierung und Belohnung mehrerer Kanäle;
+- konservative Abweichungen und maßgeblichen Ausschluss inaktiver Artikel;
+- ab-/aufgerundete Verpackungsoptionen und unbekannte Bestandsbasis;
+- Rückfallverhalten ohne Vektor oder Historie;
+- deterministische Rangfolge im verwendeten Beispiel;
+- leere Ergebnisse statt unsicherer Top-10-Auffüllung;
+- Entscheidungen ausschließlich zu angezeigten Kandidaten;
+- HTTP-Verhalten für Anlegen und Lesen;
+- echte Katalog-JSON-Zuordnung und exakte pgvector-Kosinussuche im optionalen Integrationstest.
+
+Die Standardtests verwenden deterministische In-Memory-Adapter. Der pgvector-Integrationstest benötigt
+eine migrierte PostgreSQL-/pgvector-Datenbank und `MATCHING_TEST_DATABASE_URL`; ohne diese Konfiguration
+wird er übersprungen. Echte Partnerdateien werden nicht als Test-Fixtures eingecheckt.
+
+### Was eine künftige Evaluation messen muss
+
+Ein gelabelter, zeitlich getrennter mehrsprachiger Benchmark sollte Recall@1/3/10, MRR, Abdeckung,
+p50-/p95-Latenz, Abweichungs-/Keine-Zuordnung-Rate und vor allem Verletzungen harter Regeln messen;
+deren Ziel muss null sein. Die Modellauswahl sollte nach Produktbereich, Sprache und Muster fehlender
+Daten vergleichen und nicht nur einen einzigen Gesamtwert verwenden.
+
+## 20. Integrationsgrenze zur Figma-UI
+
+Es wurde keine Frontend-Datei und kein UI-Branch verändert. Die Matching-API ist für einen späteren
+UI-Adapter vorbereitet, aber die aktuellen Figma-/React-Modelle dürfen wichtige Matching-Zustände
+nicht vereinfachend zusammenfassen.
+
+Die künftige UI muss:
 
 - algorithmische Vorschläge von menschlichen Bestätigungen unterscheiden;
-- einen Ranking-Score nicht als kalibrierte Konfidenz darstellen;
-- Verfügbarkeit differenzierter als mit `lowStock: bool` abbilden;
-- Warnungen, Regeln, Herkunftsnachweise und Verpackungsinformationen anzeigen;
-- manuelle Zuordnung, keine Zuordnung, erforderliche Beschaffung und die Begründung einer Abweichung
-  unterstützen;
-- in der Auftragsübersicht ausschließlich bestätigte Entscheidungen verwenden.
+- `pass`, `review`, Warnungen und Verfügbarkeit anzeigen, ohne sie Konfidenz zu nennen;
+- Attributabweichungen, Herkunft und Verpackungsalternativen darstellen;
+- manuelle Zuordnung, keine Zuordnung, erforderliche Beschaffung und Abweichungsbegründung unterstützen;
+- in der Auftragsübersicht ausschließlich bestätigte Entscheidungen verwenden;
+- Verfügbarkeit genauer als mit einem einzigen `lowStock: bool` abbilden.
 
-Ein künftiger UI-spezifischer Antwort-Mapper kann `MatchRunResponseV1` übersetzen, ohne die
-Matching-Domänenlogik zu verändern.
+Ein schlanker UI-Mapper sollte `MatchRunResponseV1` in Darstellungsmodelle übersetzen. Die
+Matching-Domäne darf weder React-Typen noch Figma-spezifische Annahmen importieren.
 
-## 18. Ontologien und Wissensgraphen
+## 21. Skalierung, Filterung, Ontologien und Wissensgraphen
 
-Ein kontrolliertes Vokabular oder eine Ontologie kann bereits vor einer Graphdatenbank nützlich
-werden. Versionierte Konzept-IDs können Synonyme, Übersetzungen, Darreichungsformen,
-Verabreichungswege, Einheiten, Produktfamilien und extern freigegebene Klassifikationen normalisieren,
-während jeder ursprüngliche Wert erhalten bleibt. Diese Konzept-IDs können in den bestehenden
-relationalen Attributen gespeichert werden und sowohl Suche als auch Regelprüfungen verbessern.
+### Aktuelle Latenzstrategie
 
-Eine Graphdatenbank reduziert die Matching-Latenz nicht automatisch und ersetzt weder Vektor- noch
-lexikalische oder strukturierte Indizes. Bei der aktuellen Größenordnung würde sie zusätzliche
-betriebliche Komplexität ohne nachgewiesene mehrstufige Abfrage verursachen. Das relationale Schema
-bildet die benötigten direkten Beziehungen bereits ab, und pgvector begrenzt die semantische Suche.
-Ein separater Wissensgraph wird erst dann sinnvoll, wenn gemessene Anwendungsfälle wiederholt Pfade wie
-Produkt → kompatibles Gerät → freigegebenes Ersatzprodukt → Lieferant → Zielbeschränkung benötigen und
-diese Beziehungen maßgebliche Verantwortliche sowie Versionierungsregeln besitzen.
+Bei der aktuellen Kataloggröße sind exakte PostgreSQL-/pgvector-Suche und begrenzter lexikalischer
+Vergleich einfach, schnell und prüfbar. Vorschnelle Microservices, Kafka oder approximative Indizes
+würden Bereitstellungs- und Konsistenzaufwand verursachen, bevor ein gemessener Engpass existiert.
 
-## 19. Bewusst zurückgestellte Arbeiten
+Die Pipeline vermeidet bereits eine unbegrenzte Vollsuche, indem sie den vertrauenswürdigen
+Produktbereich filtert, jeden Suchkanal begrenzt und einen klaren Indexpfad erhält. Überschreiten
+p95-Latenz oder Katalogvolumen eine vereinbarte Schwelle, können modellspezifische HNSW-/IVFFlat-
+Indizes, Datenbank-Textindizes, Caching oder sichere Vorfilter hinter den vorhandenen Schnittstellen
+ergänzt werden.
+
+### Ontologie vor Graphdatenbank
+
+Ein kontrolliertes Vokabular oder eine Ontologie kann früher Nutzen bringen als eine Graphdatenbank.
+Versionierte Konzept-IDs können Folgendes normalisieren:
+
+- Synonyme und Übersetzungen;
+- Wirkstoff- und Darreichungsformkonzepte;
+- Verabreichungswege und Einheiten;
+- Produktfamilien und Kompatibilitätscodes;
+- freigegebene ATC-/SNOMED-/GMDN-Zuordnungen, sofern Lizenz und Zweck bestätigt sind.
+
+Diese IDs können in den vorhandenen relationalen Attributen gespeichert werden, während die
+ursprüngliche Quellformulierung erhalten bleibt. Sie würden sowohl die Suche als auch den
+Regelvergleich verbessern, beispielsweise indem `mg` und `milligram` auf dasselbe Einheitenkonzept
+verweisen.
+
+Eine Graphdatenbank macht Vektorsuche nicht automatisch schneller. Sie wird erst sinnvoll, wenn
+gemessene Arbeitslasten wiederholt maßgebliche mehrstufige Pfade benötigen, zum Beispiel:
+
+```text
+Produkt → kompatibles Gerät → freigegebenes Ersatzprodukt → Lieferant → Zielbeschränkung
+```
+
+Solange diese Beziehungen keine Verantwortlichen, Versionierungsregeln und echte Abfragenachfrage
+besitzen, ist PostgreSQL mit pgvector das sauberere System.
+
+## 22. Was umgesetzt und was noch nicht betriebsbereit ist
+
+| Bereich | Aktueller Status | Praktische Bedeutung |
+|---|---|---|
+| Verträge und Validierung | Umgesetzt | Vorbereitete normalisierte Daten können sicher eingehen |
+| Exakte/lexikalische Suche | Umgesetzt | Transparente Basis funktioniert ohne ML |
+| pgvector-Speicherung/-Suche | Umgesetzt | Schema und Abfrageadapter existieren |
+| Historische Suche | Umgesetzt | Vorbereitete alte Angebote können Kandidaten beitragen |
+| RRF, Regeln, Verpackung, Verfügbarkeit, Rangfolge | Umgesetzt | Der getestete Matching-Kern läuft vollständig |
+| API, Läufe und Entscheidungen | Umgesetzt | Aufrufer können bei vorhandenen DB-Daten matchen, lesen und Feedback speichern |
+| Excel-/Outlook-Extraktion | Hier nicht umgesetzt | Extraktions-Arbeitsbereich muss die Verträge ausgeben |
+| Lagerlisten-/ERP-Katalogimport | Nicht betriebsbereit | Datenbank wird nicht automatisch befüllt |
+| Indexierung von Produkt-Embeddings | Nicht betriebsbereit | Kein Produktivmodell und kein Stapelprozess |
+| Live-Connectoren für SharePoint/ERP/Lieferanten | Nicht betriebsbereit | Schnittstellen vorhanden; Zugang, Schema und Semantik ungeklärt |
+| Preis-/Haltbarkeits-/Zuverlässigkeitsrangfolge | Nicht aktiv | Vergleichbare Daten und freigegebene Regeln fehlen |
+| Aktives oder erlerntes Ranking | Nicht aktiv | Feedback wird nur für spätere kontrollierte Nutzung gespeichert |
+| Verbindung zur Figma-UI | Nicht umgesetzt | UI-Branch bleibt unverändert |
+
+## 23. Bewusst zurückgestellte Arbeiten
 
 | Zurückgestellt | Warum jetzt nicht | Bereits vorbereitet | Aktivierungsbedingung |
 |---|---|---|---|
-| Excel-/PDF-/E-Mail-Extraktion | Anderes Team und anderer Fehlerbereich | Strikte Verträge und Herkunftsnachweise | Payload des Extraktors vereinbart |
-| Outlook-Connector | Benötigt Postfach, Entra, Berechtigungen und Betrieb | Outlook-Quellentypen und Fundstellen | Postfach und Zugriff freigegeben |
-| Business-Central-Live-Synchronisierung | Kein bestätigter API- oder Schemazugriff | Katalog-/Bestandsschnittstellen und Snapshots | Schreibgeschützte API und Datenwörterbuch |
-| SharePoint-Live-Synchronisierung | Ordnerumfang und maßgeblicher Status ungeklärt | Historienschnittstelle und Herkunftsnachweise | Umfang und Berechtigungen freigegeben |
-| Lieferanten-Bestands-APIs | Lieferanten und Semantik unbekannt | Lieferantenfähige Kandidatengrenze | Eine freigegebene Pilotquelle |
+| Excel-/PDF-/E-Mail-Extraktion | Anderes Team und anderer Fehlerbereich | Strikte Verträge und Herkunft | Extraktor-Payload vereinbart |
+| Outlook-Connector | Benötigt Postfach, Entra, Berechtigungen und Betrieb | Outlook-Quellentypen/-Fundstellen | Postfach und Zugriff freigegeben |
+| Business-Central-Live-Synchronisierung | Kein bestätigter API-/Schemazugriff | Katalog-/Bestandsschnittstellen und Snapshots | Schreibgeschützte API und Datenwörterbuch |
+| SharePoint-Live-Synchronisierung | Ordner-/Statusverantwortung ungeklärt | Historienschnittstelle und Herkunft | Umfang und Berechtigungen freigegeben |
+| Lieferanten-Bestands-APIs | Lieferanten und Semantik unbekannt | Lieferantenfähige Grenze | Eine freigegebene Pilotquelle |
 | Produktives Embedding-Modell | Kein gelabelter Vergleich und keine Governance-Entscheidung | Anbieterport, Registry und pgvector | Benchmark-Gewinner und Datenschutzfreigabe |
-| HNSW/IVFFlat | 646 Zeilen benötigen keine approximative Suche | pgvector-Speicherung | p95-Latenz- oder Skalenschwelle überschritten |
-| Cross-Encoder | Zusätzliche Latenz und MLOps ohne gemessenen Nutzen | Grenze für erneute Rangbildung | Recall@10 gut, Reihenfolge messbar schwach |
-| LLM als Entscheider | Halluzinationen, Kosten, Datenschutz und Reproduzierbarkeit | Nicht im kritischen Pfad | Eng begrenzter, nicht sicherheitskritischer Anwendungsfall |
-| Online-Lernen | Positionsverzerrung und unsichere Feedbackschleifen | Unveränderliche Anzeige- und Entscheidungsdaten | Ohne starke Kontrollen nicht vorgesehen |
-| Learning-to-Rank | Zu wenige saubere Labels | Merkmals- und benchmarkfähige Datensätze | Ausreichender geprüfter zeitlicher Datensatz |
-| Konfidenz in Prozent | Suchscores sind keine Wahrscheinlichkeiten | Nachweise und Prüfstatus | Erfolgreiche Kalibrierungsstudie |
-| Wissensgraph-Datenbank | Keine nachgewiesene mehrstufige Abfragelast | Relationale Konzepte und Beziehungen ergänzbar | Wiederholte komplexe Graphabfragen |
-| Vollständige ATC-/SNOMED-/GMDN-Zuordnung | Zweck, Lizenz und Zuordnung unbestätigt | Optionale externe Codefelder später | Entscheidung über action-medeor-Standard |
-| Harte Substitutionsregeln | Klinische oder technische Gleichwertigkeit unbestätigt | Versioniertes Regelwerk | Ausdrückliche Freigabe der Fachverantwortlichen |
-| Formel für verfügbaren Angebotsbestand | Semantik der Bestandsfelder ungeklärt | Getrennte Rohdaten-Snapshots | Maßgebliche Formel bestätigt |
-| Automatischer Ausschluss nach Haltbarkeit | Regel für Ankunft, Empfang und Route ungeklärt | Felder und Regel-Schnittstelle | Bestätigte Regel und Chargendaten |
-| Preisbasierte Rangfolge | Währung, Basis, Fracht und Gültigkeit unvollständig | Erweiterungspunkt für vergleichbare Nachweise | Normalisierter Preisvertrag |
-| Zuverlässigkeitswert für Lieferanten | Keine Ergebnishistorie oder Mindeststichprobe | Ergebnisfähiges Historienmodell | Genügend abgeschlossene Beschaffungen |
-| Automatische Verpackungsrundung | Richtung hängt vom Arbeitsablauf ab | Beide nachvollziehbaren Optionen | Bestätigte Regel oder Profil |
-| Vom Benutzer einstellbare Gewichte | Risiko für Sicherheit und Reproduzierbarkeit | Versioniertes serverseitiges Regelwerk | Freigegebene begrenzte Szenarioprofile |
-| Automatische Bestätigung | Prototyp ist eine Entscheidungsunterstützung | Expliziter Entscheidungsendpunkt | Enger nachgewiesener Fall und Freigabe |
-| Änderungen an der Figma-UI | Heutiger Umfang ist ausschließlich Matching | Stabile API und Integrationshinweise | Separate UI-Integrationsaufgabe |
-| Dashboards, Prognosen und Angebote | Außerhalb der Abnahme des Kern-Matchings | Prüfbare historische Daten | Stabiles Matching-MVP |
-| Microservices/Kafka | Betrieblicher Mehraufwand für aktuelles Team und Volumen | Schnittstellen und klare Modulgrenzen | Nachgewiesener Bedarf bei Bereitstellung oder Teamgröße |
+| HNSW/IVFFlat | Aktueller Katalog benötigt keine approximative Suche | pgvector-Speicherung | p95-Latenz-/Skalenschwelle überschritten |
+| Cross-Encoder | Zusätzliche Latenz/MLOps ohne gemessenen Nutzen | Grenze für erneute Rangbildung | Recall@10 gut, Reihenfolge messbar schwach |
+| LLM als Entscheider | Halluzination, Kosten, Datenschutz und Reproduzierbarkeit | Nicht im kritischen Pfad | Enger nicht sicherheitskritischer Anwendungsfall |
+| Online-Lernen | Positionsverzerrung und unsichere Feedbackschleifen | Unveränderliche Anzeige-/Entscheidungsdaten | Ohne starke Kontrollen nicht vorgesehen |
+| Learning-to-Rank | Zu wenige geprüfte Labels | Merkmals- und benchmarkfähige Datensätze | Ausreichender zeitlicher geprüfter Datensatz |
+| Konfidenz in Prozent | Suchscores sind keine Wahrscheinlichkeiten | Nachweise und Prüfzustände | Erfolgreiche Kalibrierungsstudie |
+| Wissensgraph-Datenbank | Keine nachgewiesene mehrstufige Arbeitslast | Relationale Konzepte ergänzbar | Wiederholte maßgebliche Graphabfragen |
+| Vollständige ATC-/SNOMED-/GMDN-Zuordnung | Zweck, Lizenz und Zuordnung unbestätigt | Ontologiefähige Attribute | Entscheidung über action-medeor-Standard |
+| Harte Substitutionsregeln | Klinische/technische Gleichwertigkeit unbestätigt | Versioniertes Regelwerk | Ausdrückliche Freigabe der Fachverantwortlichen |
+| Formel für verfügbaren Angebotsbestand | Bestandssemantik ungeklärt | Getrennte Rohdatensnapshots | Maßgebliche Formel bestätigt |
+| Automatischer Haltbarkeitsausschluss | Regel für Ankunft, Empfang und Route ungeklärt | Vertragsfeld und Regel-Schnittstelle | Bestätigte Regel und Chargendaten |
+| Preisrangfolge | Währung, Basis, Fracht und Gültigkeit unvollständig | Erweiterungspunkt für vergleichbare Nachweise | Normalisierter Preisvertrag |
+| Lieferantenzuverlässigkeitswert | Keine Ergebnishistorie/Mindeststichprobe | Ergebnisfähiges Historienmodell | Genügend abgeschlossene Beschaffungen |
+| Automatische Verpackungsrundung | Richtung hängt vom Arbeitsablauf ab | Beide nachvollziehbaren Optionen | Bestätigte Regel/Profil |
+| Vom Benutzer einstellbare Gewichte | Sicherheits- und Reproduzierbarkeitsrisiko | Versioniertes serverseitiges Regelwerk | Freigegebene begrenzte Szenarioprofile |
+| Automatische Bestätigung | System ist Entscheidungsunterstützung | Ausdrücklicher Entscheidungsendpunkt | Enger nachgewiesener Fall und Freigabe |
+| Änderungen an der Figma-UI | Aktueller Umfang ist ausschließlich Matching | Stabile API und UI-Hinweise | Separate UI-Integrationsaufgabe |
+| Dashboards/Prognosen/Angebote | Außerhalb der Kern-Matching-Abnahme | Prüfbare historische Daten | Stabiles Matching-MVP |
+| Microservices/Kafka | Betrieblicher Mehraufwand bei aktueller Größe | Schnittstellen und Modulgrenzen | Nachgewiesener Bereitstellungs-/Teambedarf |
 
-## 20. Einen produktiven Embedding-Anbieter ergänzen
+## 24. Wie das Framework sicher erweitert wird
 
-1. `EmbeddingProvider` mit einer stabilen `model_id` implementieren.
-2. Anbieter, Name, Version und Dimensionen in `embedding_models` registrieren.
-3. Kanonischen Katalogtext und Inhalts-Hash erzeugen.
-4. Vektoren stapelweise nur für fehlende Paare aus `(Katalogversion, Modell)` erzeugen.
-5. Vektoren in `product_embeddings` speichern.
-6. Anhand eines zurückgehaltenen mehrsprachigen Benchmarks evaluieren.
-7. In der aufrufenden Anwendung ausschließlich die freigegebene Modell-ID aktivieren.
+### Einen produktiven Embedding-Anbieter ergänzen
 
-Vektoren verschiedener Modell-IDs oder Dimensionen dürfen niemals verglichen werden.
+1. `EmbeddingProvider` aus [`ports.py`](ports.py) mit stabiler Modell-ID implementieren.
+2. Anbieter, Name, Version, Dimensionen und Kosinusmetrik in `embedding_models` registrieren.
+3. Kanonischen Katalogtext mit [`representation.py`](representation.py) erzeugen.
+4. Vektoren nur für fehlende Paare aus `(Katalogversion, Modell)` erzeugen.
+5. Dimensionen validieren und den Inhalts-Hash mit jedem Vektor speichern.
+6. An einem zurückgehaltenen mehrsprachigen, domänenspezifischen Benchmark evaluieren.
+7. Prüfung von Lizenz, Datenschutz, Aufbewahrung, Datenresidenz, Kosten und Latenz abschließen.
+8. Ausschließlich die freigegebene Modell-ID in API und Indexierungsablauf einbinden.
 
-## 21. Eine Regel ergänzen oder ändern
+Vektoren verschiedener Modelle oder Dimensionen dürfen niemals verglichen werden.
 
-1. Eine maßgebliche fachliche Entscheidung und Beispiele einholen.
+### Eine Regel ergänzen oder ändern
+
+1. Eine dokumentierte Entscheidung der zuständigen Fachverantwortlichen einholen.
 2. Das Attribut im Extraktionsvertrag ergänzen oder normalisieren.
-3. Einen versionierten Regeleintrag (`on_missing`, `on_mismatch`) ergänzen.
-4. Tests für Übereinstimmung, Abweichung, fehlende Werte und Grenzfälle ergänzen.
-5. Eine Regressionsmenge aus bestehenden gelabelten Fällen erstellen.
-6. Eine neue Regelversion veröffentlichen; niemals die Bedeutung einer bereits aufgezeichneten alten
-   Version verändern.
+3. Einen versionierten Regeleintrag für fehlende und abweichende Werte ergänzen.
+4. Tests für Übereinstimmung, Abweichung, Fehlen, Einheit und Grenzfälle ergänzen.
+5. Regressionsauswertung an bestehenden gelabelten Fällen durchführen.
+6. Eine neue Regelversion veröffentlichen; niemals die historische Bedeutung einer alten Version
+   verändern.
 
-## 22. Fertigstellungskriterien für dieses Fundament
+### Eine neue Datenquelle anbinden
+
+1. Quellenverarbeitung außerhalb des Matchings halten.
+2. Rohdaten erhalten und unveränderliche Quellen-, Prüfsummen- und Versionsmetadaten erzeugen.
+3. Auf V1-Verträge abbilden, ohne quellenspezifische Felder in die Matching-Logik zu übernehmen.
+4. Die passende Schnittstelle implementieren oder befüllen: Katalog, Historie, Vektoren oder
+   Entscheidungen.
+5. Vertrags-, Mapping-, Idempotenz-, Aktualisierungs- und Fehlerbehebungstests ergänzen.
+6. Snapshot-/Stichtagssemantik festlegen, bevor die Integration als produktionsreif gilt.
+
+## 25. Fertigstellungskriterien für dieses Fundament
 
 - keine Änderungen am Frontend;
-- strikte V1-Verträge und Herkunftsnachweise;
-- vier Suchkanäle und deterministische Zusammenführung;
-- konservative Regeln und Verpackungsberechnung;
-- deterministische Top 10 mit nachvollziehbaren Nachweisen;
-- pgvector-Migration und Adapter für die exakte Vektorsuche;
-- unveränderliche Läufe, Kandidaten und Entscheidungen;
-- definiertes Rückfallverhalten;
-- Unit-/API-Tests und echter pgvector-Integrationstest;
-- Ruff und pytest ohne Befunde;
-- kurze und ausführliche Matching-Dokumentation.
+- strikte versionierte Verträge und Herkunftsnachweise;
+- exakte, lexikalische, vektorbasierte und historische Suche;
+- deterministische RRF-Fusion;
+- konservative, regelwerkbasierte Einschränkungen;
+- nachvollziehbare Verpackung und ehrliche Bestandsnachweise;
+- deterministische erklärte Top K ohne unsicheres Auffüllen;
+- PostgreSQL-/pgvector-Schema und Adapter;
+- unveränderliche Matching-Läufe, Kandidaten und menschliche Entscheidungen;
+- API-Endpunkte und Rückfallverhalten;
+- automatisierte Unit-/API-Tests und optionaler echter pgvector-Integrationstest;
+- englische und deutsche verständliche und detaillierte Dokumentation.
+
+Das Fundament ist als Matching-Kern vollständig. Die Produktionsreife hängt weiterhin von echtem
+Import, Katalogbefüllung, Auswahl des Embedding-Modells, Freigabe fachlicher Regeln, operativer
+Überwachung und einer separaten UI-Integration ab.
