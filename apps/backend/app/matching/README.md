@@ -2,7 +2,7 @@
 
 [German version](README_DE.md) · [Detailed technical documentation](README_DETAILED.md)
 
-The simplest honest description is:
+The simplest description is:
 
 > We have built and tested the matching engine, but it is not yet connected to the real
 > Excel/Outlook/ERP data flow and does not yet use a production embedding model.

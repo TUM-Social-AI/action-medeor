@@ -2,7 +2,7 @@
 
 [Englische Version](README.md) · [Ausführliche technische Dokumentation](README_DETAILED_DE.md)
 
-Die einfachste ehrliche Beschreibung lautet:
+Die einfachste Beschreibung lautet:
 
 > Wir haben die Matching-Engine entwickelt und getestet. Sie ist aber noch nicht an den echten
 > Excel-/Outlook-/ERP-Datenfluss angebunden und verwendet noch kein produktives Embedding-Modell.
