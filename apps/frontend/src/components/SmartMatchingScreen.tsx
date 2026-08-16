@@ -1,13 +1,18 @@
 import { useEffect, useState } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, MapPin } from 'lucide-react';
-import { startMatching, updateMatching } from '../api/client';
-import type { ErpMatch, MatchingResponse, RequestedItem } from '../api/types';
+import type {
+  MatchCandidateView,
+  MatchingScreenView,
+  MatchingWorkflowApi,
+  RequestedLineView,
+} from '../features/matching/models';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { WorkflowStepper } from './WorkflowStepper';
 
 type SmartMatchingScreenProps = {
   requestId: string;
-  initialData?: MatchingResponse | null;
+  initialData?: MatchingScreenView | null;
+  api: MatchingWorkflowApi;
   onContinue: () => void;
 };
 
@@ -19,30 +24,30 @@ const PRIORITY_COLOR: Record<string, string> = {
 
 const VISIBLE_COUNT = 3;
 
-export function SmartMatchingScreen({ requestId, initialData, onContinue }: SmartMatchingScreenProps) {
-  const [data, setData] = useState<MatchingResponse | null>(initialData ?? null);
+export function SmartMatchingScreen({ requestId, initialData, api, onContinue }: SmartMatchingScreenProps) {
+  const [data, setData] = useState<MatchingScreenView | null>(initialData ?? null);
   const [selectedMatches, setSelectedMatches] = useState<Record<string, string>>(
-    initialData?.selectedMatches ?? {},
+    initialData?.selectedCandidateIdsByLine ?? {},
   );
-  const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(!initialData);
 
   useEffect(() => {
     if (initialData) {
       setData(initialData);
-      setSelectedMatches(initialData.selectedMatches);
+      setSelectedMatches(initialData.selectedCandidateIdsByLine);
       setIsLoading(false);
       return;
     }
 
     let mounted = true;
     setIsLoading(true);
-    startMatching(requestId)
+    api.start(requestId)
       .then(response => {
         if (mounted) {
           setData(response);
-          setSelectedMatches(response.selectedMatches);
+          setSelectedMatches(response.selectedCandidateIdsByLine);
           setError(null);
         }
       })
@@ -60,21 +65,27 @@ export function SmartMatchingScreen({ requestId, initialData, onContinue }: Smar
     return () => {
       mounted = false;
     };
-  }, [initialData, requestId]);
+  }, [api, initialData, requestId]);
 
-  const selectMatch = async (itemId: number, matchId: string) => {
-    const itemKey = String(itemId);
-    setSelectedMatches(prev => ({ ...prev, [itemKey]: matchId }));
+  const selectMatch = async (lineId: string, candidateId: string) => {
+    const previousSelection = selectedMatches[lineId];
+    setSelectedMatches(prev => ({ ...prev, [lineId]: candidateId }));
 
     try {
-      await updateMatching(requestId, itemId, matchId);
+      await api.selectCandidate(requestId, lineId, candidateId);
       setError(null);
     } catch (caught) {
+      setSelectedMatches(prev => {
+        const next = { ...prev };
+        if (previousSelection) next[lineId] = previousSelection;
+        else delete next[lineId];
+        return next;
+      });
       setError(caught instanceof Error ? caught.message : 'Unable to update selected match');
     }
   };
 
-  const toggleExpand = (itemId: number) =>
+  const toggleExpand = (itemId: string) =>
     setExpandedItems(prev => {
       const next = new Set(prev);
       if (next.has(itemId)) {
@@ -118,15 +129,16 @@ export function SmartMatchingScreen({ requestId, initialData, onContinue }: Smar
       </div>
 
       <div className="space-y-4">
-        {data.requestedItems.map(item => (
+        {data.requestedLines.map(item => (
           <MatchingItem
             key={item.id}
             item={item}
-            matches={data.matches[String(item.id)] ?? []}
-            selectedId={selectedMatches[String(item.id)]}
+            matches={data.candidatesByLine[item.id] ?? []}
+            selectedId={selectedMatches[item.id]}
+            lineError={data.errorsByLine[item.id]}
             isExpanded={expandedItems.has(item.id)}
             onToggleExpand={() => toggleExpand(item.id)}
-            onSelect={matchId => void selectMatch(item.id, matchId)}
+            onSelect={candidateId => void selectMatch(item.id, candidateId)}
           />
         ))}
       </div>
@@ -149,13 +161,15 @@ function MatchingItem({
   item,
   matches,
   selectedId,
+  lineError,
   isExpanded,
   onToggleExpand,
   onSelect,
 }: {
-  item: RequestedItem;
-  matches: ErpMatch[];
+  item: RequestedLineView;
+  matches: MatchCandidateView[];
   selectedId?: string;
+  lineError?: string;
   isExpanded: boolean;
   onToggleExpand: () => void;
   onSelect: (matchId: string) => void;
@@ -175,16 +189,16 @@ function MatchingItem({
             {item.name}
           </span>
           <span className="text-sm text-gray-400">
-            Qty: {item.quantity.toLocaleString()} {item.unit}
+            Qty: {item.quantity?.toLocaleString() ?? 'Not specified'} {item.unit}
           </span>
           <span className="text-gray-300">-</span>
           <span className="text-sm text-gray-500">
             Priority:{' '}
             <span
-              className={`text-xs px-1.5 py-0.5 rounded-full ${PRIORITY_COLOR[item.priority]}`}
+              className={`text-xs px-1.5 py-0.5 rounded-full ${PRIORITY_COLOR[item.priority ?? 'medium']}`}
               style={{ fontWeight: 600 }}
             >
-              {item.priority}
+              {item.priority ?? 'not set'}
             </span>
           </span>
         </div>
@@ -194,6 +208,7 @@ function MatchingItem({
       </div>
 
       <div className="p-5">
+        {lineError && <div className="mb-3"><ErrorPanel message={lineError} /></div>}
         <div
           className="grid gap-3"
           style={{ gridTemplateColumns: `repeat(${Math.min(visibleMatches.length, VISIBLE_COUNT)}, 1fr)` }}
@@ -225,7 +240,7 @@ function MatchingItem({
                   <div className="w-2 h-2 rounded-full bg-white" />
                 </div>
                 <span className="text-xl text-gray-900" style={{ fontWeight: 800, lineHeight: 1 }}>
-                  {extraSelectedMatch.score}%
+                  #{extraSelectedMatch.rank}
                 </span>
               </div>
               <div className="flex-1 min-w-0">
@@ -272,7 +287,7 @@ function MatchCard({
   isSelected,
   onSelect,
 }: {
-  match: ErpMatch;
+  match: MatchCandidateView;
   isBestFit: boolean;
   isSelected: boolean;
   onSelect: () => void;
@@ -293,13 +308,8 @@ function MatchCard({
           >
             {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
           </div>
-          <span
-            className={`text-2xl leading-none ${
-              match.score >= 90 ? 'text-gray-900' : match.score >= 75 ? 'text-amber-700' : 'text-red-600'
-            }`}
-            style={{ fontWeight: 800 }}
-          >
-            {match.score}%
+          <span className="text-2xl leading-none text-gray-900" style={{ fontWeight: 800 }}>
+            #{match.rank}
           </span>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -308,31 +318,33 @@ function MatchCard({
               BEST FIT
             </span>
           )}
-          {match.lowStock && (
-            <span className="px-1.5 py-0.5 bg-red-100 text-red-600 rounded text-xs" style={{ fontWeight: 700 }}>
-              LOW STOCK
-            </span>
-          )}
+          <ReviewBadge status={match.reviewStatus} />
+          <AvailabilityBadge status={match.availabilityStatus} />
         </div>
       </div>
       <div className="text-sm text-gray-900 mb-3 leading-snug" style={{ fontWeight: 700 }}>
         {match.name}
       </div>
       <MatchDetails match={match} />
+      {(match.constraintMessages[0] || match.warnings[0]) && (
+        <p className="mt-3 text-xs text-amber-700 leading-snug">
+          {match.constraintMessages[0] ?? match.warnings[0]}
+        </p>
+      )}
     </button>
   );
 }
 
-function MatchDetails({ match, compact }: { match: ErpMatch; compact?: boolean }) {
+function MatchDetails({ match, compact }: { match: MatchCandidateView; compact?: boolean }) {
   const rows = [
-    { label: 'SKU', value: match.sku, mono: true },
+    { label: 'SKU', value: match.itemNumber, mono: true },
     { label: 'MFR', value: match.manufacturer },
     {
-      label: 'STOCK',
-      value: `${match.stock.toLocaleString()} ${match.unit}`,
-      highlight: match.lowStock ? 'red' : 'green',
+      label: 'AVAIL.',
+      value: match.availabilityDetail ?? availabilityLabel(match.availabilityStatus),
+      highlight: match.availabilityStatus === 'on_hand_sufficient' ? 'green' : 'red',
     },
-  ];
+  ].filter(row => row.value);
 
   if (compact) {
     return (
@@ -385,3 +397,25 @@ function MatchDetails({ match, compact }: { match: ErpMatch; compact?: boolean }
   );
 }
 
+function ReviewBadge({ status }: { status: MatchCandidateView['reviewStatus'] }) {
+  if (status === 'unknown') return null;
+  const style = status === 'pass' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
+  return (
+    <span className={`px-1.5 py-0.5 rounded text-xs ${style}`} style={{ fontWeight: 700 }}>
+      {status.toUpperCase()}
+    </span>
+  );
+}
+
+function AvailabilityBadge({ status }: { status: MatchCandidateView['availabilityStatus'] }) {
+  if (status === 'on_hand_sufficient' || status === 'unknown') return null;
+  return (
+    <span className="px-1.5 py-0.5 bg-red-100 text-red-600 rounded text-xs" style={{ fontWeight: 700 }}>
+      {availabilityLabel(status).toUpperCase()}
+    </span>
+  );
+}
+
+function availabilityLabel(status: MatchCandidateView['availabilityStatus']) {
+  return status.replace(/_/g, ' ');
+}
