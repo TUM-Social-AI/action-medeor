@@ -8,7 +8,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: publish-action-medeor-${{ github.ref }}
+  group: publish-allocura-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -114,6 +114,6 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}/action-medeor:${{ github.sha }}
+          tags: ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}/allocura:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
