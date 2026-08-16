@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.api.routes import router as api_router
 from app.core.config import get_settings
 from app.db.session import engine
+from app.frontend import mount_frontend
 
 settings = get_settings()
 
@@ -45,3 +46,6 @@ async def health() -> dict[str, Any]:
         "environment": settings.app_env,
         "database": database,
     }
+
+
+mount_frontend(app)

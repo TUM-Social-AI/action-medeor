@@ -17,10 +17,7 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://allocura:allocura@localhost:5432/allocura"
     )
-    cors_origins: str = (
-        "http://localhost:5173,http://127.0.0.1:5173,"
-        "http://localhost:3000,http://127.0.0.1:3000"
-    )
+    cors_origins: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -29,11 +26,14 @@ class Settings(BaseSettings):
         configured_origins = [
             origin.strip() for origin in self.cors_origins.split(",") if origin.strip()
         ]
+        if self.app_env.lower() == "production":
+            return list(dict.fromkeys(configured_origins))
+
         return list(dict.fromkeys([*configured_origins, *LOCAL_CORS_ORIGINS]))
 
     @property
     def cors_origin_regex(self) -> str | None:
-        if self.app_env == "production":
+        if self.app_env.lower() == "production":
             return None
 
         return r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
