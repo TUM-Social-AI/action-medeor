@@ -23,7 +23,7 @@ services:
       dockerfile: Dockerfile
     environment:
       APP_ENV: ${APP_ENV:-development}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000}
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://allocura:allocura@db:5432/allocura}
     ports:
       - "8000:8000"

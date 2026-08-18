@@ -1,124 +1,106 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Activity, CheckCircle2, Database, Server, TriangleAlert } from 'lucide-react';
+import { useState } from 'react';
+import { createImport } from './api/client';
+import type { LoadingType, ReviewResponse, Screen } from './api/types';
+import { DEFAULT_REQUEST_ID } from './api/types';
+import { HomeScreen } from './components/HomeScreen';
+import { IngestionScreen } from './components/IngestionScreen';
+import { Layout } from './components/Layout';
+import { OrderSummaryScreen } from './components/OrderSummaryScreen';
+import { ProcessingScreen } from './components/ProcessingScreen';
+import { ReviewItemsScreen } from './components/ReviewItemsScreen';
+import { SmartMatchingScreen } from './components/SmartMatchingScreen';
+import { TrendDashboard } from './components/TrendDashboard';
+import { fixtureMatchingWorkflowApi } from './features/matching/fixture-api';
+import type { MatchingScreenView } from './features/matching/models';
 
-type HealthResponse = {
-  status: 'ok' | 'degraded';
-  service: string;
-  environment: string;
-  database: {
-    status: 'ok' | 'error';
-    detail?: string;
-  };
-};
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const EXTRACTION_LOADING_DURATION = 3000;
 
 export default function App() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [currentScreen, setCurrentScreen] = useState<Screen>('home');
+  const [loadingType, setLoadingType] = useState<LoadingType | null>(null);
+  const [requestId, setRequestId] = useState(DEFAULT_REQUEST_ID);
+  const [reviewData, setReviewData] = useState<ReviewResponse | null>(null);
+  const [matchingData, setMatchingData] = useState<MatchingScreenView | null>(null);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
 
-  const apiHealthUrl = useMemo(() => `${apiBaseUrl.replace(/\/$/, '')}/api/health`, []);
+  const navigate = (screen: Screen) => {
+    setWorkflowError(null);
+    setCurrentScreen(screen);
+  };
 
-  useEffect(() => {
-    let isMounted = true;
+  const handleImport = async (file: File) => {
+    setWorkflowError(null);
+    setLoadingType('extracting');
 
-    async function loadHealth() {
-      try {
-        setIsLoading(true);
-        const response = await fetch(apiHealthUrl);
-
-        if (!response.ok) {
-          throw new Error(`Backend returned ${response.status}`);
-        }
-
-        const data = (await response.json()) as HealthResponse;
-
-        if (isMounted) {
-          setHealth(data);
-          setError(null);
-        }
-      } catch (caughtError) {
-        if (isMounted) {
-          setHealth(null);
-          setError(caughtError instanceof Error ? caughtError.message : 'Unable to reach backend');
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
+    try {
+      const [response] = await Promise.all([createImport(file), delay(EXTRACTION_LOADING_DURATION)]);
+      setReviewData(response);
+      setRequestId(response.requestId);
+      setCurrentScreen('review');
+    } catch (caught) {
+      setWorkflowError(caught instanceof Error ? caught.message : 'Unable to create import');
+      setCurrentScreen('ingestion');
+    } finally {
+      setLoadingType(null);
     }
+  };
 
-    loadHealth();
+  const handleStartMatching = async () => {
+    setWorkflowError(null);
+    setLoadingType('matching');
 
-    return () => {
-      isMounted = false;
-    };
-  }, [apiHealthUrl]);
-
-  const apiStatus = health?.status ?? (error ? 'degraded' : 'ok');
-  const databaseStatus = health?.database.status ?? 'error';
+    try {
+      const response = await fixtureMatchingWorkflowApi.start(requestId);
+      setMatchingData(response);
+      setCurrentScreen('matching');
+    } catch (caught) {
+      setWorkflowError(caught instanceof Error ? caught.message : 'Unable to start matching');
+      setCurrentScreen('review');
+    } finally {
+      setLoadingType(null);
+    }
+  };
 
   return (
-    <main className="shell">
-      <section className="workspace">
-        <div className="masthead">
-          <div>
-            <p className="eyebrow">Full-stack workspace</p>
-            <h1>Allocura</h1>
-          </div>
-          <div className={`status-pill ${apiStatus}`}>
-            {apiStatus === 'ok' ? <CheckCircle2 size={18} /> : <TriangleAlert size={18} />}
-            <span>{isLoading ? 'Checking services' : apiStatus}</span>
-          </div>
-        </div>
-
-        <div className="status-grid" aria-live="polite">
-          <StatusTile
-            icon={<Server size={24} />}
-            title="Backend API"
-            value={isLoading ? 'Checking' : health?.service ?? 'Unavailable'}
-            detail={error ?? apiHealthUrl}
-            tone={error ? 'warning' : 'success'}
-          />
-          <StatusTile
-            icon={<Database size={24} />}
-            title="Database"
-            value={isLoading ? 'Checking' : databaseStatus}
-            detail={health?.database.detail ?? 'Postgres via DATABASE_URL'}
-            tone={databaseStatus === 'ok' ? 'success' : 'warning'}
-          />
-          <StatusTile
-            icon={<Activity size={24} />}
-            title="Environment"
-            value={health?.environment ?? 'development'}
-            detail="Configured through Vite and FastAPI settings"
-            tone="neutral"
-          />
-        </div>
-      </section>
-    </main>
+    <Layout currentScreen={currentScreen} onNavigate={navigate}>
+      {loadingType ? (
+        <ProcessingScreen type={loadingType} />
+      ) : (
+        <>
+          {currentScreen === 'home' && (
+            <HomeScreen
+              onCreateRequest={() => navigate('ingestion')}
+              onViewDashboard={() => navigate('dashboard')}
+            />
+          )}
+          {currentScreen === 'dashboard' && <TrendDashboard />}
+          {currentScreen === 'ingestion' && (
+            <IngestionScreen onContinue={file => void handleImport(file)} error={workflowError} />
+          )}
+          {currentScreen === 'review' && (
+            <ReviewItemsScreen
+              requestId={requestId}
+              initialData={reviewData}
+              onContinue={() => void handleStartMatching()}
+            />
+          )}
+          {currentScreen === 'matching' && (
+            <SmartMatchingScreen
+              requestId={requestId}
+              initialData={matchingData}
+              api={fixtureMatchingWorkflowApi}
+              onContinue={() => navigate('summary')}
+            />
+          )}
+          {currentScreen === 'summary' && (
+            <OrderSummaryScreen requestId={requestId} onBack={() => navigate('matching')} />
+          )}
+        </>
+      )}
+    </Layout>
   );
 }
 
-type StatusTileProps = {
-  icon: ReactNode;
-  title: string;
-  value: string;
-  detail: string;
-  tone: 'success' | 'warning' | 'neutral';
-};
-
-function StatusTile({ icon, title, value, detail, tone }: StatusTileProps) {
-  return (
-    <article className={`status-tile ${tone}`}>
-      <div className="tile-icon">{icon}</div>
-      <div>
-        <p>{title}</p>
-        <h2>{value}</h2>
-        <span>{detail}</span>
-      </div>
-    </article>
-  );
+function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
