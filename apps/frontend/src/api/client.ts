@@ -13,27 +13,7 @@ import type {
   SummaryResponse,
   TrendsResponse,
 } from './types';
-
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
-
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...init,
-    headers,
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(body || `Backend returned ${response.status}`);
-  }
-
-  return (await response.json()) as T;
-}
+import { requestJson } from './http';
 
 export function getHome() {
   return requestJson<HomeResponse>('/api/home');

@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { createImport, startMatching } from './api/client';
-import type { LoadingType, MatchingResponse, ReviewResponse, Screen } from './api/types';
+import { createImport } from './api/client';
+import type { LoadingType, ReviewResponse, Screen } from './api/types';
 import { DEFAULT_REQUEST_ID } from './api/types';
 import { HomeScreen } from './components/HomeScreen';
 import { IngestionScreen } from './components/IngestionScreen';
@@ -10,18 +10,17 @@ import { ProcessingScreen } from './components/ProcessingScreen';
 import { ReviewItemsScreen } from './components/ReviewItemsScreen';
 import { SmartMatchingScreen } from './components/SmartMatchingScreen';
 import { TrendDashboard } from './components/TrendDashboard';
+import { fixtureMatchingWorkflowApi } from './features/matching/fixture-api';
+import type { MatchingScreenView } from './features/matching/models';
 
-const LOADING_DURATION: Record<LoadingType, number> = {
-  extracting: 3000,
-  matching: 3500,
-};
+const EXTRACTION_LOADING_DURATION = 3000;
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
   const [loadingType, setLoadingType] = useState<LoadingType | null>(null);
   const [requestId, setRequestId] = useState(DEFAULT_REQUEST_ID);
   const [reviewData, setReviewData] = useState<ReviewResponse | null>(null);
-  const [matchingData, setMatchingData] = useState<MatchingResponse | null>(null);
+  const [matchingData, setMatchingData] = useState<MatchingScreenView | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
 
   const navigate = (screen: Screen) => {
@@ -34,7 +33,7 @@ export default function App() {
     setLoadingType('extracting');
 
     try {
-      const [response] = await Promise.all([createImport(file), delay(LOADING_DURATION.extracting)]);
+      const [response] = await Promise.all([createImport(file), delay(EXTRACTION_LOADING_DURATION)]);
       setReviewData(response);
       setRequestId(response.requestId);
       setCurrentScreen('review');
@@ -51,7 +50,7 @@ export default function App() {
     setLoadingType('matching');
 
     try {
-      const [response] = await Promise.all([startMatching(requestId), delay(LOADING_DURATION.matching)]);
+      const response = await fixtureMatchingWorkflowApi.start(requestId);
       setMatchingData(response);
       setCurrentScreen('matching');
     } catch (caught) {
@@ -89,6 +88,7 @@ export default function App() {
             <SmartMatchingScreen
               requestId={requestId}
               initialData={matchingData}
+              api={fixtureMatchingWorkflowApi}
               onContinue={() => navigate('summary')}
             />
           )}
@@ -104,4 +104,3 @@ export default function App() {
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
-
