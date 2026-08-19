@@ -850,10 +850,11 @@ only one aggregate score.
 
 ## 20. Figma UI integration boundary
 
-No frontend file or UI branch was changed. The matching API is ready for a later UI adapter, but the
-current Figma/React models must not flatten important matching states.
+Transport contracts and both fixture/real matching adapters now exist in the frontend, but the
+visible application still selects the fixture workflow in `App.tsx`. Activating the real adapter is
+a separate integration step and must not flatten important matching states.
 
-The future UI must:
+The real UI must:
 
 - distinguish an algorithmic suggestion from a human confirmation;
 - show `pass`, `review`, warning and availability states without calling them confidence;
@@ -920,7 +921,7 @@ pgvector is the cleaner system.
 | Live SharePoint/ERP schedules | Deployment work | API boundaries exist; Azure jobs and credentials/site IDs must be configured |
 | Price/shelf-life/reliability ranking | Not active | Comparable data and approved rules are missing |
 | Active or learned ranking | Not active | Feedback is stored only for controlled future use |
-| Figma UI connection | Not implemented | UI branch remains untouched |
+| Figma UI connection | Adapter prepared, activation pending | Transport contracts and real adapter exist; visible application still uses fixtures |
 
 ## 23. Deliberately deferred work
 
@@ -948,7 +949,7 @@ pgvector is the cleaner system.
 | Automatic pack rounding | Direction varies by workflow | Both reversible options | Confirmed policy/profile |
 | User-adjustable weights | Safety and reproducibility risk | Versioned server policy | Approved bounded scenario profiles |
 | Automatic confirmation | System is decision support | Explicit decision endpoint | Narrow proven case and approval |
-| Figma UI changes | Current scope is matching only | Stable API and UI notes | Separate UI integration task |
+| Real Figma/React workflow activation | Extraction and rollout are separate concerns | Stable API, transport contracts and fixture/real adapters | Validated extraction lines and end-to-end UI acceptance |
 | Dashboards/forecasting/offers | Outside core matching acceptance | Auditable historical data | Stable matching MVP |
 | Microservices/Kafka | Operational overkill at current scale | Ports and module boundaries | Demonstrated deployment/team need |
 
@@ -987,7 +988,7 @@ Never compare vectors from different models or dimensions.
 
 ## 25. Definition of done for this foundation
 
-- no frontend changes;
+- frontend transport contracts/adapters remain separated from the currently active fixture workflow;
 - strict versioned contracts and provenance;
 - exact, lexical, vector and historical retrieval;
 - deterministic RRF fusion;
@@ -1003,3 +1004,157 @@ Never compare vectors from different models or dimensions.
 The foundation is complete as a matching core. Production readiness still depends on real ingestion,
 catalogue population, embedding-model selection, domain-policy approval, operational monitoring and a
 separate UI integration.
+
+## 26. Complete operational example using the real ERP files
+
+This section joins the catalogue, embedding, SharePoint and matching components into one reproducible
+staging procedure. It is deliberately more operational than the algorithm example in sections 4–14.
+
+### 26.1 Input contract for `Artikeldaten.csv`
+
+[`../catalog/parser.py`](../catalog/parser.py) requires a UTF-8, semicolon-separated file with these
+headers:
+
+```text
+Nr.;Nummer 2;Beschreibung;Beschreibung 2;Basiseinheit;Artikelkategoriencode;
+Zollware (T1);Lagerbestand;Menge in Bestellung;Menge in Auftrag;
+Wiederbeschaffungsverfahren
+```
+
+`Nr.` is the durable identity. Quantities are parsed with German formatting, for example `21.821` as
+21821 and `12,5` as 12.5. Negative source quantities, duplicate/missing article numbers and missing
+headers reject the entire pair. `Nummer 2` links a variant to its family; a `000` master row without a
+parent is retained for audit but not offered or embedded.
+
+### 26.2 Input contract for `Artikeluebersetzungen.csv`
+
+The same parser requires:
+
+```text
+Artikelnr.;Sprachcode;Beschreibung;Beschreibung 2
+```
+
+Each `(Artikelnr., Sprachcode)` must be unique and must reference an article in the accompanying
+article file. Known English/French Business Central codes are normalized while the raw language code
+is preserved. German article descriptions and every translation are deduplicated into the version's
+searchable descriptions. Canonical embedding text additionally contains normalized category and base
+unit so those meaningful text changes create a new content hash.
+
+### 26.3 First load and verification
+
+After `alembic upgrade head`, call the upload boundary in
+[`../catalog/api.py`](../catalog/api.py):
+
+```bash
+curl --fail-with-body -X POST http://localhost:8000/api/v1/catalog-imports \
+  -F article_data=@/secure-input/Artikeldaten.csv \
+  -F article_translations=@/secure-input/Artikeluebersetzungen.csv \
+  -F captured_at=2026-08-19T10:00:00Z \
+  -F source_uri=business-central://catalog-export/2026-08-19
+```
+
+[`../catalog/service.py`](../catalog/service.py) first parses both files, takes a transaction-level
+advisory lock, checks pair checksums, creates source snapshots and applies all changes in one
+transaction. No partially accepted catalogue can remain.
+
+For the supplied initial pair, verify approximately these source facts before accepting the load:
+
+| Fact | Supplied files |
+|---|---:|
+| Article rows/imported identities | 2,773 |
+| Translation rows | 2,879 |
+| Offerable current variants | 1,645 |
+| Non-offerable master rows | 1,124 |
+| Negative calculated raw availability | 31 |
+
+The response should report 2,773 inserted and inventory-refreshed items on an empty database. It can
+report zero embedding jobs because a model must not be active before evaluation. Store the full
+response and read representative medicine, equipment, master and negative-availability articles via
+`GET /api/v1/catalog-items/{item_number}`. Repeating the exact pair must return
+`idempotent_replay: true`.
+
+### 26.4 Incremental-update acceptance matrix
+
+Use a disposable staging copy to prove each change type before automating real exports:
+
+| Test change | Expected persistence | Expected counters/model work |
+|---|---|---|
+| Change only `Lagerbestand` | New inventory snapshot, same text version | `inventory_refreshed_items` includes item; no new embedding job |
+| Change description/translation/category/base unit | New immutable current product version; old version retained | `text_updated_items +1`; one job per active model |
+| Change only replenishment method or T1 | New auditable metadata version; same content hash | `metadata_updated_items +1`; compatible vectors copied/reused |
+| Add article and translations | New identity, version, translations and inventory | `inserted_items +1`; job only if matching-eligible and a model is active |
+| Remove one article from a complete report | Identity retained but `source_missing=true` | `missing_items +1`; excluded immediately from matching |
+| Reintroduce that article | Missing state cleared and current source updated | `reactivated_items +1` |
+| Upload exact same pair | No new versions/snapshots/jobs | `idempotent_replay=true` |
+| Upload fewer than half the previous identities | No change committed | HTTP 422 with `suspicious_row_drop` |
+
+Availability is stored as `on hand + confirmed incoming purchase orders - committed orders`.
+Purchasing inquiries are not confirmed stock. The negative raw result is auditable; only the
+fulfillable amount is clamped to zero.
+
+### 26.5 Mandatory embedding evaluation and activation
+
+[`../../../../benchmarks/embeddings/run.py`](../../../../benchmarks/embeddings/run.py) uses both ERP
+files again: article rows form the candidate catalogue and French translations with the same article
+number form automatic labelled queries. This proves cross-language retrieval on the real catalogue
+without committing private data.
+
+The gates are non-optional:
+
+1. cloud smoke test with one model and `--limit-queries 25`;
+2. full automatic comparison of MiniLM, BGE-M3 and multilingual E5-large-instruct;
+3. second comparison including human-reviewed real normalized inquiries;
+4. subgroup/failure review for domain, language, strength, dosage form, size, sterility and package;
+5. recorded Recall@1/3/10, MRR, throughput, latency, vector storage and measured Azure cost;
+6. licence/privacy review and approval of one immutable revision;
+7. staging worker run with every failed job explained;
+8. real matching runs using query vectors from the exact same model ID/revision.
+
+The executable commands and decision-record checklist are in
+[`../../../../benchmarks/embeddings/README.md`](../../../../benchmarks/embeddings/README.md). Product
+indexing is implemented by [`../catalog/embeddings.py`](../catalog/embeddings.py) and
+[`../catalog/embedding_worker.py`](../catalog/embedding_worker.py). The worker's model ID is
+`sentence-transformers:<model-name>@<revision>`; stored and query vectors from another identity or
+dimension must never be compared.
+
+The standard web image contains no Sentence Transformers dependency. Production design must either
+add a model-enabled runtime, call an internal embedding service, or supply `query_embedding` and the
+matching `embedding_model_id` in `MatchRequestV1`. Until then the exact, lexical and historical paths
+remain valid fallbacks, but semantic matching is not validated.
+
+### 26.6 SharePoint and extraction handoff example
+
+A separate least-privilege Graph job discovers a file and calls
+`PUT /api/v1/sharepoint-offer-files/{drive-item-id}` with its eTag/cTag, live `webUrl`, name,
+modification time, MIME type and size. [`../offers/files.py`](../offers/files.py) versions that metadata.
+The external extraction process obtains `GET ...?needs_extraction=true`, opens the live URL and sends
+normalized structured output to `PUT /api/v1/offers/{same-drive-item-id}`.
+[`../offers/service.py`](../offers/service.py) versions the offer. The shared Graph ID links both
+records; matching never guesses identity from a filename and never parses the source document.
+
+### 26.7 End-to-end acceptance
+
+After the catalogue, optional vectors and normalized inquiry line exist, create a match run. Confirm
+that expected retrieval channels appear, hard exclusions remove inactive/missing products, packaging
+does not silently round, availability uses the latest inventory snapshot and the employee can record
+an explicit decision. Then change only inventory, import again and confirm matching uses the new
+quantity without changing the product vector.
+
+## 27. Detailed implementation and rollout roadmap
+
+| Phase | Main code/configuration | Required action | Acceptance evidence | Safe fallback/rollback |
+|---|---|---|---|---|
+| A. Review | `.github/workflows/ci.yml`, tests and migrations | Merge only after backend Postgres/pgvector and frontend build checks pass | Green CI and reviewer approval | Keep feature branch; no database change |
+| B. Staging database | `20260814_0001`, `20260819_0002`, `DATABASE_URL` | Provision protected PostgreSQL/pgvector, backups and run migrations | Healthy `/api/health`; schema at head; backup recorded | Restore/repair staging before any import; never downgrade a populated production DB casually |
+| C. Initial ERP load | `catalog/parser.py`, `catalog/service.py`, `catalog/api.py` | Upload both same-time exports and perform section 26.3 checks | Saved response, representative item checks and idempotent replay | Transaction rollback leaves previous catalogue unchanged |
+| D. Update rehearsal | Catalogue tests plus disposable CSV copies | Exercise every row in section 26.4 | Counters, versions, missing/reactivation and jobs match expectations | Reject import and retain last accepted snapshot |
+| E. Model evaluation | `benchmarks/embeddings/*` | Run smoke, automatic and reviewed-label gates in Azure | Approved report, failure analysis, cost and pinned revision | Continue exact/lexical/history with model disabled |
+| F. Vector rollout | `catalog/embeddings.py`, `embedding_worker.py` | Index staging, inspect failures and connect same-model query inference | Compatible current vectors and vector evidence in known runs | Disable model/query vector channel; keep stored audit data |
+| G. SharePoint metadata | `offers/files.py`, `offers/api.py`, Graph job outside repo | Deploy site-restricted read-only sync and archive handling | Live links, versions and extraction queue verified on a controlled folder | Stop job; API/database records remain versioned |
+| H. External extraction | `offers/contracts.py`, matching `InquiryLineV1` | Agree payloads and publish normalized output with stable IDs | Invalid payloads rejected; provenance preserved; no source parsing in matching | Keep files queued for human/external processing |
+| I. Frontend activation | `apps/frontend/src/features/matching/real-api.ts`, API clients | Switch from fixture workflow after extraction is ready | Multi-line partial failures, explanations, override reasons and decisions tested | Switch back to fixture only in non-production demonstration environments |
+| J. Production controls | Entra/ingress, secrets, monitoring, jobs, backups | Restrict writers, schedule imports/sync/worker, alert on failures and test restore | Named owners, runbook, backup restore, rollback and real-case acceptance signed off | Keep production closed; operate staging/manual process |
+
+Future model replacements repeat phases E and F with a new model ID. They never overwrite the meaning
+of old vectors or match runs. Future ERP exports repeat the controlled parts of phases C/D and then
+run only the incremental work from F.

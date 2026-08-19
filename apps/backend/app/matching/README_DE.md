@@ -368,9 +368,97 @@ spätere Offline-Auswertungen und kontrolliertes Lernen.
 | Lieferantenverfügbarkeit | Nicht angebunden |
 | Rangfolge nach Preis, Haltbarkeit und Zuverlässigkeit | Nicht aktiv, weil vergleichbare Daten und Regeln fehlen |
 | Aktives Lernen | Entscheidungen werden gespeichert, die Rangfolge lernt aber noch nicht daraus |
-| Integration der Figma-UI | Nicht umgesetzt; der UI-Branch bleibt unverändert |
+| Integration der Figma-UI | Transportverträge und echter Adapter vorbereitet; sichtbare App verwendet weiterhin Fixtures |
 
 Matching V1 besitzt damit Datenbank- und Importgrenzen und ist nicht mehr nur ein isolierter
 Algorithmus. Operativ fehlen noch die PostgreSQL-Bereitstellung, der erste Import, die geplanten
 lesenden Jobs, der Cloud-Benchmark, die Freigabe eines fest versionierten Modells und die Anbindung
 von UI- und Extraktions-Arbeitsbereich.
+
+## So wird der neue Datenweg bedient: kompaktes Beispiel
+
+Das Matching liest ERP-CSV-Dateien nicht direkt. Zuerst bereitet die Kataloggrenze validierte,
+versionierte Datenbankeinträge vor; anschließend liest das Matching nur aktuelle freigegebene
+Datensätze.
+
+1. PostgreSQL/pgvector starten und `alembic upgrade head` ausführen.
+2. `Artikeldaten.csv` und `Artikeluebersetzungen.csv` aus demselben Business-Central-Export
+   zusammenhalten. Beide müssen UTF-8 und semikolongetrennt sein.
+3. Beide Dateien in einer Anfrage hochladen:
+
+   ```bash
+   curl --fail-with-body -X POST http://localhost:8000/api/v1/catalog-imports \
+     -F article_data=@/secure-input/Artikeldaten.csv \
+     -F article_translations=@/secure-input/Artikeluebersetzungen.csv
+   ```
+
+4. `import_id` speichern und alle Zähler prüfen. Das gelieferte erste Paar enthält 2.773 Artikel,
+   2.879 Übersetzungszeilen und 1.645 matchingfähige Varianten. Ohne aktives Modell ist für
+   `embedding_jobs_created` null zu erwarten.
+5. Einen bekannten Artikel über `GET /api/v1/catalog-items/{item_number}` lesen und denselben Upload
+   einmal wiederholen; die zweite Antwort muss `idempotent_replay: true` enthalten.
+6. Bei späteren Paaren die Zahlen für neue, textlich geänderte, nur in Metadaten geänderte, fehlende,
+   reaktivierte Artikel und Embedding-Aufträge prüfen, bevor der Import betrieblich akzeptiert wird.
+
+**Zuständiger Code:**
+
+- [`../catalog/parser.py`](../catalog/parser.py) validiert beide CSV-Schemata, verbindet Übersetzungen
+  über die Artikelnummer, bestimmt die Matching-Eignung und erzeugt kanonischen Text/Hashes;
+- [`../catalog/service.py`](../catalog/service.py) führt Erstbefüllung und Aktualisierung atomar durch,
+  schreibt Bestandssnapshots, markiert das erste Fehlen, reaktiviert und erzeugt Aufträge;
+- [`../catalog/api.py`](../catalog/api.py) definiert Upload-, Status- und Artikelendpunkte;
+- [`../../migrations/versions/20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py)
+  definiert die zusätzlichen Tabellen und Versionierungsfelder.
+
+Die Artikelnummer bleibt die Identität. Der Text-Hash identifiziert nur den exakt normalisierten,
+bereits eingebetteten Text. Eine geänderte Beschreibung erzeugt eine neue aktuelle Version und erhält
+die alte für Prüfzwecke. Ein Artikel gilt nur dann als fehlend, wenn seine Nummer in einem vollständigen
+akzeptierten Bericht nicht mehr vorkommt.
+
+## Embeddings müssen weiterhin getestet und freigegeben werden
+
+Vektorspeicherung und -suche sind umgesetzt, aber noch kein Modell ist nachgewiesen oder freigegeben.
+Die verpflichtende Reihenfolge lautet:
+
+1. Einen kleinen Azure-Smoke-Test mit beiden echten ERP-Dateien und 25 Anfragen ausführen.
+2. MiniLM, BGE-M3 und multilingual E5-large-instruct gegen den vollständigen automatisch gelabelten
+   französischen Übersetzungssatz testen.
+3. Normalisierte, menschlich geprüfte Partneranfragen mit bekannter richtiger Artikelnummer ergänzen.
+4. Recall@1/3/10, MRR, Laufzeit, Vektorspeicher und gemessene Azure-Kosten vergleichen.
+5. Fehler nach Arzneimittel/Ausrüstung, Stärke, Darreichungsform, Größe, Sterilität und Verpackung
+   prüfen. Der höchste Durchschnittswert allein reicht nicht.
+6. Freigabe dokumentieren und eine unveränderliche Modellrevision festschreiben; produktiv niemals
+   `main` verwenden.
+7. [`../catalog/embedding_worker.py`](../catalog/embedding_worker.py) in Staging ausführen, jeden
+   fehlgeschlagenen Auftrag untersuchen und bekannte Matching-Fälle prüfen.
+8. Anfrage-Inferenz mit exakt demselben Modell/derselben Revision verbinden. Das Standard-Web-Image
+   enthält kein PyTorch; Vektoren müssen daher aus einer modellfähigen Laufzeit/einem internen Dienst
+   kommen oder zusammen mit `embedding_model_id` in der Matching-Anfrage übergeben werden.
+
+Ausführbare Befehle, Labelformat, Berichtsauswertung und Freigabenachweis stehen in
+[`../../../../benchmarks/embeddings/README.md`](../../../../benchmarks/embeddings/README.md). Die
+Benchmark-Logik liegt in
+[`../../../../benchmarks/embeddings/run.py`](../../../../benchmarks/embeddings/run.py); produktive
+Modellformatierung und dauerhafte Aufträge in
+[`../catalog/embeddings.py`](../catalog/embeddings.py).
+
+Bis diese Schritte bestanden sind, fällt Matching V1 korrekt auf exakte, lexikalische und historische
+Suche zurück, darf aber nicht als semantisch validiert bezeichnet werden.
+
+## Roadmap für Matching V1
+
+| Reihenfolge | Nächster Meilenstein | Erforderlicher Nachweis vor dem nächsten Schritt |
+|---:|---|---|
+| 1 | Datenbankmigration in geschütztes Staging übernehmen | CI grün; `/api/health` meldet eine gesunde migrierte PostgreSQL-/pgvector-Datenbank |
+| 2 | Ersten Zwei-Dateien-ERP-Import durchführen | Plausible Zähler, repräsentative Artikelprüfungen und idempotente Wiederholung bestätigt |
+| 3 | Einen späteren ERP-Import proben | Reine Mengenänderung, Textänderung, neuer, fehlender und reaktivierter Artikel verhalten sich wie dokumentiert |
+| 4 | Embedding-Benchmark ausführen und freigeben | Vollständige automatische und geprüfte Anfrageberichte, Sicherheitsfehleranalyse, Kosten und unveränderliche Modellrevision dokumentiert |
+| 5 | Katalog einbetten und Anfrage-Inferenz anbinden | Alle geeigneten aktuellen Versionen besitzen kompatible Vektoren und echte Läufe zeigen Vektornachweise |
+| 6 | Lesende SharePoint-Graph-Synchronisierung bereitstellen | Stabile IDs, Versionen und Live-URLs füllen die Extraktionswarteschlange; Löschen/Archivieren getestet |
+| 7 | Externe Extraktionsausgabe anbinden | Validierte `InquiryLineV1` und normalisierte Angebote verwenden Verträge und Herkunft korrekt |
+| 8 | Echten Frontend-Adapter aktivieren | Fixture-Pfad ersetzt; Erklärungen, Abweichungen und Entscheidungen funktionieren vollständig |
+| 9 | Produktion absichern | Entra-Autorisierung, Geheimnisse, Monitoring, Alarme, Backups, Rollback und Betriebsverantwortung abgenommen |
+
+Die ausführliche Begründung und Testerwartungen je Phase stehen in
+[`README_DETAILED_DE.md`](README_DETAILED_DE.md). Repository-Befehle und Azure-Rollout stehen in
+[`../../../../README.md`](../../../../README.md).

@@ -887,11 +887,11 @@ Daten vergleichen und nicht nur einen einzigen Gesamtwert verwenden.
 
 ## 20. Integrationsgrenze zur Figma-UI
 
-Es wurde keine Frontend-Datei und kein UI-Branch verändert. Die Matching-API ist für einen späteren
-UI-Adapter vorbereitet, aber die aktuellen Figma-/React-Modelle dürfen wichtige Matching-Zustände
-nicht vereinfachend zusammenfassen.
+Transportverträge sowie Fixture- und echte Matching-Adapter existieren inzwischen im Frontend, aber
+die sichtbare Anwendung wählt in `App.tsx` weiterhin den Fixture-Ablauf. Die Aktivierung des echten
+Adapters ist ein eigener Integrationsschritt und darf wichtige Matching-Zustände nicht vereinfachen.
 
-Die künftige UI muss:
+Die echte UI muss:
 
 - algorithmische Vorschläge von menschlichen Bestätigungen unterscheiden;
 - `pass`, `review`, Warnungen und Verfügbarkeit anzeigen, ohne sie Konfidenz zu nennen;
@@ -960,7 +960,7 @@ besitzen, ist PostgreSQL mit pgvector das sauberere System.
 | Live-Zeitpläne für SharePoint/ERP | Deployment-Arbeit | API-Grenzen vorhanden; Azure-Jobs und Zugang/Site-IDs müssen konfiguriert werden |
 | Preis-/Haltbarkeits-/Zuverlässigkeitsrangfolge | Nicht aktiv | Vergleichbare Daten und freigegebene Regeln fehlen |
 | Aktives oder erlerntes Ranking | Nicht aktiv | Feedback wird nur für spätere kontrollierte Nutzung gespeichert |
-| Verbindung zur Figma-UI | Nicht umgesetzt | UI-Branch bleibt unverändert |
+| Verbindung zur Figma-UI | Adapter vorbereitet, Aktivierung ausstehend | Transportverträge und echter Adapter existieren; sichtbare Anwendung verwendet weiterhin Fixtures |
 
 ## 23. Bewusst zurückgestellte Arbeiten
 
@@ -988,7 +988,7 @@ besitzen, ist PostgreSQL mit pgvector das sauberere System.
 | Automatische Verpackungsrundung | Richtung hängt vom Arbeitsablauf ab | Beide nachvollziehbaren Optionen | Bestätigte Regel/Profil |
 | Vom Benutzer einstellbare Gewichte | Sicherheits- und Reproduzierbarkeitsrisiko | Versioniertes serverseitiges Regelwerk | Freigegebene begrenzte Szenarioprofile |
 | Automatische Bestätigung | System ist Entscheidungsunterstützung | Ausdrücklicher Entscheidungsendpunkt | Enger nachgewiesener Fall und Freigabe |
-| Änderungen an der Figma-UI | Aktueller Umfang ist ausschließlich Matching | Stabile API und UI-Hinweise | Separate UI-Integrationsaufgabe |
+| Aktivierung des echten Figma-/React-Ablaufs | Extraktion und Rollout sind getrennte Themen | Stabile API, Transportverträge sowie Fixture-/echte Adapter | Validierte Extraktionspositionen und End-to-End-UI-Abnahme |
 | Dashboards/Prognosen/Angebote | Außerhalb der Kern-Matching-Abnahme | Prüfbare historische Daten | Stabiles Matching-MVP |
 | Microservices/Kafka | Betrieblicher Mehraufwand bei aktueller Größe | Schnittstellen und Modulgrenzen | Nachgewiesener Bereitstellungs-/Teambedarf |
 
@@ -1029,7 +1029,7 @@ Vektoren verschiedener Modelle oder Dimensionen dürfen niemals verglichen werde
 
 ## 25. Fertigstellungskriterien für dieses Fundament
 
-- keine Änderungen am Frontend;
+- Frontend-Transportverträge/-Adapter bleiben vom aktuell aktiven Fixture-Ablauf getrennt;
 - strikte versionierte Verträge und Herkunftsnachweise;
 - exakte, lexikalische, vektorbasierte und historische Suche;
 - deterministische RRF-Fusion;
@@ -1045,3 +1045,165 @@ Vektoren verschiedener Modelle oder Dimensionen dürfen niemals verglichen werde
 Das Fundament ist als Matching-Kern vollständig. Die Produktionsreife hängt weiterhin von echtem
 Import, Katalogbefüllung, Auswahl des Embedding-Modells, Freigabe fachlicher Regeln, operativer
 Überwachung und einer separaten UI-Integration ab.
+
+## 26. Vollständiges Betriebsbeispiel mit den echten ERP-Dateien
+
+Dieser Abschnitt verbindet Katalog, Embedding, SharePoint und Matching zu einem reproduzierbaren
+Staging-Ablauf. Er ist bewusst betriebsnäher als das Algorithmusbeispiel in den Abschnitten 4–14.
+
+### 26.1 Eingabevertrag für `Artikeldaten.csv`
+
+[`../catalog/parser.py`](../catalog/parser.py) verlangt eine UTF-8-kodierte, semikolongetrennte Datei
+mit diesen Spalten:
+
+```text
+Nr.;Nummer 2;Beschreibung;Beschreibung 2;Basiseinheit;Artikelkategoriencode;
+Zollware (T1);Lagerbestand;Menge in Bestellung;Menge in Auftrag;
+Wiederbeschaffungsverfahren
+```
+
+`Nr.` ist die dauerhafte Identität. Mengen werden im deutschen Format gelesen, zum Beispiel `21.821`
+als 21821 und `12,5` als 12,5. Negative Quellmengen, doppelte/fehlende Artikelnummern und fehlende
+Spalten weisen das gesamte Paar zurück. `Nummer 2` verbindet eine Variante mit ihrer Familie. Eine
+`000`-Stammzeile ohne übergeordneten Artikel bleibt für Prüfzwecke erhalten, wird aber weder angeboten
+noch eingebettet.
+
+### 26.2 Eingabevertrag für `Artikeluebersetzungen.csv`
+
+Derselbe Parser verlangt:
+
+```text
+Artikelnr.;Sprachcode;Beschreibung;Beschreibung 2
+```
+
+Jedes Paar aus `(Artikelnr., Sprachcode)` muss eindeutig sein und einen Artikel in der zugehörigen
+Artikeldatendatei referenzieren. Bekannte englische/französische Business-Central-Codes werden
+normalisiert, während der Rohsprachcode erhalten bleibt. Deutsche Artikelbeschreibungen und alle
+Übersetzungen werden in den durchsuchbaren Beschreibungen der Version dedupliziert. Der kanonische
+Embedding-Text enthält zusätzlich normalisierte Kategorie und Basiseinheit, damit bedeutende
+Textänderungen einen neuen Inhalts-Hash erzeugen.
+
+### 26.3 Erstbefüllung und Prüfung
+
+Nach `alembic upgrade head` wird die Upload-Grenze in
+[`../catalog/api.py`](../catalog/api.py) aufgerufen:
+
+```bash
+curl --fail-with-body -X POST http://localhost:8000/api/v1/catalog-imports \
+  -F article_data=@/secure-input/Artikeldaten.csv \
+  -F article_translations=@/secure-input/Artikeluebersetzungen.csv \
+  -F captured_at=2026-08-19T10:00:00Z \
+  -F source_uri=business-central://catalog-export/2026-08-19
+```
+
+[`../catalog/service.py`](../catalog/service.py) parst zuerst beide Dateien, nimmt eine transaktionale
+Advisory-Sperre, prüft die Paar-Prüfsummen, erzeugt Quellsnapshots und übernimmt alle Änderungen in
+einer Transaktion. Ein teilweise übernommener Katalog kann nicht bestehen bleiben.
+
+Für das gelieferte erste Paar müssen vor der Annahme ungefähr diese Quellfakten bestätigt werden:
+
+| Fakt | Gelieferte Dateien |
+|---|---:|
+| Artikelzeilen/importierte Identitäten | 2.773 |
+| Übersetzungszeilen | 2.879 |
+| Aktuelle angebotstaugliche Varianten | 1.645 |
+| Nicht angebotstaugliche Stammzeilen | 1.124 |
+| Negative berechnete Rohverfügbarkeit | 31 |
+
+Auf einer leeren Datenbank sollte die Antwort 2.773 eingefügte und bestandsaktualisierte Artikel
+melden. Sie darf null Embedding-Aufträge melden, weil vor der Evaluation kein Modell aktiv sein soll.
+Die vollständige Antwort speichern und repräsentative Arzneimittel, Ausrüstung, Stammzeilen und
+Artikel mit negativer Rohverfügbarkeit über `GET /api/v1/catalog-items/{item_number}` lesen. Die
+Wiederholung desselben Paars muss `idempotent_replay: true` liefern.
+
+### 26.4 Abnahmematrix für Aktualisierungen
+
+Jede Änderungsart wird in einer entbehrlichen Staging-Kopie geprüft, bevor echte Exporte automatisiert
+werden:
+
+| Teständerung | Erwartete Speicherung | Erwartete Zähler/Modellarbeit |
+|---|---|---|
+| Nur `Lagerbestand` ändern | Neuer Bestandssnapshot, gleiche Textversion | Artikel in `inventory_refreshed_items`; kein neuer Embedding-Auftrag |
+| Beschreibung/Übersetzung/Kategorie/Basiseinheit ändern | Neue unveränderliche aktuelle Produktversion; alte bleibt erhalten | `text_updated_items +1`; ein Auftrag je aktivem Modell |
+| Nur Wiederbeschaffungsverfahren oder T1 ändern | Neue prüfbare Metadatenversion; gleicher Inhalts-Hash | `metadata_updated_items +1`; kompatible Vektoren kopiert/wiederverwendet |
+| Artikel samt Übersetzungen ergänzen | Neue Identität, Version, Übersetzungen und Bestand | `inserted_items +1`; Auftrag nur bei Matching-Eignung und aktivem Modell |
+| Einen Artikel aus einem vollständigen Bericht entfernen | Identität bleibt, aber `source_missing=true` | `missing_items +1`; sofort vom Matching ausgeschlossen |
+| Diesen Artikel wieder aufnehmen | Fehlend-Status gelöscht und aktuelle Quelle erneuert | `reactivated_items +1` |
+| Exakt dasselbe Paar hochladen | Keine neuen Versionen/Snapshots/Aufträge | `idempotent_replay=true` |
+| Weniger als die Hälfte der bisherigen Identitäten hochladen | Keine Änderung übernommen | HTTP 422 mit `suspicious_row_drop` |
+
+Verfügbarkeit wird als Lagerbestand plus bestätigte Bestellungen minus gebundene Aufträge gespeichert.
+Einkaufsanfragen sind kein bestätigter Bestand. Ein negatives Rohergebnis bleibt prüfbar; nur die
+erfüllbare Menge wird auf null begrenzt.
+
+### 26.5 Verpflichtende Embedding-Evaluation und Aktivierung
+
+[`../../../../benchmarks/embeddings/run.py`](../../../../benchmarks/embeddings/run.py) verwendet beide
+ERP-Dateien erneut: Artikelzeilen bilden den Kandidatenkatalog, französische Übersetzungen mit derselben
+Artikelnummer automatisch gelabelte Anfragen. Damit wird sprachübergreifende Suche auf dem echten
+Katalog geprüft, ohne private Daten einzuchecken.
+
+Diese Stufen sind verpflichtend:
+
+1. Cloud-Smoke-Test mit einem Modell und `--limit-queries 25`;
+2. vollständiger automatischer Vergleich von MiniLM, BGE-M3 und multilingual E5-large-instruct;
+3. zweiter Vergleich mit menschlich geprüften echten normalisierten Anfragen;
+4. Gruppen-/Fehlerprüfung nach Produktbereich, Sprache, Stärke, Darreichungsform, Größe, Sterilität
+   und Verpackung;
+5. dokumentierte Werte für Recall@1/3/10, MRR, Durchsatz, Latenz, Vektorspeicher und gemessene
+   Azure-Kosten;
+6. Lizenz-/Datenschutzprüfung und Freigabe einer unveränderlichen Revision;
+7. Worker-Lauf in Staging mit Erklärung jedes fehlgeschlagenen Auftrags;
+8. echte Matching-Läufe mit Anfragevektoren aus exakt derselben Modell-ID/Revision.
+
+Ausführbare Befehle und die Prüfliste für den Entscheidungsnachweis stehen in
+[`../../../../benchmarks/embeddings/README.md`](../../../../benchmarks/embeddings/README.md). Die
+Produktindexierung ist in [`../catalog/embeddings.py`](../catalog/embeddings.py) und
+[`../catalog/embedding_worker.py`](../catalog/embedding_worker.py) umgesetzt. Die Modell-ID des
+Workers lautet `sentence-transformers:<modellname>@<revision>`; gespeicherte und Anfragevektoren einer
+anderen Identität oder Dimension dürfen niemals verglichen werden.
+
+Das Standard-Web-Image enthält keine Sentence-Transformers-Abhängigkeit. Das Produktionsdesign muss
+entweder eine modellfähige Laufzeit ergänzen, einen internen Embedding-Dienst aufrufen oder
+`query_embedding` zusammen mit der passenden `embedding_model_id` in `MatchRequestV1` übergeben. Bis
+dahin bleiben exakte, lexikalische und historische Wege gültige Rückfälle, semantisches Matching ist
+aber nicht validiert.
+
+### 26.6 Beispiel für SharePoint- und Extraktionsübergabe
+
+Ein separater Graph-Job mit minimalen Leserechten findet eine Datei und ruft
+`PUT /api/v1/sharepoint-offer-files/{drive-item-id}` mit eTag/cTag, Live-`webUrl`, Name,
+Änderungszeit, MIME-Typ und Größe auf. [`../offers/files.py`](../offers/files.py) versioniert diese
+Metadaten. Der externe Extraktionsprozess liest `GET ...?needs_extraction=true`, öffnet die Live-URL
+und sendet normalisierte strukturierte Ausgabe an
+`PUT /api/v1/offers/{same-drive-item-id}`. [`../offers/service.py`](../offers/service.py) versioniert
+das Angebot. Die gemeinsame Graph-ID verbindet beide Datensätze; das Matching errät Identität niemals
+aus einem Dateinamen und parst das Quelldokument nicht.
+
+### 26.7 End-to-End-Abnahme
+
+Wenn Katalog, optionale Vektoren und eine normalisierte Anfrageposition vorhanden sind, wird ein
+Matching-Lauf erzeugt. Prüfen, dass erwartete Suchkanäle erscheinen, harte Ausschlüsse inaktive/
+fehlende Produkte entfernen, Verpackung nicht still rundet, Verfügbarkeit den neuesten Bestand nutzt
+und die Mitarbeiterentscheidung ausdrücklich gespeichert werden kann. Danach nur den Bestand ändern,
+erneut importieren und bestätigen, dass das Matching die neue Menge ohne Änderung des Produktvektors
+verwendet.
+
+## 27. Detaillierte Implementierungs- und Rollout-Roadmap
+
+| Phase | Wichtigster Code/Konfiguration | Erforderliche Aktion | Abnahmenachweis | Sicherer Rückfall/Rollback |
+|---|---|---|---|---|
+| A. Review | `.github/workflows/ci.yml`, Tests und Migrationen | Nur nach bestandenen Backend-Postgres-/pgvector- und Frontend-Build-Prüfungen mergen | Grüne CI und Reviewfreigabe | Feature-Branch behalten; keine Datenbankänderung |
+| B. Staging-Datenbank | `20260814_0001`, `20260819_0002`, `DATABASE_URL` | Geschütztes PostgreSQL/pgvector samt Backups bereitstellen und migrieren | Gesundes `/api/health`; Schema auf Head; Backup dokumentiert | Staging wiederherstellen/reparieren; befüllte Produktion niemals beiläufig downgraden |
+| C. Erster ERP-Import | `catalog/parser.py`, `catalog/service.py`, `catalog/api.py` | Beide zeitgleichen Exporte hochladen und Abschnitt 26.3 prüfen | Gespeicherte Antwort, repräsentative Artikel und idempotente Wiederholung | Transaktionsrollback lässt bisherigen Katalog unverändert |
+| D. Aktualisierungsprobe | Katalogtests und entbehrliche CSV-Kopien | Jede Zeile aus Abschnitt 26.4 testen | Zähler, Versionen, Fehlend/Reaktivierung und Aufträge entsprechen Erwartung | Import ablehnen und letzten akzeptierten Snapshot behalten |
+| E. Modellevaluation | `benchmarks/embeddings/*` | Smoke-, automatischen und geprüften Benchmark in Azure ausführen | Freigegebener Bericht, Fehleranalyse, Kosten und festgeschriebene Revision | Exakte/lexikalische/Historie mit deaktiviertem Modell weiterverwenden |
+| F. Vektor-Rollout | `catalog/embeddings.py`, `embedding_worker.py` | Staging indexieren, Fehler prüfen und Anfrage-Inferenz desselben Modells anbinden | Kompatible aktuelle Vektoren und Vektornachweise in bekannten Läufen | Modell-/Anfragevektorkanal deaktivieren; gespeicherte Prüfdaten erhalten |
+| G. SharePoint-Metadaten | `offers/files.py`, `offers/api.py`, Graph-Job außerhalb des Repos | Auf Site begrenzte Lesesynchronisierung und Archivierung bereitstellen | Live-Links, Versionen und Extraktionswarteschlange in Testordner geprüft | Job stoppen; API-/DB-Datensätze bleiben versioniert |
+| H. Externe Extraktion | `offers/contracts.py`, Matching-`InquiryLineV1` | Payloads vereinbaren und normalisierte Ausgabe mit stabilen IDs veröffentlichen | Ungültige Payloads abgewiesen; Herkunft erhalten; kein Quellparsen im Matching | Dateien für menschliche/externe Bearbeitung in Warteschlange belassen |
+| I. Frontend-Aktivierung | `apps/frontend/src/features/matching/real-api.ts`, API-Clients | Nach fertiger Extraktion vom Fixture-Ablauf umschalten | Teilfehler bei mehreren Positionen, Erklärungen, Abweichungsgründe und Entscheidungen getestet | Nur in nicht produktiven Demos zum Fixture zurückschalten |
+| J. Produktionskontrollen | Entra/Ingress, Geheimnisse, Monitoring, Jobs, Backups | Schreibzugriffe begrenzen, Import/Sync/Worker planen, Alarme und Restore testen | Benannte Verantwortliche, Runbook, Backup-Restore, Rollback und Realfall-Abnahme unterschrieben | Produktion geschlossen halten; Staging/manuellen Prozess betreiben |
+
+Künftige Modellwechsel wiederholen die Phasen E und F mit einer neuen Modell-ID. Sie überschreiben
+niemals die Bedeutung alter Vektoren oder Matching-Läufe. Künftige ERP-Exporte wiederholen die
+kontrollierten Teile aus C/D und führen anschließend nur die inkrementelle Arbeit aus F aus.

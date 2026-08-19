@@ -360,9 +360,93 @@ controlled learning.
 | Supplier availability | Not connected |
 | Price, shelf-life and reliability ranking | Not active because comparable data and rules are missing |
 | Active learning | Decisions are stored, but the ranking does not learn from them yet |
-| Figma UI integration | Not implemented and the UI branch remains untouched |
+| Figma UI integration | Transport contracts and real adapter prepared; visible app still uses fixtures |
 
 So Matching V1 now has its database and ingestion boundaries, not just an isolated algorithm. The
 remaining operational work is to deploy PostgreSQL, run the first import, connect the scheduled
 read-only jobs, execute the cloud benchmark, approve one pinned model, and connect the UI/extraction
 workstreams.
+
+## How to operate the new data path: a compact example
+
+Matching does not read ERP CSVs directly. The catalogue boundary prepares database versions first;
+matching then reads only validated current records.
+
+1. Start PostgreSQL/pgvector and run `alembic upgrade head`.
+2. Keep `Artikeldaten.csv` and `Artikeluebersetzungen.csv` from the same Business Central export
+   together. Both must be UTF-8, semicolon-separated files.
+3. Upload both files in one request:
+
+   ```bash
+   curl --fail-with-body -X POST http://localhost:8000/api/v1/catalog-imports \
+     -F article_data=@/secure-input/Artikeldaten.csv \
+     -F article_translations=@/secure-input/Artikeluebersetzungen.csv
+   ```
+
+4. Save `import_id` and check all returned counts. The supplied first pair contains 2,773 articles,
+   2,879 translation rows and 1,645 matching-eligible variants. With no active model,
+   `embedding_jobs_created` is expected to be zero.
+5. Read a known article through `GET /api/v1/catalog-items/{item_number}` and repeat the identical
+   upload once; the second response must say `idempotent_replay: true`.
+6. For later pairs, inspect new, text-updated, metadata-updated, missing, reactivated and embedding-job
+   counts before accepting the import operationally.
+
+**Responsible code:**
+
+- [`../catalog/parser.py`](../catalog/parser.py) validates both CSV schemas, joins translations by
+  article number, determines eligibility and creates canonical text/hashes;
+- [`../catalog/service.py`](../catalog/service.py) performs the atomic initial/incremental update,
+  inventory snapshots, first-absence flagging, reactivation and job creation;
+- [`../catalog/api.py`](../catalog/api.py) defines the upload/status/item routes;
+- [`../../migrations/versions/20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py)
+  defines the additional tables and versioning fields.
+
+The article number remains identity. The text hash only identifies the exact normalized text already
+embedded. A changed description creates a new current version and preserves the old one for audit;
+an article is missing only when its number disappears from a complete accepted report.
+
+## Embeddings still have to be tested and approved
+
+Vector storage and retrieval are implemented, but no model is proven or approved yet. The required
+sequence is:
+
+1. Run a small Azure smoke test using both real ERP files and 25 queries.
+2. Run MiniLM, BGE-M3 and multilingual E5-large-instruct on the full automatically labelled French
+   translation set.
+3. Add normalized, human-reviewed partner inquiries whose correct article number is known.
+4. Compare Recall@1/3/10, MRR, runtime, vector storage and measured Azure cost.
+5. Review errors involving medicine/equipment domain, strength, dosage form, size, sterility and
+   packaging. Highest average score alone is not enough.
+6. Record the approval and pin one immutable model revision; never use `main` in production.
+7. Run [`../catalog/embedding_worker.py`](../catalog/embedding_worker.py) in staging, investigate every
+   failed job and verify known match cases.
+8. Connect query inference using the exact same model/revision. The standard web image excludes
+   PyTorch, so vectors must come from a model-enabled runtime/service or be supplied with
+   `embedding_model_id` in the match request.
+
+The executable commands, label format, report interpretation and acceptance record are in
+[`../../../../benchmarks/embeddings/README.md`](../../../../benchmarks/embeddings/README.md). Benchmark
+logic lives in [`../../../../benchmarks/embeddings/run.py`](../../../../benchmarks/embeddings/run.py);
+production model formatting and durable jobs live in
+[`../catalog/embeddings.py`](../catalog/embeddings.py).
+
+Until these steps pass, Matching V1 correctly falls back to exact, lexical and historical retrieval,
+but it must not be described as semantically validated.
+
+## Matching V1 roadmap
+
+| Order | Next milestone | Proof required before moving on |
+|---:|---|---|
+| 1 | Merge and deploy the database migration to protected staging | CI green; `/api/health` reports a healthy migrated PostgreSQL/pgvector database |
+| 2 | Perform the first two-file ERP import | Plausible counts, representative item checks and idempotent replay confirmed |
+| 3 | Rehearse a later ERP update | Quantity-only, text-change, new, missing and reactivated cases behave as documented |
+| 4 | Run and approve the embedding benchmark | Full automatic and reviewed-inquiry reports, safety failure review, cost and immutable model revision recorded |
+| 5 | Index catalogue and connect query inference | All eligible current versions have compatible vectors and real match runs show vector evidence |
+| 6 | Deploy read-only SharePoint Graph synchronization | Stable IDs, versions and live URLs populate the extraction queue; deletion/archive behavior tested |
+| 7 | Connect the external extraction output | Validated `InquiryLineV1` and normalized offers use the documented contracts and provenance |
+| 8 | Activate the real frontend adapter | Fixture path replaced; explanations, overrides and decisions work end to end |
+| 9 | Production hardening | Entra authorization, secrets, monitoring, alerts, backups, rollback and operating ownership accepted |
+
+The detailed rationale and test expectations for every phase are in
+[`README_DETAILED.md`](README_DETAILED.md). The repository-level commands and Azure rollout are in
+[`../../../../README.md`](../../../../README.md).
