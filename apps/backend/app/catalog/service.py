@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -185,7 +186,11 @@ class CatalogImportService:
         source_uri: str | None,
     ) -> CatalogImportResponseV1:
         import_id = uuid4()
-        combined_checksum = f"{parsed.article_checksum}:{parsed.translation_checksum}"
+        # source_snapshots.checksum is VARCHAR(128). Hash the ordered pair instead of storing
+        # two 64-character digests plus a separator (129 characters).
+        combined_checksum = hashlib.sha256(
+            f"{parsed.article_checksum}:{parsed.translation_checksum}".encode()
+        ).hexdigest()
         article_source_id = await self._source_snapshot(
             document_id=article_filename,
             checksum=parsed.article_checksum,

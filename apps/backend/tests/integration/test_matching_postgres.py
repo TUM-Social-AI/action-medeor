@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from uuid import uuid4
 
@@ -55,14 +56,24 @@ async def test_catalog_and_exact_pgvector_search_against_migrated_database() -> 
                         package, content_hash, valid_from
                     ) VALUES (
                         :id, '410001001', :source_id,
-                        '["Foley urinary catheter CH18 sterile"]'::jsonb,
-                        '{"charriere":{"value":18,"unit":"CH"}}'::jsonb,
-                        '{"units_per_package":"10","unit":"piece"}'::jsonb,
+                        CAST(:descriptions AS jsonb),
+                        CAST(:attributes AS jsonb),
+                        CAST(:package AS jsonb),
                         'integration-content-hash', CURRENT_TIMESTAMP
                     )
                     """
                 ),
-                {"id": version_id, "source_id": source_id},
+                {
+                    "id": version_id,
+                    "source_id": source_id,
+                    "descriptions": json.dumps(["Foley urinary catheter CH18 sterile"]),
+                    "attributes": json.dumps(
+                        {"charriere": {"value": 18, "unit": "CH"}}
+                    ),
+                    "package": json.dumps(
+                        {"units_per_package": "10", "unit": "piece"}
+                    ),
+                },
             )
             await session.execute(
                 text(
