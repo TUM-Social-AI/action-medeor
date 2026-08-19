@@ -22,6 +22,29 @@ Components should consume the view models in `features/matching/models.ts`, not 
 directly. `features/matching/mapper.ts` owns the conversion. Retrieval scores are evidence, not
 calibrated percentages, and must not be displayed as confidence percentages.
 
+## Catalog and SharePoint data APIs
+
+The backend also exposes data-maintenance contracts that are not yet wired into the React screens:
+
+```text
+POST /api/v1/catalog-imports
+GET  /api/v1/catalog-imports/{import_id}
+GET  /api/v1/catalog-items/{item_number}
+
+PUT  /api/v1/sharepoint-offer-files/{external_id}
+GET  /api/v1/sharepoint-offer-files?needs_extraction=true
+POST /api/v1/sharepoint-offer-files/{external_id}/archive
+
+PUT  /api/v1/offers/{external_id}
+GET  /api/v1/offers
+POST /api/v1/offers/{external_id}/archive
+```
+
+The SharePoint file list contains names, modification times, extraction status, and live links. It
+does not contain parsed document contents. The separate extraction workstream publishes normalized
+structured results through `offers`; the matching history channel only reads current active
+normalized records.
+
 ## Extraction API
 
 `extraction/` is a proposed boundary for the extraction workstream:

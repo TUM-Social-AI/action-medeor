@@ -115,7 +115,7 @@ class DeterministicEmbeddingProvider:
     def model_id(self) -> str:
         return self._model_id
 
-    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+    async def embed_queries(self, texts: Sequence[str]) -> list[list[float]]:
         embeddings: list[list[float]] = []
         for value in texts:
             digest = hashlib.sha256(value.encode("utf-8")).digest()

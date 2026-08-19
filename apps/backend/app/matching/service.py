@@ -114,7 +114,7 @@ class MatchingService:
             embedding = request.query_embedding
             model_id = request.embedding_model_id
             if embedding is None and self._embedding_provider is not None:
-                generated = await self._embedding_provider.embed([query.canonical_text])
+                generated = await self._embedding_provider.embed_queries([query.canonical_text])
                 if len(generated) != 1:
                     raise ValueError("Embedding provider returned an unexpected batch size")
                 embedding = tuple(generated[0])

@@ -71,8 +71,8 @@ def observed_availability(
     packaging: PackagingResult,
 ) -> tuple[AvailabilityStatus, str | None]:
     stock = item.stock
-    if stock is None or stock.on_hand is None:
-        return AvailabilityStatus.UNKNOWN, "On-hand stock is not available."
+    if stock is None or stock.fulfillable_quantity is None:
+        return AvailabilityStatus.UNKNOWN, "Calculated availability is not available."
 
     required: Decimal | None = None
     if _same_unit(stock.unit, requested.unit) and requested.value is not None:
@@ -85,8 +85,8 @@ def observed_availability(
             AvailabilityStatus.UNKNOWN,
             "Stock basis is not confirmed as comparable with the requested quantity.",
         )
-    if stock.on_hand >= required:
+    if stock.fulfillable_quantity >= required:
         return AvailabilityStatus.ON_HAND_SUFFICIENT, None
-    if stock.on_hand > 0:
+    if stock.fulfillable_quantity > 0:
         return AvailabilityStatus.ON_HAND_PARTIAL, None
     return AvailabilityStatus.PROCUREMENT_INDICATED, None

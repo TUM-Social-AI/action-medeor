@@ -4,19 +4,20 @@
 
 ## 1. What exists today
 
-The current implementation is a working and tested matching core. It can accept one already
-normalized inquiry line, search prepared catalogue and history data, evaluate candidates, return an
-explained ranking and store the later human decision.
+The current implementation is a working and tested Matching V1 data plane. It accepts one already
+normalized inquiry line, imports the two real Business Central CSV exports, versions catalogue text
+and stock separately, maintains SharePoint file links and normalized offer evidence, evaluates
+candidates, returns an explained ranking, and stores the later human decision.
 
-It is not yet a complete production workflow. It does not read the real Lagerliste, parse Outlook
-mail, synchronize ERP/SharePoint, generate production embeddings or connect to the Figma UI. The
-database migration creates the required structures, but it does not fill them with action medeor
-products.
+It is not yet a fully deployed production workflow. Inquiry/offer document extraction remains a
+separate workstream, the read-only Microsoft Graph and scheduled CSV-upload jobs still need Azure
+deployment configuration, and a production embedding model has not yet been approved. The schema and
+APIs needed for those handoffs are implemented.
 
 The most useful mental model is:
 
-> The engine and its connection points exist; the real data pipelines and selected production model
-> still need to be connected.
+> The engine, versioned database, ERP importer, and handoff APIs exist; deployment jobs, extraction,
+> and the selected production model still need to be connected.
 
 ```mermaid
 flowchart LR
@@ -261,10 +262,11 @@ which text version produced a vector, so unchanged products do not need to be em
 
 ### Current multilingual reality
 
-This function does not translate. It combines the original description with an optional translation
-provided upstream. Lexical matching is therefore only partly multilingual. True cross-language recall
-depends on a future approved multilingual embedding model or upstream translation. The production API
-currently has no embedding provider configured automatically.
+This function does not translate. The ERP importer now supplies official base descriptions plus the
+`Artikeluebersetzungen.csv` descriptions, while inquiry extraction may provide an additional
+translation. This improves lexical coverage but does not replace a multilingual model. The model
+benchmark therefore tests genuine French-to-base-description retrieval and supports reviewed inquiry
+labels.
 
 ## 7. Step 3 — Retrieve a broad candidate set
 
@@ -323,14 +325,17 @@ In the test, article `410001001` and inactive article `410001003` have the stron
 match. This demonstrates that vector relevance is only candidate generation; it cannot approve an
 inactive item.
 
-### What is still missing for production vectors
+### What exists and what is still missing for production vectors
 
-- no multilingual model has been selected or benchmarked;
-- the API dependency setup in [`api.py`](api.py) configures vector search but no automatic
-  `EmbeddingProvider`;
-- therefore a caller must currently supply both `query_embedding` and `embedding_model_id` to use the
-  vector channel through the API;
-- no production indexing job currently generates and inserts vectors for all Lagerliste products;
+- [`../../../../benchmarks/embeddings`](../../../../benchmarks/embeddings) compares three open
+  multilingual models on the real offerable catalogue and optional reviewed labels;
+- [`../catalog/embeddings.py`](../catalog/embeddings.py) contains a durable incremental worker that
+  registers the selected model, initializes missing vectors, recovers stale work, and handles only
+  new/text-changed versions after later imports;
+- E5 query/document prefixes and the instruct-model retrieval prompt are applied consistently;
+- no model/revision has yet been approved, so the normal web image keeps heavy model dependencies out;
+- until a model-enabled runtime is deployed, callers can still provide `query_embedding` plus the
+  identical registered `embedding_model_id`;
 - no approximate HNSW/IVFFlat index is needed at the current catalogue size.
 
 ### 3D. Historical retrieval
@@ -492,15 +497,17 @@ be a hidden business decision. Returning both options preserves the decision and
 
 ### What happens
 
-The code uses `on_hand` only when its unit is confirmed comparable with the requested quantity. It can
-also compare package counts when stock is explicitly measured in packages and packaging has an exact
-recommended option.
+The importer calculates `available_raw = on_hand + incoming_purchase_order - committed_order` and
+preserves negative results as operational evidence. Matching uses
+`fulfillable_quantity = max(0, available_raw)` only when its unit is confirmed comparable with the
+requested quantity. It can also compare package counts when stock is explicitly measured in packages
+and packaging has an exact recommended option.
 
 Possible results are:
 
 - `on_hand_sufficient`;
 - `on_hand_partial`;
-- `procurement_indicated` when comparable on-hand stock is zero;
+- `procurement_indicated` when comparable fulfillable stock is zero;
 - `unknown` when data or unit basis is missing;
 - `not_allowed` is reserved for future operational rules.
 
@@ -511,12 +518,12 @@ In the example, both remaining articles have stock measured in pieces:
 410001002: 500 available versus 50 requested → sufficient
 ```
 
-### Why incoming and committed quantities are not combined yet
+### Why purchasing inquiries are not added
 
-The database preserves on-hand, incoming purchase order, purchasing inquiry and committed order as
-separate raw facts. It does not invent an “available to offer” formula because the meaning, timing and
-unit basis of those columns have not been confirmed. Missing data remains `unknown` rather than being
-treated as zero.
+The approved V1 formula combines stored, ordered, and committed quantities. Purchasing inquiries are
+preserved separately because they are not confirmed purchase orders and are therefore not assumed to
+increase availability. Missing on-hand or a non-comparable unit remains `unknown`; a negative derived
+raw result remains visible but cannot become a negative promiseable quantity.
 
 Supplier availability follows the same principle: the architecture can add a source, but there is no
 approved supplier connector or shared stock semantics yet.
@@ -704,8 +711,11 @@ decisions return 422.
 - `PgVectorRepository`;
 - the default versioned matching policy.
 
-No production `EmbeddingProvider` is wired here yet. Consequently, ordinary API requests use exact,
-lexical and historical retrieval unless the caller includes a precomputed query vector and model ID.
+When `EMBEDDING_MODEL_NAME` and a pinned `EMBEDDING_MODEL_REVISION` are configured in a runtime that
+contains Sentence Transformers, the API creates query embeddings with the same provider used by the
+catalog worker. The lightweight default web image does not contain PyTorch/model weights; without a
+model-enabled runtime, requests use exact, lexical and historical retrieval unless they include a
+precomputed vector and matching model ID.
 
 The API is intentionally UI-independent. It accepts matching contracts, not React/Figma view models or
 uploaded source files.
@@ -713,7 +723,8 @@ uploaded source files.
 ## 16. PostgreSQL and pgvector persistence
 
 **Responsible files:** [`adapters/persistence.py`](adapters/persistence.py),
-[`20260814_0001_matching_foundation.py`](../../migrations/versions/20260814_0001_matching_foundation.py)
+[`20260814_0001_matching_foundation.py`](../../migrations/versions/20260814_0001_matching_foundation.py),
+[`20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py)
 and [`docker-compose.yml`](../../../../docker-compose.yml).
 
 The Compose service still uses database name `allocura`, port 5432 and the existing named volume. Only
@@ -727,7 +738,9 @@ the image changed from plain PostgreSQL 16 to PostgreSQL 16 with pgvector includ
 | `source_snapshots` | Source identity, checksum, capture time and locator | Immutable provenance for every imported version |
 | `catalog_items` | Stable article number, domain, active/quality status | Identity and authoritative status outlive descriptions |
 | `catalog_item_versions` | Descriptions, attributes, package, content hash and valid time | Product content can change while identity stays stable |
+| `catalog_item_translations` | Raw language code and each translated description snapshot | ERP language evidence remains traceable |
 | `inventory_snapshots` | On-hand, incoming, inquiry, committed, unit and capture time | Frequent stock updates must not force re-embedding product text |
+| `catalog_imports` | Pair checksums, result counts, warnings and completion time | Replays are idempotent and imports are auditable |
 
 `PostgresCatalogRepository` selects the latest product version and latest stock snapshot per article.
 An optional `catalog_snapshot_id` can restrict the catalogue source version.
@@ -738,6 +751,7 @@ An optional `catalog_snapshot_id` can restrict the catalogue source version.
 |---|---|
 | `embedding_models` | Provider, model name/version, dimensions and cosine metric |
 | `product_embeddings` | Catalogue-version/model pair, content hash and vector |
+| `catalog_embedding_jobs` | Pending/running/completed/failed incremental embedding work |
 
 Vectors are attached to a catalogue item version rather than mutable stock. Exact cosine search is
 used now. A model-specific approximate index can be introduced later without replacing the matching
@@ -748,6 +762,7 @@ service interface.
 | Table | Purpose |
 |---|---|
 | `historical_offers` | Normalized, timestamped historical request and procurement evidence |
+| `sharepoint_offer_files` | Versioned file metadata, current/archive status, and live source URL |
 | `match_runs` | Original request, versions, status, complete result or error |
 | `match_candidates` | Candidate-level evidence for analytics and auditing |
 | `match_decisions` | The later human decision and override explanation |
@@ -759,10 +774,13 @@ The run is first committed as `running`. Completion writes the result and candid
 transaction fails, the repository rolls it back before recording `failed`. This preserves a terminal
 audit state instead of leaving a partially stored candidate list.
 
-### What the migration does not do
+### What migration versus import does
 
-It does not import the Lagerliste, generate product embeddings or configure live ERP/history data.
-After migration, the structures exist but may be empty until an ingestion/indexing process fills them.
+`alembic upgrade head` creates structure only and never silently imports private files. The explicit
+catalog API performs the first full load and later refreshes. The supplied files parse as 2,773
+articles, 2,879 translations, 1,124 non-offerable master rows, and 1,645 offerable variants. A
+model-registration/worker run performs the first vector initialization. This separation keeps schema
+deployment repeatable and data ingestion explicit.
 
 ## 17. Reproducibility, provenance and limitations
 
@@ -896,9 +914,10 @@ pgvector is the cleaner system.
 | RRF, rules, packaging, availability, ranking | Implemented | The tested matching core runs end to end |
 | API, runs and decisions | Implemented | A caller can match/read/record feedback when DB data exists |
 | Excel/Outlook extraction | Not implemented here | Extraction workstream must emit the contracts |
-| Lagerliste/ERP catalogue ingestion | Not operational | Database is not automatically populated |
-| Product embedding indexing | Not operational | No production model or batch indexing job |
-| Live SharePoint/ERP/supplier connectors | Not operational | Ports exist; credentials/schema/semantics unresolved |
+| Two-file ERP catalogue ingestion | Implemented | Full first load, inventory refresh, first-absence flagging, reactivation, and idempotent replay |
+| Incremental product embedding indexing | Implemented | Durable worker exists; approved model/revision still required |
+| SharePoint file/offer handoff | Implemented | File list with live links and normalized-output API; extraction remains external |
+| Live SharePoint/ERP schedules | Deployment work | API boundaries exist; Azure jobs and credentials/site IDs must be configured |
 | Price/shelf-life/reliability ranking | Not active | Comparable data and approved rules are missing |
 | Active or learned ranking | Not active | Feedback is stored only for controlled future use |
 | Figma UI connection | Not implemented | UI branch remains untouched |
@@ -910,9 +929,9 @@ pgvector is the cleaner system.
 | Excel/PDF/mail extraction | Different team and failure domain | Strict contracts and provenance | Extractor payload agreed |
 | Outlook connector | Needs mailbox, Entra, permissions and operations | Outlook source types/locators | Approved mailbox and access |
 | Business Central live sync | No confirmed API/schema access | Catalogue/inventory ports and snapshots | Read-only API and data dictionary |
-| SharePoint live sync | Folder/status authority unresolved | History port and provenance | Approved scope and permissions |
+| SharePoint live sync | Graph site/drive IDs and runtime credential wiring are deployment-specific | Versioned file list, live URLs and provenance | Read-only Azure job configured |
 | Supplier stock APIs | Suppliers and semantics unknown | Supplier-ready boundary | One approved pilot source |
-| Production embedding model | No labelled comparison or governance decision | Provider port, registry and pgvector | Benchmark winner and privacy approval |
+| Production embedding model | Benchmark is ready but has not been run/approved | Free-first benchmark, provider, worker, registry and pgvector | Benchmark winner and privacy approval |
 | HNSW/IVFFlat | Current catalogue does not need approximate search | pgvector storage | p95 latency/scale threshold exceeded |
 | Cross-encoder | Extra latency/MLOps without measured gain | Reranking boundary | Recall@10 good, ordering measurably weak |
 | LLM as judge | Hallucination, cost, privacy and reproducibility | Not in critical path | Narrow non-safety use case only |
@@ -922,7 +941,7 @@ pgvector is the cleaner system.
 | Knowledge graph database | No proven multi-hop workload | Relational concepts can be added | Repeated authoritative graph queries |
 | Full ATC/SNOMED/GMDN mapping | Purpose/licence/mapping unconfirmed | Ontology-ready attributes | action medeor standard decision |
 | Substitution hard rules | Clinical/technical equivalence unconfirmed | Versioned policy | Explicit domain-owner approval |
-| Available-to-offer formula | Stock semantics unresolved | Separate raw snapshots | Authoritative formula confirmed |
+| More advanced availability policy | V1 uses stored + ordered - committed; lead times and supplier semantics remain unknown | Separate raw and derived quantities | Authoritative additions confirmed |
 | Automatic shelf-life exclusion | Arrival/receipt/route policy unresolved | Contract field and rule hook | Confirmed policy and lot data |
 | Price ranking | Currency/basis/freight/validity incomplete | Comparable-evidence extension point | Normalized price contract |
 | Supplier reliability score | No outcome history/minimum sample | Outcome-ready history model | Enough completed procurements |

@@ -4,14 +4,15 @@
 
 The simplest description is:
 
-> We have built and tested the matching engine, but it is not yet connected to the real
-> Excel/Outlook/ERP data flow and does not yet use a production embedding model.
+> We have built and tested the matching engine and the real two-file ERP import. SharePoint file
+> metadata and normalized offers have versioned API boundaries, but the live Graph synchronizer,
+> source extraction, and final production embedding-model choice remain deployment/workstream tasks.
 
 It currently works when it receives already-clean, structured data.
 
 ```mermaid
 flowchart LR
-    S["Excel, Outlook, ERP<br/>(extraction not built here)"] --> A["Normalized inquiry line"]
+    S["Inquiry Excel/SharePoint<br/>(external extraction)"] --> A["Normalized inquiry line"]
     A --> B["Validate input"]
     B --> C["Search for candidates<br/>in four ways"]
     C --> D["Merge candidate lists"]
@@ -245,9 +246,17 @@ Result: sufficient
 The CH12 product does not win merely because it has more stock. Product suitability and review status
 come before availability.
 
-The current code only uses confirmed, comparable on-hand stock. It does not yet calculate a
-sophisticated “available to offer” value from incoming orders, commitments and inquiries because the
-exact business meaning of those fields has not been confirmed.
+For imported ERP data, availability is now calculated as:
+
+```text
+raw availability = Lagerbestand + Menge in Bestellung - Menge in Auftrag
+fulfillable quantity = max(0, raw availability)
+```
+
+The raw result remains visible when negative; only the quantity that can be promised is clamped to
+zero. `Menge in Anfrage`/purchasing inquiries are stored when available but are not counted as
+confirmed incoming stock. The wire status names still say `on_hand_*` for V1 compatibility, but the
+number behind them is the calculated fulfillable quantity.
 
 ## Step 8: Rank the remaining products
 
@@ -329,6 +338,12 @@ controlled learning.
 | Deterministic ranking | Implemented |
 | API and decision storage | Implemented |
 | Database schema and migrations | Implemented |
+| Two-file ERP catalog/import API | Implemented and validated against the supplied CSVs |
+| Immutable text/inventory versions | Implemented |
+| Missing-item flag from first absence | Implemented |
+| Incremental embedding job queue/worker | Implemented; waits for an approved model |
+| SharePoint file-link and normalized-offer APIs | Implemented; extraction is external |
+| Free-first cloud embedding benchmark | Implemented |
 | Automated tests | Implemented |
 
 ## What is not yet operational?
@@ -336,16 +351,18 @@ controlled learning.
 | Area | Current reality |
 |---|---|
 | Excel/Outlook extraction | Must be built by the extraction workstream |
-| Lagerliste import | No production import process yet |
-| Filled product database | Schema exists, but the migration does not import the products |
-| Production embeddings | Storage/search exists; real multilingual model is not selected |
-| Automatic query embeddings | API currently needs a precomputed embedding unless a provider is configured |
-| ERP and SharePoint synchronization | Interfaces exist, but no live connector |
+| First production catalog load | Run the import against the deployed PostgreSQL database after migration |
+| Production embeddings | Worker exists; benchmark winner and immutable revision are not selected |
+| Automatic query embeddings | Works in a model-enabled runtime when the approved model is configured; leave disabled until selection |
+| ERP scheduling | CSV upload endpoint exists; the Azure schedule/upload job is deployment work |
+| SharePoint synchronization | File API exists; read-only Microsoft Graph scheduled job still needs deployment credentials/site IDs |
+| SharePoint extraction | Explicitly owned by the separate extraction workstream |
 | Supplier availability | Not connected |
 | Price, shelf-life and reliability ranking | Not active because comparable data and rules are missing |
 | Active learning | Decisions are stored, but the ranking does not learn from them yet |
 | Figma UI integration | Not implemented and the UI branch remains untouched |
 
-So the current code is a working, tested matching core—not yet a complete production workflow. The
-next major milestone is to feed it real normalized catalogue and inquiry data and select/evaluate a
-production multilingual embedding model.
+So Matching V1 now has its database and ingestion boundaries, not just an isolated algorithm. The
+remaining operational work is to deploy PostgreSQL, run the first import, connect the scheduled
+read-only jobs, execute the cloud benchmark, approve one pinned model, and connect the UI/extraction
+workstreams.

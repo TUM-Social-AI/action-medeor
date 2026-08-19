@@ -4,14 +4,16 @@
 
 Die einfachste Beschreibung lautet:
 
-> Wir haben die Matching-Engine entwickelt und getestet. Sie ist aber noch nicht an den echten
-> Excel-/Outlook-/ERP-Datenfluss angebunden und verwendet noch kein produktives Embedding-Modell.
+> Die Matching-Engine und der echte Zwei-Dateien-ERP-Import sind entwickelt und getestet.
+> SharePoint-Dateimetadaten und normalisierte Angebote besitzen versionierte API-Grenzen; der
+> Live-Graph-Abgleich, die Quellextraktion und die endgültige Wahl des produktiven
+> Embedding-Modells bleiben Aufgaben für Deployment beziehungsweise andere Arbeitsbereiche.
 
 Derzeit funktioniert sie, wenn sie bereits bereinigte und strukturierte Daten erhält.
 
 ```mermaid
 flowchart LR
-    S["Excel, Outlook, ERP<br/>(Extraktion hier nicht umgesetzt)"] --> A["Normalisierte Anfrageposition"]
+    S["Anfrage-Excel/SharePoint<br/>(externe Extraktion)"] --> A["Normalisierte Anfrageposition"]
     A --> B["Eingabe validieren"]
     B --> C["Kandidaten auf<br/>vier Wegen suchen"]
     C --> D["Kandidatenlisten zusammenführen"]
@@ -251,10 +253,17 @@ Ergebnis: ausreichend
 Das CH12-Produkt gewinnt nicht allein deshalb, weil mehr davon vorhanden ist. Produkteignung und
 Prüfstatus stehen vor der Verfügbarkeit.
 
-Der aktuelle Code verwendet ausschließlich bestätigten und vergleichbaren physischen Bestand. Er
-berechnet noch keinen komplexen „verfügbaren Angebotsbestand“ aus eingehenden Bestellungen,
-Reservierungen und Einkaufsanfragen, weil die genaue fachliche Bedeutung dieser Felder noch nicht
-bestätigt wurde.
+Für importierte ERP-Daten wird die Verfügbarkeit nun so berechnet:
+
+```text
+Rohverfügbarkeit = Lagerbestand + Menge in Bestellung - Menge in Auftrag
+erfüllbare Menge = max(0, Rohverfügbarkeit)
+```
+
+Ein negatives Rohergebnis bleibt sichtbar; nur die tatsächlich zusagbare Menge wird auf null
+begrenzt. Einkaufsanfragen werden, sofern vorhanden, gespeichert, aber nicht als bestätigter
+Zugang gezählt. Die API-Statusnamen enthalten aus V1-Kompatibilitätsgründen weiterhin `on_hand_*`,
+beziehen sich intern aber auf die berechnete erfüllbare Menge.
 
 ## Schritt 8: Verbleibende Produkte ordnen
 
@@ -338,23 +347,30 @@ spätere Offline-Auswertungen und kontrolliertes Lernen.
 | API und Speicherung von Entscheidungen | Umgesetzt |
 | Datenbankschema und Migrationen | Umgesetzt |
 | Automatisierte Tests | Umgesetzt |
+| Zwei-Dateien-ERP-Katalogimport | Umgesetzt und mit den gelieferten CSVs validiert |
+| Unveränderliche Text-/Bestandsversionen | Umgesetzt |
+| Fehlend-Markierung ab erstem Ausbleiben | Umgesetzt |
+| Inkrementelle Embedding-Aufträge/Worker | Umgesetzt; wartet auf freigegebenes Modell |
+| SharePoint-Dateilink- und normalisierte Angebots-APIs | Umgesetzt; Extraktion extern |
+| Cloud-Benchmark für zunächst kostenlose Modelle | Umgesetzt |
 
 ## Was ist noch nicht betriebsbereit?
 
 | Bereich | Aktuelle Realität |
 |---|---|
 | Excel-/Outlook-Extraktion | Muss im Extraktions-Arbeitsbereich entwickelt werden |
-| Import der Lagerliste | Noch kein produktiver Importprozess |
-| Befüllte Produktdatenbank | Schema vorhanden, Migration importiert aber keine Produkte |
-| Produktive Embeddings | Speicherung und Suche vorhanden; echtes mehrsprachiges Modell nicht ausgewählt |
-| Automatische Anfrage-Embeddings | API benötigt aktuell ein vorberechnetes Embedding, sofern kein Anbieter konfiguriert ist |
-| ERP- und SharePoint-Synchronisierung | Schnittstellen vorhanden, aber kein Live-Connector |
+| Erster produktiver Katalogbestand | Nach Migration Import gegen die bereitgestellte PostgreSQL-Datenbank ausführen |
+| Produktive Embeddings | Worker vorhanden; Benchmark-Sieger und unveränderliche Revision fehlen noch |
+| Automatische Anfrage-Embeddings | Funktionieren in einer modellfähigen Laufzeit bei konfiguriertem freigegebenem Modell; bis dahin deaktiviert lassen |
+| ERP-Zeitplan | CSV-Endpunkt vorhanden; Azure-Zeitplan/Upload ist Deployment-Arbeit |
+| SharePoint-Synchronisierung | Datei-API vorhanden; lesender Microsoft-Graph-Job benötigt Deployment-Zugang und Site-/Drive-IDs |
+| SharePoint-Extraktion | Gehört ausdrücklich zum separaten Extraktions-Arbeitsbereich |
 | Lieferantenverfügbarkeit | Nicht angebunden |
 | Rangfolge nach Preis, Haltbarkeit und Zuverlässigkeit | Nicht aktiv, weil vergleichbare Daten und Regeln fehlen |
 | Aktives Lernen | Entscheidungen werden gespeichert, die Rangfolge lernt aber noch nicht daraus |
 | Integration der Figma-UI | Nicht umgesetzt; der UI-Branch bleibt unverändert |
 
-Der aktuelle Code ist somit ein funktionierender, getesteter Matching-Kern, aber noch kein vollständiger
-Produktionsablauf. Der nächste große Meilenstein besteht darin, echte normalisierte Katalog- und
-Anfragedaten einzuspeisen und ein produktives mehrsprachiges Embedding-Modell auszuwählen und zu
-evaluieren.
+Matching V1 besitzt damit Datenbank- und Importgrenzen und ist nicht mehr nur ein isolierter
+Algorithmus. Operativ fehlen noch die PostgreSQL-Bereitstellung, der erste Import, die geplanten
+lesenden Jobs, der Cloud-Benchmark, die Freigabe eines fest versionierten Modells und die Anbindung
+von UI- und Extraktions-Arbeitsbereich.

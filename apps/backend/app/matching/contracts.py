@@ -13,7 +13,7 @@ from enum import StrEnum
 from typing import Any, Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class ContractModel(BaseModel):
@@ -127,6 +127,25 @@ class StockSnapshot(ContractModel):
     committed_order: Decimal | None = Field(default=None, ge=0)
     unit: str | None = None
     captured_at: AwareDatetime
+
+    @computed_field
+    @property
+    def available_raw(self) -> Decimal | None:
+        """Stored + ordered - reserved, preserving a negative business result."""
+        if self.on_hand is None:
+            return None
+        return (
+            self.on_hand
+            + (self.incoming_purchase_order or Decimal(0))
+            - (self.committed_order or Decimal(0))
+        )
+
+    @computed_field
+    @property
+    def fulfillable_quantity(self) -> Decimal | None:
+        """Quantity that can actually be promised; never expose a negative amount."""
+        available = self.available_raw
+        return max(Decimal(0), available) if available is not None else None
 
 
 class InquiryLineV1(ContractModel):

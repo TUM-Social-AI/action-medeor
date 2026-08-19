@@ -4,20 +4,21 @@
 
 ## 1. Was heute vorhanden ist
 
-Die aktuelle Implementierung ist ein funktionierender und getesteter Matching-Kern. Er kann eine
-bereits normalisierte Anfrageposition annehmen, vorbereitete Katalog- und Historiendaten durchsuchen,
-Kandidaten prüfen, eine erklärte Rangfolge zurückgeben und die spätere menschliche Entscheidung
-speichern.
+Die aktuelle Implementierung ist eine funktionierende und getestete Matching-V1-Datenebene. Sie kann
+eine normalisierte Anfrageposition annehmen, die beiden echten Business-Central-CSV-Exporte
+importieren, Katalogtext und Bestand getrennt versionieren, SharePoint-Dateilinks sowie normalisierte
+Angebotsnachweise verwalten, Kandidaten prüfen, eine erklärte Rangfolge zurückgeben und die spätere
+menschliche Entscheidung speichern.
 
-Es handelt sich noch nicht um einen vollständigen Produktionsablauf. Der Code liest weder die echte
-Lagerliste noch Outlook-E-Mails, synchronisiert kein ERP oder SharePoint, erzeugt keine produktiven
-Embeddings und ist nicht mit der Figma-UI verbunden. Die Datenbankmigration erstellt die benötigten
-Strukturen, befüllt sie aber nicht mit den Produkten von action medeor.
+Es handelt sich noch nicht um einen vollständig bereitgestellten Produktionsablauf. Die Extraktion
+von Anfrage- und Angebotsdokumenten bleibt ein separater Arbeitsbereich; der lesende Microsoft-Graph-
+Job und der geplante CSV-Upload benötigen noch Azure-Deployment-Konfiguration, und ein produktives
+Embedding-Modell wurde noch nicht freigegeben. Die dafür benötigten Schemata und APIs sind umgesetzt.
 
 Das hilfreichste mentale Modell lautet:
 
-> Die Engine und ihre Anschlussstellen sind vorhanden; die echten Datenpipelines und das ausgewählte
-> Produktivmodell müssen noch angebunden werden.
+> Engine, versionierte Datenbank, ERP-Import und Übergabe-APIs sind vorhanden; Deployment-Jobs,
+> Extraktion und ausgewähltes Produktivmodell müssen noch angebunden werden.
 
 ```mermaid
 flowchart LR
@@ -269,11 +270,11 @@ müssen deshalb nicht erneut eingebettet werden.
 
 ### Aktuelle mehrsprachige Realität
 
-Diese Funktion übersetzt nicht. Sie kombiniert die Originalbeschreibung mit einer optionalen
-Übersetzung aus dem vorgelagerten Prozess. Lexikalisches Matching ist daher nur teilweise
-mehrsprachig. Echte sprachübergreifende Trefferabdeckung hängt von einem künftig freigegebenen
-mehrsprachigen Embedding-Modell oder einer vorgelagerten Übersetzung ab. In der produktiven API ist
-derzeit kein Embedding-Anbieter automatisch konfiguriert.
+Diese Funktion übersetzt nicht. Der ERP-Import liefert inzwischen Grundbeschreibungen und die
+offiziellen Beschreibungen aus `Artikeluebersetzungen.csv`; die Anfrageextraktion kann zusätzlich eine
+Übersetzung liefern. Das verbessert die lexikalische Abdeckung, ersetzt aber kein mehrsprachiges
+Modell. Der Modellbenchmark testet deshalb echte französische Anfragen gegen Grundbeschreibungen und
+unterstützt zusätzlich geprüfte Anfrage-Labels.
 
 ## 7. Schritt 3 — Eine breite Kandidatenmenge suchen
 
@@ -335,15 +336,19 @@ Im Test besitzen Artikel `410001001` und der inaktive Artikel `410001003` den st
 Vektortreffer. Das zeigt: Vektorrelevanz erzeugt nur Kandidaten; sie darf einen inaktiven Artikel nicht
 freigeben.
 
-### Was für produktive Vektoren noch fehlt
+### Was für produktive Vektoren vorhanden ist und noch fehlt
 
-- Es wurde noch kein mehrsprachiges Modell ausgewählt oder anhand eines Benchmarks verglichen.
-- Die API-Konfiguration in [`api.py`](api.py) richtet die Vektorsuche, aber keinen automatischen
-  `EmbeddingProvider` ein.
-- Ein Aufrufer muss daher aktuell sowohl `query_embedding` als auch `embedding_model_id` übergeben,
-  damit der Vektorkanal über die API verwendet wird.
-- Es gibt noch keinen produktiven Indexierungsprozess, der für alle Produkte der Lagerliste Vektoren
-  erzeugt und speichert.
+- [`../../../../benchmarks/embeddings`](../../../../benchmarks/embeddings) vergleicht drei offene
+  mehrsprachige Modelle am echten angebotstauglichen Katalog und optionalen geprüften Labels.
+- [`../catalog/embeddings.py`](../catalog/embeddings.py) enthält einen dauerhaften inkrementellen
+  Worker für Registrierung, Erstinitialisierung, Wiederaufnahme hängender Arbeit und spätere neue
+  beziehungsweise textlich geänderte Versionen.
+- E5-Anfrage-/Dokumentpräfixe und die Retrieval-Anweisung des Instruct-Modells werden einheitlich
+  angewendet.
+- Modell und Revision wurden noch nicht freigegeben; das normale Web-Image enthält daher bewusst
+  keine schweren Modellabhängigkeiten.
+- Bis ein modellfähiger Laufzeitdienst bereitsteht, kann ein Aufrufer weiterhin `query_embedding`
+  zusammen mit derselben registrierten `embedding_model_id` übergeben.
 - Bei der aktuellen Kataloggröße ist kein approximativer HNSW-/IVFFlat-Index erforderlich.
 
 ### 3D. Historische Suche
@@ -514,16 +519,17 @@ Möglichkeiten erhält die Entscheidung und macht sie nachvollziehbar.
 
 ### Was geschieht
 
-Der Code verwendet `on_hand` nur, wenn dessen Einheit nachweislich mit der angefragten Menge
-vergleichbar ist. Verpackungsanzahlen können ebenfalls verglichen werden, wenn der Bestand
-ausdrücklich in Verpackungen gemessen wird und die Verpackungsberechnung eine exakte empfohlene Option
-besitzt.
+Der Import berechnet `available_raw = on_hand + incoming_purchase_order - committed_order` und bewahrt
+negative Ergebnisse als operativen Nachweis. Das Matching verwendet
+`fulfillable_quantity = max(0, available_raw)` nur, wenn die Einheit nachweislich mit der angefragten
+Menge vergleichbar ist. Verpackungsanzahlen können ebenfalls verglichen werden, wenn der Bestand
+ausdrücklich in Verpackungen gemessen wird und eine exakte empfohlene Option vorliegt.
 
 Mögliche Ergebnisse sind:
 
 - `on_hand_sufficient`;
 - `on_hand_partial`;
-- `procurement_indicated`, wenn der vergleichbare physische Bestand null ist;
+- `procurement_indicated`, wenn der vergleichbare erfüllbare Bestand null ist;
 - `unknown`, wenn Daten oder Einheitenbasis fehlen;
 - `not_allowed` ist für künftige operative Regeln reserviert.
 
@@ -534,12 +540,12 @@ Im Beispiel wird der Bestand beider verbleibender Artikel in Stück gemessen:
 410001002: 500 vorhanden gegenüber 50 angefragt → ausreichend
 ```
 
-### Warum eingehende und gebundene Mengen noch nicht kombiniert werden
+### Warum Einkaufsanfragen nicht addiert werden
 
-Die Datenbank erhält physischen Bestand, eingehende Bestellungen, Einkaufsanfragen und gebundene
-Aufträge als getrennte Rohwerte. Sie erfindet keine Formel für den „verfügbaren Angebotsbestand“, weil
-Bedeutung, Zeitpunkt und Einheitenbasis dieser Spalten noch nicht bestätigt sind. Fehlende Daten
-bleiben `unknown`, statt als null behandelt zu werden.
+Die bestätigte V1-Formel verbindet Lagerbestand, bestellte und gebundene Mengen. Einkaufsanfragen
+bleiben getrennt gespeichert, weil sie keine bestätigten Bestellungen sind und daher nicht als Zugang
+zählen. Fehlender Lagerbestand oder eine nicht vergleichbare Einheit bleibt `unknown`; ein negatives
+abgeleitetes Rohergebnis bleibt sichtbar, kann aber nie zu einer negativen zusagbaren Menge werden.
 
 Die Lieferantenverfügbarkeit folgt demselben Grundsatz: Die Architektur kann eine Quelle ergänzen,
 aber es gibt noch keinen freigegebenen Lieferanten-Connector und keine gemeinsame Bestandssemantik.
@@ -737,9 +743,11 @@ Speichert eine validierte menschliche Entscheidung und gibt HTTP 201 zurück. Fe
 - `PgVectorRepository`;
 - das standardmäßige versionierte Matching-Regelwerk.
 
-Ein produktiver `EmbeddingProvider` wird hier noch nicht eingebunden. Normale API-Anfragen verwenden
-daher exakte, lexikalische und historische Suche, sofern der Aufrufer nicht einen vorberechneten
-Anfragevektor mit Modell-ID übergibt.
+Wenn `EMBEDDING_MODEL_NAME` und eine festgeschriebene `EMBEDDING_MODEL_REVISION` in einer Laufzeit mit
+Sentence Transformers konfiguriert sind, erzeugt die API Anfrage-Embeddings mit demselben Anbieter wie
+der Katalog-Worker. Das schlanke Standard-Web-Image enthält weder PyTorch noch Modellgewichte. Ohne
+modellfähige Laufzeit werden exakte, lexikalische und historische Suche verwendet, sofern der Aufrufer
+keinen vorberechneten Vektor samt passender Modell-ID übergibt.
 
 Die API ist bewusst unabhängig von der UI. Sie akzeptiert Matching-Verträge und keine React-/Figma-
 Darstellungsmodelle oder hochgeladenen Quelldateien.
@@ -747,7 +755,8 @@ Darstellungsmodelle oder hochgeladenen Quelldateien.
 ## 16. Persistenz mit PostgreSQL und pgvector
 
 **Zuständige Dateien:** [`adapters/persistence.py`](adapters/persistence.py),
-[`20260814_0001_matching_foundation.py`](../../migrations/versions/20260814_0001_matching_foundation.py)
+[`20260814_0001_matching_foundation.py`](../../migrations/versions/20260814_0001_matching_foundation.py),
+[`20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py)
 und [`docker-compose.yml`](../../../../docker-compose.yml).
 
 Der Compose-Dienst verwendet weiterhin den Datenbanknamen `allocura`, Port 5432 und das vorhandene
@@ -762,7 +771,9 @@ noch absichtlich gelöscht.
 | `source_snapshots` | Quellenidentität, Prüfsumme, Erfassungszeit und Fundstelle | Unveränderliche Herkunft jeder importierten Version |
 | `catalog_items` | Stabile Artikelnummer, Produktbereich, Aktiv-/Qualitätsstatus | Identität und maßgeblicher Status überdauern Beschreibungsänderungen |
 | `catalog_item_versions` | Beschreibungen, Attribute, Verpackung, Inhalts-Hash und Gültigkeitszeit | Produktinhalt kann sich ändern, während die Identität stabil bleibt |
+| `catalog_item_translations` | Rohsprachcode und übersetzte Beschreibung je Snapshot | Sprachinformationen des ERP bleiben nachvollziehbar |
 | `inventory_snapshots` | Bestand, Eingang, Anfrage, Bindung, Einheit und Erfassungszeit | Häufige Bestandsänderungen dürfen kein erneutes Einbetten des Produkttexts erzwingen |
+| `catalog_imports` | Dateipaar-Prüfsummen, Ergebniszahlen, Warnungen und Abschlusszeit | Wiederholungen sind idempotent und Importe prüfbar |
 
 `PostgresCatalogRepository` wählt für jeden Artikel die neueste Produktversion und den neuesten
 Bestandssnapshot. Eine optionale `catalog_snapshot_id` kann die Katalogquellversion einschränken.
@@ -773,6 +784,7 @@ Bestandssnapshot. Eine optionale `catalog_snapshot_id` kann die Katalogquellvers
 |---|---|
 | `embedding_models` | Anbieter, Modellname/-version, Dimensionen und Kosinusmetrik |
 | `product_embeddings` | Paar aus Katalogversion und Modell, Inhalts-Hash und Vektor |
+| `catalog_embedding_jobs` | Ausstehende/laufende/abgeschlossene/fehlgeschlagene inkrementelle Arbeit |
 
 Vektoren gehören zu einer Katalogartikelversion und nicht zum veränderlichen Bestand. Derzeit wird
 eine exakte Kosinussuche verwendet. Ein modellspezifischer approximativer Index kann später ergänzt
@@ -783,6 +795,7 @@ werden, ohne die Schnittstelle des Matching-Dienstes zu ersetzen.
 | Tabelle | Zweck |
 |---|---|
 | `historical_offers` | Normalisierte, mit Zeitstempel versehene historische Anfrage- und Beschaffungsnachweise |
+| `sharepoint_offer_files` | Versionierte Dateimetadaten, aktueller/archivierter Zustand und Live-Quelllink |
 | `match_runs` | Ursprüngliche Anfrage, Versionen, Status, vollständiges Ergebnis oder Fehler |
 | `match_candidates` | Kandidatenbezogene Nachweise für Analyse und Prüfung |
 | `match_decisions` | Spätere menschliche Entscheidung und Abweichungsbegründung |
@@ -795,11 +808,14 @@ Kandidatenzeilen gespeichert. Schlägt diese Transaktion fehl, setzt das Reposit
 es `failed` aufzeichnet. So bleibt ein abschließender Prüfstatus erhalten, statt eine teilweise
 gespeicherte Kandidatenliste zu hinterlassen.
 
-### Was die Migration nicht tut
+### Was Migration und Import jeweils tun
 
-Sie importiert weder die Lagerliste noch erzeugt sie Produkt-Embeddings oder konfiguriert Live-Daten
-aus ERP und Historie. Nach der Migration existieren die Strukturen, können aber leer sein, bis ein
-Import- und Indexierungsprozess sie befüllt.
+`alembic upgrade head` erstellt ausschließlich Strukturen und importiert niemals stillschweigend
+private Dateien. Der ausdrückliche Katalogendpunkt übernimmt Erstbefüllung und spätere Aktualisierung.
+Die gelieferten Dateien ergeben 2.773 Artikel, 2.879 Übersetzungen, 1.124 nicht angebotstaugliche
+Stammzeilen und 1.645 angebotstaugliche Varianten. Die Registrierung und Ausführung des Workers
+initialisiert die Vektoren. Diese Trennung hält Schema-Deployment wiederholbar und Datenimport
+ausdrücklich.
 
 ## 17. Reproduzierbarkeit, Herkunft und Einschränkungen
 
@@ -938,9 +954,10 @@ besitzen, ist PostgreSQL mit pgvector das sauberere System.
 | RRF, Regeln, Verpackung, Verfügbarkeit, Rangfolge | Umgesetzt | Der getestete Matching-Kern läuft vollständig |
 | API, Läufe und Entscheidungen | Umgesetzt | Aufrufer können bei vorhandenen DB-Daten matchen, lesen und Feedback speichern |
 | Excel-/Outlook-Extraktion | Hier nicht umgesetzt | Extraktions-Arbeitsbereich muss die Verträge ausgeben |
-| Lagerlisten-/ERP-Katalogimport | Nicht betriebsbereit | Datenbank wird nicht automatisch befüllt |
-| Indexierung von Produkt-Embeddings | Nicht betriebsbereit | Kein Produktivmodell und kein Stapelprozess |
-| Live-Connectoren für SharePoint/ERP/Lieferanten | Nicht betriebsbereit | Schnittstellen vorhanden; Zugang, Schema und Semantik ungeklärt |
+| Zwei-Dateien-ERP-Katalogimport | Umgesetzt | Erstbefüllung, Bestandsaktualisierung, Fehlend-Markierung ab erstem Ausbleiben, Reaktivierung und idempotente Wiederholung |
+| Inkrementelle Produkt-Embedding-Indexierung | Umgesetzt | Dauerhafter Worker vorhanden; freigegebenes Modell/Revision fehlt noch |
+| SharePoint-Datei-/Angebotsübergabe | Umgesetzt | Dateiliste mit Live-Links und API für normalisierte Ausgabe; Extraktion extern |
+| Live-Zeitpläne für SharePoint/ERP | Deployment-Arbeit | API-Grenzen vorhanden; Azure-Jobs und Zugang/Site-IDs müssen konfiguriert werden |
 | Preis-/Haltbarkeits-/Zuverlässigkeitsrangfolge | Nicht aktiv | Vergleichbare Daten und freigegebene Regeln fehlen |
 | Aktives oder erlerntes Ranking | Nicht aktiv | Feedback wird nur für spätere kontrollierte Nutzung gespeichert |
 | Verbindung zur Figma-UI | Nicht umgesetzt | UI-Branch bleibt unverändert |
@@ -952,9 +969,9 @@ besitzen, ist PostgreSQL mit pgvector das sauberere System.
 | Excel-/PDF-/E-Mail-Extraktion | Anderes Team und anderer Fehlerbereich | Strikte Verträge und Herkunft | Extraktor-Payload vereinbart |
 | Outlook-Connector | Benötigt Postfach, Entra, Berechtigungen und Betrieb | Outlook-Quellentypen/-Fundstellen | Postfach und Zugriff freigegeben |
 | Business-Central-Live-Synchronisierung | Kein bestätigter API-/Schemazugriff | Katalog-/Bestandsschnittstellen und Snapshots | Schreibgeschützte API und Datenwörterbuch |
-| SharePoint-Live-Synchronisierung | Ordner-/Statusverantwortung ungeklärt | Historienschnittstelle und Herkunft | Umfang und Berechtigungen freigegeben |
+| SharePoint-Live-Synchronisierung | Graph-Site-/Drive-IDs und Laufzeit-Zugang sind Deployment-spezifisch | Versionierte Dateiliste, Live-Links und Herkunft | Lesender Azure-Job konfiguriert |
 | Lieferanten-Bestands-APIs | Lieferanten und Semantik unbekannt | Lieferantenfähige Grenze | Eine freigegebene Pilotquelle |
-| Produktives Embedding-Modell | Kein gelabelter Vergleich und keine Governance-Entscheidung | Anbieterport, Registry und pgvector | Benchmark-Gewinner und Datenschutzfreigabe |
+| Produktives Embedding-Modell | Benchmark ist bereit, aber noch nicht ausgeführt/freigegeben | Free-first-Benchmark, Anbieter, Worker, Registry und pgvector | Benchmark-Gewinner und Datenschutzfreigabe |
 | HNSW/IVFFlat | Aktueller Katalog benötigt keine approximative Suche | pgvector-Speicherung | p95-Latenz-/Skalenschwelle überschritten |
 | Cross-Encoder | Zusätzliche Latenz/MLOps ohne gemessenen Nutzen | Grenze für erneute Rangbildung | Recall@10 gut, Reihenfolge messbar schwach |
 | LLM als Entscheider | Halluzination, Kosten, Datenschutz und Reproduzierbarkeit | Nicht im kritischen Pfad | Enger nicht sicherheitskritischer Anwendungsfall |
@@ -964,7 +981,7 @@ besitzen, ist PostgreSQL mit pgvector das sauberere System.
 | Wissensgraph-Datenbank | Keine nachgewiesene mehrstufige Arbeitslast | Relationale Konzepte ergänzbar | Wiederholte maßgebliche Graphabfragen |
 | Vollständige ATC-/SNOMED-/GMDN-Zuordnung | Zweck, Lizenz und Zuordnung unbestätigt | Ontologiefähige Attribute | Entscheidung über action-medeor-Standard |
 | Harte Substitutionsregeln | Klinische/technische Gleichwertigkeit unbestätigt | Versioniertes Regelwerk | Ausdrückliche Freigabe der Fachverantwortlichen |
-| Formel für verfügbaren Angebotsbestand | Bestandssemantik ungeklärt | Getrennte Rohdatensnapshots | Maßgebliche Formel bestätigt |
+| Erweiterte Verfügbarkeitsregeln | V1 nutzt gelagert + bestellt - gebunden; Lieferzeiten und Lieferantensemantik fehlen | Getrennte Roh- und abgeleitete Mengen | Maßgebliche Ergänzungen bestätigt |
 | Automatischer Haltbarkeitsausschluss | Regel für Ankunft, Empfang und Route ungeklärt | Vertragsfeld und Regel-Schnittstelle | Bestätigte Regel und Chargendaten |
 | Preisrangfolge | Währung, Basis, Fracht und Gültigkeit unvollständig | Erweiterungspunkt für vergleichbare Nachweise | Normalisierter Preisvertrag |
 | Lieferantenzuverlässigkeitswert | Keine Ergebnishistorie/Mindeststichprobe | Ergebnisfähiges Historienmodell | Genügend abgeschlossene Beschaffungen |

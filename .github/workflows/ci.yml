@@ -1,0 +1,57 @@
+name: Test application
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: allocura_test
+          POSTGRES_USER: allocura
+          POSTGRES_PASSWORD: allocura
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U allocura -d allocura_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: apps/backend
+    env:
+      DATABASE_URL: postgresql+asyncpg://allocura:allocura@localhost:5432/allocura_test
+      MATCHING_TEST_DATABASE_URL: postgresql+asyncpg://allocura:allocura@localhost:5432/allocura_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen --dev
+      - run: uv run ruff check app tests ../../benchmarks/embeddings
+      - run: uv run alembic upgrade head
+      - run: uv run pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:frontend

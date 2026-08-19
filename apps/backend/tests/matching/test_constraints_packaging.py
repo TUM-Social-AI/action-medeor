@@ -43,3 +43,26 @@ def test_observed_stock_is_unknown_when_stock_basis_is_missing() -> None:
     status, warning = observed_availability(line().quantity, candidate, packaging)
     assert status is AvailabilityStatus.UNKNOWN
     assert warning and "not confirmed" in warning
+
+
+def test_availability_uses_stored_plus_ordered_minus_reserved() -> None:
+    candidate = item("410001001", "Foley catheter", on_hand=Decimal("10"))
+    assert candidate.stock is not None
+    candidate = candidate.model_copy(
+        update={
+            "stock": candidate.stock.model_copy(
+                update={
+                    "incoming_purchase_order": Decimal("5"),
+                    "committed_order": Decimal("20"),
+                }
+            )
+        }
+    )
+    packaging = calculate_packaging(line().quantity, candidate)
+
+    availability, warning = observed_availability(line().quantity, candidate, packaging)
+
+    assert candidate.stock.available_raw == Decimal("-5")
+    assert candidate.stock.fulfillable_quantity == Decimal("0")
+    assert availability is AvailabilityStatus.PROCUREMENT_INDICATED
+    assert warning is None

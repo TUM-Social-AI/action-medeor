@@ -5,7 +5,6 @@ from fastapi import FastAPI
 from starlette.exceptions import HTTPException
 from starlette.staticfiles import StaticFiles
 
-
 FRONTEND_DIST_DIR = Path(__file__).resolve().parents[1] / "static"
 
 

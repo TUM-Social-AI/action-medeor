@@ -2,7 +2,6 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 LOCAL_CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -18,6 +17,8 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://allocura:allocura@localhost:5432/allocura"
     )
     cors_origins: str = ""
+    embedding_model_name: str = ""
+    embedding_model_revision: str = "main"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

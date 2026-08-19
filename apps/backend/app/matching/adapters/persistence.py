@@ -75,7 +75,9 @@ class PostgresCatalogRepository:
                            ) AS row_number
                     FROM inventory_snapshots i
                 )
-                SELECT c.item_number, c.domain, c.active, c.quality_blocked,
+                SELECT c.item_number, c.domain,
+                       (c.active AND c.matching_eligible AND NOT c.source_missing) AS active,
+                       c.quality_blocked,
                        v.descriptions, v.attributes, v.manufacturer, v.brand,
                        v.family_id, v.package, v.replenishment_method, v.t1,
                        s.source_type, s.document_id, s.external_id, s.uri,
@@ -174,6 +176,9 @@ class PgVectorRepository:
                                          AND lv.row_number = 1
                 JOIN catalog_items c ON c.item_number = lv.item_number
                 WHERE pe.model_id = :model_id AND c.domain = :domain
+                  AND c.active = TRUE
+                  AND c.matching_eligible = TRUE
+                  AND c.source_missing = FALSE
                 ORDER BY pe.embedding <=> CAST(:embedding AS vector), lv.item_number
                 LIMIT :limit
                 """
@@ -215,7 +220,8 @@ class PostgresHistoryRepository:
                        s.checksum, s.captured_at AS source_captured_at, s.locator
                 FROM historical_offers h
                 JOIN source_snapshots s ON s.id = h.source_snapshot_id
-                WHERE (
+                WHERE h.is_current = TRUE AND h.active = TRUE
+                  AND (
                     CAST(:partner_id AS TEXT) IS NULL
                     OR h.partner_id IS NULL
                     OR h.partner_id = :partner_id
