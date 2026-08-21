@@ -35,6 +35,7 @@ class VectorRepository(Protocol):
         model_id: str,
         domain: ProductDomain,
         limit: int,
+        snapshot_id: str | None = None,
     ) -> Sequence[RetrievalHit]: ...
 
 

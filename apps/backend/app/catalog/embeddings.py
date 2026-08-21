@@ -158,7 +158,7 @@ class CatalogEmbeddingJobService:
                             WHERE c.active = TRUE
                               AND c.matching_eligible = TRUE
                               AND c.source_missing = FALSE
-                            ORDER BY v.item_number, v.valid_from DESC, v.id DESC
+                            ORDER BY v.item_number, v.version_sequence DESC
                         ), missing AS (
                             SELECT lv.id
                             FROM latest_versions lv

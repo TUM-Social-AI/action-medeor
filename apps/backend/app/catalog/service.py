@@ -41,11 +41,11 @@ class CatalogImportService:
                 WITH latest_version AS (
                     SELECT * FROM catalog_item_versions
                     WHERE item_number = :item_number
-                    ORDER BY valid_from DESC, id DESC LIMIT 1
+                    ORDER BY version_sequence DESC LIMIT 1
                 ), latest_inventory AS (
                     SELECT * FROM inventory_snapshots
                     WHERE item_number = :item_number
-                    ORDER BY captured_at DESC, id DESC LIMIT 1
+                    ORDER BY inventory_sequence DESC LIMIT 1
                 )
                 SELECT c.item_number, c.domain, c.matching_eligible, c.source_missing,
                        v.descriptions, v.family_id, v.attributes,
@@ -103,20 +103,20 @@ class CatalogImportService:
         previous = await self._session.execute(
             text(
                 """
-                SELECT id, summary
+                SELECT id, article_checksum, translation_checksum, summary
                 FROM catalog_imports
-                WHERE article_checksum = :article_checksum
-                  AND translation_checksum = :translation_checksum
-                  AND status IN ('completed', 'completed_with_warnings')
+                WHERE status IN ('completed', 'completed_with_warnings')
+                ORDER BY import_sequence DESC
+                LIMIT 1
                 """
-            ),
-            {
-                "article_checksum": parsed.article_checksum,
-                "translation_checksum": parsed.translation_checksum,
-            },
+            )
         )
         existing_import = previous.mappings().first()
-        if existing_import:
+        if (
+            existing_import
+            and existing_import["article_checksum"] == parsed.article_checksum
+            and existing_import["translation_checksum"] == parsed.translation_checksum
+        ):
             response = CatalogImportResponseV1.model_validate(existing_import["summary"])
             await self._session.rollback()
             return response.model_copy(update={"idempotent_replay": True})
@@ -186,8 +186,7 @@ class CatalogImportService:
         source_uri: str | None,
     ) -> CatalogImportResponseV1:
         import_id = uuid4()
-        # source_snapshots.checksum is VARCHAR(128). Hash the ordered pair instead of storing
-        # two 64-character digests plus a separator (129 characters).
+        # Keep the ordered file pair as one compact, fixed-length source identifier.
         combined_checksum = hashlib.sha256(
             f"{parsed.article_checksum}:{parsed.translation_checksum}".encode()
         ).hexdigest()
@@ -206,7 +205,7 @@ class CatalogImportService:
             metadata={"role": "article_translations", "import_id": str(import_id)},
         )
         combined_source_id = await self._source_snapshot(
-            document_id="erp-catalog-import",
+            document_id=f"erp-catalog-import:{import_id}",
             checksum=combined_checksum,
             captured_at=captured_at,
             uri=source_uri,
@@ -249,7 +248,7 @@ class CatalogImportService:
                     SELECT DISTINCT ON (item_number)
                            item_number, content_hash, record_hash, id
                     FROM catalog_item_versions
-                    ORDER BY item_number, valid_from DESC, id DESC
+                    ORDER BY item_number, version_sequence DESC
                 )
                 SELECT c.item_number, c.source_missing, v.content_hash, v.record_hash,
                        v.id AS version_id
@@ -526,6 +525,7 @@ class CatalogImportService:
         )
         response = CatalogImportResponseV1(
             import_id=import_id,
+            catalog_snapshot_id=combined_source_id,
             status=status,
             inserted_items=inserted,
             text_updated_items=text_changed,

@@ -108,6 +108,40 @@ async def test_fallback_without_vectors_or_history_still_returns_lexical_candida
 
 
 @pytest.mark.asyncio
+async def test_pinned_catalog_snapshot_is_also_used_for_vector_retrieval() -> None:
+    snapshot_id = "snapshot-a"
+    catalog_item = item("410001001", "Foley urinary catheter sterile CH18")
+    vectors = InMemoryVectorRepository()
+    vectors.add(
+        item_number=catalog_item.item_number,
+        model_id="model-v1",
+        domain=catalog_item.domain,
+        embedding=(1.0, 0.0),
+        snapshot_id=snapshot_id,
+    )
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([catalog_item]),
+        history_repository=InMemoryHistoryRepository(),
+        run_repository=InMemoryMatchRunRepository(),
+        vector_repository=vectors,
+        policy=load_default_policy(),
+    )
+
+    result = await service.match(
+        MatchRequestV1(
+            inquiry_line=line(),
+            catalog_snapshot_id=snapshot_id,
+            query_embedding=(1.0, 0.0),
+            embedding_model_id="model-v1",
+        )
+    )
+
+    assert "vector" in {
+        evidence.retriever for evidence in result.candidates[0].retrieval_evidence
+    }
+
+
+@pytest.mark.asyncio
 async def test_completed_run_may_return_no_candidate_instead_of_padding_top_ten() -> None:
     service = MatchingService(
         catalog_repository=InMemoryCatalogRepository(

@@ -22,6 +22,7 @@ class CatalogImportStatus(StrEnum):
 class CatalogImportResponseV1(CatalogContract):
     contract_version: str = Field(default="1", pattern=r"^1$")
     import_id: UUID
+    catalog_snapshot_id: UUID | None = None
     status: CatalogImportStatus
     idempotent_replay: bool = False
     inserted_items: int = 0

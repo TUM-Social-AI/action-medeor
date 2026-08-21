@@ -126,6 +126,7 @@ class MatchingService:
                         model_id=model_id,
                         domain=request.inquiry_line.domain,
                         limit=request.retrieval_limit,
+                        snapshot_id=request.catalog_snapshot_id,
                     )
                 )
 

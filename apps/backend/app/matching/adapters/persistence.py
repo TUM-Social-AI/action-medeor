@@ -61,7 +61,7 @@ class PostgresCatalogRepository:
                 WITH versions AS (
                     SELECT v.*,
                            ROW_NUMBER() OVER (
-                               PARTITION BY v.item_number ORDER BY v.valid_from DESC, v.id DESC
+                               PARTITION BY v.item_number ORDER BY v.version_sequence DESC
                            ) AS row_number
                     FROM catalog_item_versions v
                     WHERE (
@@ -71,9 +71,13 @@ class PostgresCatalogRepository:
                 ), inventory AS (
                     SELECT i.*,
                            ROW_NUMBER() OVER (
-                               PARTITION BY i.item_number ORDER BY i.captured_at DESC, i.id DESC
+                               PARTITION BY i.item_number ORDER BY i.inventory_sequence DESC
                            ) AS row_number
                     FROM inventory_snapshots i
+                    WHERE (
+                        CAST(:snapshot_id AS TEXT) IS NULL
+                        OR CAST(i.source_snapshot_id AS TEXT) = :snapshot_id
+                    )
                 )
                 SELECT c.item_number, c.domain,
                        (c.active AND c.matching_eligible AND NOT c.source_missing) AS active,
@@ -147,6 +151,7 @@ class PgVectorRepository:
         model_id: str,
         domain: ProductDomain,
         limit: int,
+        snapshot_id: str | None = None,
     ) -> list[RetrievalHit]:
         dimensions = await self._session.scalar(
             text("SELECT dimensions FROM embedding_models WHERE id = :model_id"),
@@ -165,9 +170,13 @@ class PgVectorRepository:
                 WITH latest_versions AS (
                     SELECT v.id, v.item_number,
                            ROW_NUMBER() OVER (
-                               PARTITION BY v.item_number ORDER BY v.valid_from DESC, v.id DESC
+                               PARTITION BY v.item_number ORDER BY v.version_sequence DESC
                            ) AS row_number
                     FROM catalog_item_versions v
+                    WHERE (
+                        CAST(:snapshot_id AS TEXT) IS NULL
+                        OR CAST(v.source_snapshot_id AS TEXT) = :snapshot_id
+                    )
                 )
                 SELECT lv.item_number,
                        1 - (pe.embedding <=> CAST(:embedding AS vector)) AS similarity
@@ -188,6 +197,7 @@ class PgVectorRepository:
                 "model_id": model_id,
                 "domain": domain.value,
                 "limit": limit,
+                "snapshot_id": snapshot_id,
             },
         )
         return [
@@ -196,7 +206,7 @@ class PgVectorRepository:
                 retriever="vector",
                 rank=rank,
                 score=float(row["similarity"]),
-                details={"model_id": model_id},
+                details={"model_id": model_id, "catalog_snapshot_id": snapshot_id},
             )
             for rank, row in enumerate(result.mappings(), start=1)
         ]

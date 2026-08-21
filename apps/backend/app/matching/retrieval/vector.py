@@ -20,11 +20,13 @@ class VectorRetriever:
         model_id: str,
         domain: ProductDomain,
         limit: int,
+        snapshot_id: str | None = None,
     ) -> list[RetrievalHit]:
         results = await self._repository.search(
             embedding=embedding,
             model_id=model_id,
             domain=domain,
             limit=limit,
+            snapshot_id=snapshot_id,
         )
         return list(results)

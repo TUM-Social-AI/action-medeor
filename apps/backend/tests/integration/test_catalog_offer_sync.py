@@ -24,6 +24,125 @@ TRANSLATION_HEADER = "Artikelnr.;Sprachcode;Beschreibung;Beschreibung 2\r\n"
 
 
 @pytest.mark.asyncio
+async def test_catalog_reapplies_older_contents_after_an_intervening_import() -> None:
+    database_url = os.getenv("MATCHING_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("MATCHING_TEST_DATABASE_URL is not configured")
+
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid4().hex[:10]
+    item_number = f"5{suffix}"
+    marker = f"replay-{suffix}"
+    captured_at = datetime(2026, 8, 21, 9, tzinfo=UTC)
+    articles_a = (
+        ARTICLE_HEADER
+        + f"{item_number};;Original catheter;;STÜCK;404;nein;10;0;0;2\r\n"
+    ).encode()
+    articles_b = (
+        ARTICLE_HEADER
+        + f"{item_number};;Changed catheter;;STÜCK;404;nein;20;0;0;2\r\n"
+    ).encode()
+    translations = TRANSLATION_HEADER.encode()
+    import_ids = []
+
+    try:
+        async with sessions() as session:
+            service = CatalogImportService(session)
+            first_a = await service.import_files(
+                article_data=articles_a,
+                translation_data=translations,
+                article_filename=f"{marker}-articles.csv",
+                translation_filename=f"{marker}-translations.csv",
+                captured_at=captured_at,
+            )
+            import_ids.append(first_a.import_id)
+            imported_b = await service.import_files(
+                article_data=articles_b,
+                translation_data=translations,
+                article_filename=f"{marker}-articles.csv",
+                translation_filename=f"{marker}-translations.csv",
+                captured_at=captured_at,
+            )
+            import_ids.append(imported_b.import_id)
+            final_a = await service.import_files(
+                article_data=articles_a,
+                translation_data=translations,
+                article_filename=f"{marker}-articles.csv",
+                translation_filename=f"{marker}-translations.csv",
+                captured_at=captured_at,
+            )
+            import_ids.append(final_a.import_id)
+            replay = await service.import_files(
+                article_data=articles_a,
+                translation_data=translations,
+                article_filename=f"{marker}-articles.csv",
+                translation_filename=f"{marker}-translations.csv",
+                captured_at=captured_at,
+            )
+            view = await service.get_item(item_number)
+            assert final_a.idempotent_replay is False
+            assert final_a.import_id != first_a.import_id
+            assert final_a.catalog_snapshot_id is not None
+            assert replay.idempotent_replay is True
+            assert replay.import_id == final_a.import_id
+            assert replay.catalog_snapshot_id == final_a.catalog_snapshot_id
+            assert view is not None
+            assert view.descriptions[0] == "Original catheter"
+            assert view.available_raw == "10"
+
+            version_count = await session.scalar(
+                text(
+                    "SELECT COUNT(*) FROM catalog_item_versions "
+                    "WHERE item_number = :item_number"
+                ),
+                {"item_number": item_number},
+            )
+            assert version_count == 3
+    finally:
+        async with sessions() as session:
+            source_ids = list(
+                (
+                    await session.scalars(
+                        text(
+                            """
+                            SELECT source_id
+                            FROM (
+                                SELECT article_source_snapshot_id AS source_id
+                                FROM catalog_imports
+                                WHERE id = ANY(CAST(:import_ids AS uuid[]))
+                                UNION
+                                SELECT translation_source_snapshot_id AS source_id
+                                FROM catalog_imports
+                                WHERE id = ANY(CAST(:import_ids AS uuid[]))
+                                UNION
+                                SELECT combined_source_snapshot_id AS source_id
+                                FROM catalog_imports
+                                WHERE id = ANY(CAST(:import_ids AS uuid[]))
+                            ) sources
+                            """
+                        ),
+                        {"import_ids": import_ids},
+                    )
+                ).all()
+            )
+            await session.execute(
+                text("DELETE FROM catalog_items WHERE item_number = :item_number"),
+                {"item_number": item_number},
+            )
+            await session.execute(
+                text("DELETE FROM catalog_imports WHERE id = ANY(CAST(:import_ids AS uuid[]))"),
+                {"import_ids": import_ids},
+            )
+            await session.execute(
+                text("DELETE FROM source_snapshots WHERE id = ANY(CAST(:source_ids AS uuid[]))"),
+                {"source_ids": source_ids},
+            )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_catalog_versions_missing_state_and_offer_archive() -> None:
     database_url = os.getenv("MATCHING_TEST_DATABASE_URL")
     if not database_url:
@@ -35,6 +154,7 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
     item_one = f"4{suffix}1"
     item_two = f"4{suffix}2"
     offer_external_id = f"test-offer-{suffix}"
+    long_source_version = "v" * 500
     source_marker = f"integration-{suffix}"
     first_articles = (
         ARTICLE_HEADER
@@ -120,14 +240,14 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
             assert missing is True
 
         offer_payload = NormalizedOfferUpsertV1(
-            source_version="etag-1",
+            source_version=long_source_version,
             source_url=f"https://medeor.sharepoint.com/sites/TheLabworks/{offer_external_id}.xlsx",
             captured_at=captured_at,
             raw_request_text="Foley catheter CH18",
             item_number=item_one,
         )
         file_payload = SharePointOfferFileUpsertV1(
-            source_version="etag-1",
+            source_version=long_source_version,
             source_url=f"https://medeor.sharepoint.com/sites/TheLabworks/{offer_external_id}.xlsx",
             captured_at=captured_at,
             modified_at=captured_at,

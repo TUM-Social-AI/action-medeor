@@ -724,7 +724,8 @@ uploaded source files.
 
 **Responsible files:** [`adapters/persistence.py`](adapters/persistence.py),
 [`20260814_0001_matching_foundation.py`](../../migrations/versions/20260814_0001_matching_foundation.py),
-[`20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py)
+[`20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py),
+[`20260821_0003_review_consistency.py`](../../migrations/versions/20260821_0003_review_consistency.py)
 and [`docker-compose.yml`](../../../../docker-compose.yml).
 
 The Compose service still uses database name `allocura`, port 5432 and the existing named volume. Only
@@ -737,13 +738,16 @@ the image changed from plain PostgreSQL 16 to PostgreSQL 16 with pgvector includ
 |---|---|---|
 | `source_snapshots` | Source identity, checksum, capture time and locator | Immutable provenance for every imported version |
 | `catalog_items` | Stable article number, domain, active/quality status | Identity and authoritative status outlive descriptions |
-| `catalog_item_versions` | Descriptions, attributes, package, content hash and valid time | Product content can change while identity stays stable |
+| `catalog_item_versions` | Descriptions, attributes, package, content hash, valid time and monotonic version sequence | Product content can change while identity stays stable; equal timestamps are still ordered |
 | `catalog_item_translations` | Raw language code and each translated description snapshot | ERP language evidence remains traceable |
-| `inventory_snapshots` | On-hand, incoming, inquiry, committed, unit and capture time | Frequent stock updates must not force re-embedding product text |
-| `catalog_imports` | Pair checksums, result counts, warnings and completion time | Replays are idempotent and imports are auditable |
+| `inventory_snapshots` | On-hand, incoming, inquiry, committed, unit, capture time and monotonic sequence | Frequent stock updates must not force re-embedding product text; latest selection never relies on UUID order |
+| `catalog_imports` | Pair checksums, monotonic import sequence, result counts, warnings and completion time | Only a repeat of the current pair is idempotent; A → B → A is reapplied and remains auditable |
 
 `PostgresCatalogRepository` selects the latest product version and latest stock snapshot per article.
-An optional `catalog_snapshot_id` can restrict the catalogue source version.
+The import response returns `catalog_snapshot_id`. Supplying it to a match request pins the catalogue
+version, its inventory observation and vector retrieval to the same source snapshot. Without a pin,
+database-generated sequences select the latest rows deterministically even when capture timestamps
+are equal.
 
 ### Embedding tables
 
@@ -796,10 +800,11 @@ The framework records:
 - human decision as a separate event.
 
 This makes a result explainable after the fact. Exact replay is strongest when callers pin the
-catalogue snapshot and embedding model. If `catalog_snapshot_id` is omitted, the repository uses the
-latest catalogue versions at execution time. The stored payload and candidate provenance preserve the
-audit record, but a later full rerun against changed data is not guaranteed to recreate the original
-candidate pool. Production ingestion should therefore establish explicit snapshot/as-of semantics.
+catalogue snapshot and embedding model. A pin now applies consistently to catalogue text, stock and
+vectors. If `catalog_snapshot_id` is omitted, the repository uses the latest sequenced catalogue and
+inventory versions at execution time. The stored payload and candidate provenance preserve the audit
+record, but a later full rerun against changed data is not guaranteed to recreate the original
+candidate pool.
 
 Raw values and normalized values remain separate. Unknown information is not silently filled. Errors
 are stored with the run where possible, truncated to a safe database length.
@@ -1145,7 +1150,7 @@ quantity without changing the product vector.
 | Phase | Main code/configuration | Required action | Acceptance evidence | Safe fallback/rollback |
 |---|---|---|---|---|
 | A. Review | `.github/workflows/ci.yml`, tests and migrations | Merge only after backend Postgres/pgvector and frontend build checks pass | Green CI and reviewer approval | Keep feature branch; no database change |
-| B. Staging database | `20260814_0001`, `20260819_0002`, `DATABASE_URL` | Provision protected PostgreSQL/pgvector, backups and run migrations | Healthy `/api/health`; schema at head; backup recorded | Restore/repair staging before any import; never downgrade a populated production DB casually |
+| B. Staging database | `20260814_0001`, `20260819_0002`, `20260821_0003`, `DATABASE_URL` | Provision protected PostgreSQL/pgvector, backups and run migrations | Healthy `/api/health`; schema at head; backup recorded | Restore/repair staging before any import; never downgrade a populated production DB casually |
 | C. Initial ERP load | `catalog/parser.py`, `catalog/service.py`, `catalog/api.py` | Upload both same-time exports and perform section 26.3 checks | Saved response, representative item checks and idempotent replay | Transaction rollback leaves previous catalogue unchanged |
 | D. Update rehearsal | Catalogue tests plus disposable CSV copies | Exercise every row in section 26.4 | Counters, versions, missing/reactivation and jobs match expectations | Reject import and retain last accepted snapshot |
 | E. Model evaluation | `benchmarks/embeddings/*` | Run smoke, automatic and reviewed-label gates in Azure | Approved report, failure analysis, cost and pinned revision | Continue exact/lexical/history with model disabled |

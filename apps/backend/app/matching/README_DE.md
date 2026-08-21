@@ -392,9 +392,10 @@ Datensätze.
      -F article_translations=@/secure-input/Artikeluebersetzungen.csv
    ```
 
-4. `import_id` speichern und alle Zähler prüfen. Das gelieferte erste Paar enthält 2.773 Artikel,
-   2.879 Übersetzungszeilen und 1.645 matchingfähige Varianten. Ohne aktives Modell ist für
-   `embedding_jobs_created` null zu erwarten.
+4. `import_id` und `catalog_snapshot_id` speichern und alle Zähler prüfen. Das gelieferte erste Paar
+   enthält 2.773 Artikel, 2.879 Übersetzungszeilen und 1.645 matchingfähige Varianten. Ohne aktives
+   Modell ist für `embedding_jobs_created` null zu erwarten. Für einen späteren, exakt an diese
+   Quellversion gebundenen Matching-Lauf wird die zurückgegebene `catalog_snapshot_id` verwendet.
 5. Einen bekannten Artikel über `GET /api/v1/catalog-items/{item_number}` lesen und denselben Upload
    einmal wiederholen; die zweite Antwort muss `idempotent_replay: true` enthalten.
 6. Bei späteren Paaren die Zahlen für neue, textlich geänderte, nur in Metadaten geänderte, fehlende,
@@ -408,12 +409,21 @@ Datensätze.
   schreibt Bestandssnapshots, markiert das erste Fehlen, reaktiviert und erzeugt Aufträge;
 - [`../catalog/api.py`](../catalog/api.py) definiert Upload-, Status- und Artikelendpunkte;
 - [`../../migrations/versions/20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py)
-  definiert die zusätzlichen Tabellen und Versionierungsfelder.
+  definiert die zusätzlichen Tabellen und Versionierungsfelder;
+- [`../../migrations/versions/20260821_0003_review_consistency.py`](../../migrations/versions/20260821_0003_review_consistency.py)
+  ergänzt eindeutige Import-/Versionsreihenfolgen, snapshot-konsistente Suche und das vergrößerte
+  SharePoint-Versionsfeld.
 
 Die Artikelnummer bleibt die Identität. Der Text-Hash identifiziert nur den exakt normalisierten,
 bereits eingebetteten Text. Eine geänderte Beschreibung erzeugt eine neue aktuelle Version und erhält
 die alte für Prüfzwecke. Ein Artikel gilt nur dann als fehlend, wenn seine Nummer in einem vollständigen
 akzeptierten Bericht nicht mehr vorkommt.
+
+Idempotenz gilt nur für die Wiederholung des aktuell eingespielten Dateipaars. Eine Folge A → B → A
+erzeugt drei prüfbare Importe und stellt beim letzten Import A tatsächlich wieder her. Von der
+Datenbank erzeugte Sequenzen – nicht UUID-Werte oder möglicherweise gleiche Quellzeitstempel –
+bestimmen die neuesten Katalog- und Bestandszeilen. Eine angegebene `catalog_snapshot_id` bindet
+Katalogtext, Bestand und Vektoren gemeinsam an denselben Snapshot.
 
 ## Embeddings müssen weiterhin getestet und freigegeben werden
 

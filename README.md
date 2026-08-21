@@ -126,7 +126,9 @@ curl --fail-with-body -X POST http://localhost:8000/api/v1/catalog-imports \
 Each file is limited to 25 MB. The endpoint is implemented in
 [`apps/backend/app/catalog/api.py`](apps/backend/app/catalog/api.py). The import is transactional,
 serialized and checksum-idempotent: either both files are accepted as one snapshot or no catalogue
-change is committed.
+change is committed. Only an immediate repeat of the currently applied file pair is an idempotent
+replay. If contents change from A to B and later back to A, the final A is deliberately applied as a
+new audited import so catalogue and inventory state really return to A.
 
 With the supplied initial files and no active embedding model, the first response should be similar
 to:
@@ -134,6 +136,7 @@ to:
 ```json
 {
   "contract_version": "1",
+  "catalog_snapshot_id": "6c2c36db-690c-4b27-b6e9-b62e0bd32c3b",
   "status": "completed",
   "idempotent_replay": false,
   "inserted_items": 2773,
@@ -148,8 +151,10 @@ to:
 }
 ```
 
-The response also contains `import_id` and `completed_at`. Save the complete response as an
-operational record. Counts can change when action medeor supplies a newer export.
+The response also contains `import_id`, `catalog_snapshot_id` and `completed_at`. Save the complete
+response as an operational record. `catalog_snapshot_id` is the value that can later pin a match run
+to this exact catalogue/inventory/vector source version. Counts can change when action medeor
+supplies a newer export.
 
 ### 4. Verify the import before continuing
 
@@ -162,6 +167,10 @@ curl --fail-with-body http://localhost:8000/api/v1/catalog-items/410001001
 Check its descriptions, domain, base unit, `matching_eligible`, `source_missing`, `available_raw` and
 `fulfillable_quantity`. Then upload the exact same pair again. The second response must contain
 `"idempotent_replay": true` and must not duplicate catalogue versions or inventory snapshots.
+
+Imports and catalogue/inventory versions use database-generated monotonic sequence numbers. This
+makes “latest” deterministic even when two exports have the same `captured_at` timestamp; UUIDs are
+identifiers only and are never used as chronological tie-breakers.
 
 For the supplied files, the parser found 2,773 articles, 2,879 translations, 1,645 offerable variants,
 1,124 master rows and 31 negative raw availability values. Investigate unexpected differences before
@@ -438,6 +447,11 @@ The main groups are:
 | `embedding_models`, `product_embeddings`, `catalog_embedding_jobs` | Model registry, version-bound vectors, and durable incremental work |
 | `sharepoint_offer_files`, `historical_offers` | Live source links and separately normalized structured offer evidence |
 | `match_runs`, `match_candidates`, `match_decisions` | Reproducible suggestions and human decisions |
+
+When a match request supplies the `catalog_snapshot_id` returned by the import, product text, its
+corresponding inventory snapshot, and pgvector retrieval are all pinned to that same snapshot.
+Without it, all three use the latest database sequence. This prevents a historical product
+description from being ranked with current stock or current embeddings.
 
 Locally, Docker Compose keeps PostgreSQL data in the named `postgres-data` volume (normally shown by
 Docker as `allocura_postgres-data`). In Azure,

@@ -383,9 +383,10 @@ matching then reads only validated current records.
      -F article_translations=@/secure-input/Artikeluebersetzungen.csv
    ```
 
-4. Save `import_id` and check all returned counts. The supplied first pair contains 2,773 articles,
-   2,879 translation rows and 1,645 matching-eligible variants. With no active model,
-   `embedding_jobs_created` is expected to be zero.
+4. Save `import_id` and `catalog_snapshot_id`, then check all returned counts. The supplied first pair
+   contains 2,773 articles, 2,879 translation rows and 1,645 matching-eligible variants. With no
+   active model, `embedding_jobs_created` is expected to be zero. Use the returned
+   `catalog_snapshot_id` when a later match run must be pinned to this exact source version.
 5. Read a known article through `GET /api/v1/catalog-items/{item_number}` and repeat the identical
    upload once; the second response must say `idempotent_replay: true`.
 6. For later pairs, inspect new, text-updated, metadata-updated, missing, reactivated and embedding-job
@@ -399,11 +400,19 @@ matching then reads only validated current records.
   inventory snapshots, first-absence flagging, reactivation and job creation;
 - [`../catalog/api.py`](../catalog/api.py) defines the upload/status/item routes;
 - [`../../migrations/versions/20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py)
-  defines the additional tables and versioning fields.
+  defines the additional tables and versioning fields;
+- [`../../migrations/versions/20260821_0003_review_consistency.py`](../../migrations/versions/20260821_0003_review_consistency.py)
+  adds deterministic import/version sequences, snapshot-consistent retrieval and the widened
+  SharePoint version field.
 
 The article number remains identity. The text hash only identifies the exact normalized text already
 embedded. A changed description creates a new current version and preserves the old one for audit;
 an article is missing only when its number disappears from a complete accepted report.
+
+Idempotency applies only to a repeat of the currently applied file pair. An A → B → A sequence
+creates three audited imports and restores A on the final import. Database-generated sequences—not
+UUID values or possibly equal source timestamps—decide which catalogue and inventory rows are
+latest. A supplied `catalog_snapshot_id` pins catalogue text, inventory and vectors together.
 
 ## Embeddings still have to be tested and approved
 

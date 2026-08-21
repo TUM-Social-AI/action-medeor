@@ -27,7 +27,7 @@ def upgrade() -> None:
         sa.Column("document_id", sa.String(500), nullable=False),
         sa.Column("external_id", sa.String(1000)),
         sa.Column("uri", sa.Text()),
-        sa.Column("checksum", sa.String(128)),
+        sa.Column("checksum", sa.String(500)),
         sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("locator", postgresql.JSONB(), nullable=False, server_default="{}"),
         sa.Column("metadata_json", postgresql.JSONB(), nullable=False, server_default="{}"),

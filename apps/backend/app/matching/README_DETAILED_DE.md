@@ -756,7 +756,8 @@ Darstellungsmodelle oder hochgeladenen Quelldateien.
 
 **Zuständige Dateien:** [`adapters/persistence.py`](adapters/persistence.py),
 [`20260814_0001_matching_foundation.py`](../../migrations/versions/20260814_0001_matching_foundation.py),
-[`20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py)
+[`20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py),
+[`20260821_0003_review_consistency.py`](../../migrations/versions/20260821_0003_review_consistency.py)
 und [`docker-compose.yml`](../../../../docker-compose.yml).
 
 Der Compose-Dienst verwendet weiterhin den Datenbanknamen `allocura`, Port 5432 und das vorhandene
@@ -770,13 +771,16 @@ noch absichtlich gelöscht.
 |---|---|---|
 | `source_snapshots` | Quellenidentität, Prüfsumme, Erfassungszeit und Fundstelle | Unveränderliche Herkunft jeder importierten Version |
 | `catalog_items` | Stabile Artikelnummer, Produktbereich, Aktiv-/Qualitätsstatus | Identität und maßgeblicher Status überdauern Beschreibungsänderungen |
-| `catalog_item_versions` | Beschreibungen, Attribute, Verpackung, Inhalts-Hash und Gültigkeitszeit | Produktinhalt kann sich ändern, während die Identität stabil bleibt |
+| `catalog_item_versions` | Beschreibungen, Attribute, Verpackung, Inhalts-Hash, Gültigkeitszeit und monotone Versionsfolge | Produktinhalt kann sich ändern, während die Identität stabil bleibt; gleiche Zeitstempel bleiben eindeutig geordnet |
 | `catalog_item_translations` | Rohsprachcode und übersetzte Beschreibung je Snapshot | Sprachinformationen des ERP bleiben nachvollziehbar |
-| `inventory_snapshots` | Bestand, Eingang, Anfrage, Bindung, Einheit und Erfassungszeit | Häufige Bestandsänderungen dürfen kein erneutes Einbetten des Produkttexts erzwingen |
-| `catalog_imports` | Dateipaar-Prüfsummen, Ergebniszahlen, Warnungen und Abschlusszeit | Wiederholungen sind idempotent und Importe prüfbar |
+| `inventory_snapshots` | Bestand, Eingang, Anfrage, Bindung, Einheit, Erfassungszeit und monotone Folge | Häufige Bestandsänderungen dürfen kein erneutes Einbetten des Produkttexts erzwingen; „neueste“ Auswahl verwendet keine UUID-Reihenfolge |
+| `catalog_imports` | Dateipaar-Prüfsummen, monotone Importfolge, Ergebniszahlen, Warnungen und Abschlusszeit | Nur eine Wiederholung des aktuellen Paars ist idempotent; A → B → A wird erneut angewendet und bleibt prüfbar |
 
 `PostgresCatalogRepository` wählt für jeden Artikel die neueste Produktversion und den neuesten
-Bestandssnapshot. Eine optionale `catalog_snapshot_id` kann die Katalogquellversion einschränken.
+Bestandssnapshot. Die Importantwort liefert `catalog_snapshot_id`; in einer Matching-Anfrage bindet
+sie Katalogversion, zugehörigen Bestandssnapshot und Vektorsuche an dieselbe Quelle. Ohne Pin wählen
+datenbankgenerierte Sequenzen die neuesten Zeilen auch bei gleichen Erfassungszeitstempeln eindeutig
+aus.
 
 ### Embedding-Tabellen
 
@@ -831,11 +835,11 @@ Das Framework zeichnet Folgendes auf:
 - menschliche Entscheidung als separates Ereignis.
 
 Dadurch bleibt ein Ergebnis im Nachhinein erklärbar. Eine exakte Wiederholung ist am zuverlässigsten,
-wenn Aufrufer Katalogsnapshot und Embedding-Modell festlegen. Wird `catalog_snapshot_id` weggelassen,
-verwendet das Repository die zum Ausführungszeitpunkt neuesten Katalogversionen. Gespeicherte Daten und
-Kandidatenherkunft erhalten den Prüfdatensatz, aber eine spätere vollständige Wiederholung mit
-veränderten Daten erzeugt nicht garantiert denselben Kandidatenpool. Der produktive Import sollte
-daher ausdrückliche Snapshot-/Stichtagssemantik festlegen.
+wenn Aufrufer Katalogsnapshot und Embedding-Modell festlegen. Ein Pin gilt jetzt einheitlich für
+Katalogtext, Bestand und Vektoren. Wird `catalog_snapshot_id` weggelassen, verwendet das Repository
+die zum Ausführungszeitpunkt neuesten sequenzierten Katalog- und Bestandsversionen. Gespeicherte Daten
+und Kandidatenherkunft erhalten den Prüfdatensatz, aber eine spätere vollständige Wiederholung mit
+veränderten Daten erzeugt nicht garantiert denselben Kandidatenpool.
 
 Rohwerte und normalisierte Werte bleiben getrennt. Unbekannte Informationen werden nicht
 stillschweigend ergänzt. Fehler werden nach Möglichkeit mit dem Lauf gespeichert und auf eine sichere
@@ -1194,7 +1198,7 @@ verwendet.
 | Phase | Wichtigster Code/Konfiguration | Erforderliche Aktion | Abnahmenachweis | Sicherer Rückfall/Rollback |
 |---|---|---|---|---|
 | A. Review | `.github/workflows/ci.yml`, Tests und Migrationen | Nur nach bestandenen Backend-Postgres-/pgvector- und Frontend-Build-Prüfungen mergen | Grüne CI und Reviewfreigabe | Feature-Branch behalten; keine Datenbankänderung |
-| B. Staging-Datenbank | `20260814_0001`, `20260819_0002`, `DATABASE_URL` | Geschütztes PostgreSQL/pgvector samt Backups bereitstellen und migrieren | Gesundes `/api/health`; Schema auf Head; Backup dokumentiert | Staging wiederherstellen/reparieren; befüllte Produktion niemals beiläufig downgraden |
+| B. Staging-Datenbank | `20260814_0001`, `20260819_0002`, `20260821_0003`, `DATABASE_URL` | Geschütztes PostgreSQL/pgvector samt Backups bereitstellen und migrieren | Gesundes `/api/health`; Schema auf Head; Backup dokumentiert | Staging wiederherstellen/reparieren; befüllte Produktion niemals beiläufig downgraden |
 | C. Erster ERP-Import | `catalog/parser.py`, `catalog/service.py`, `catalog/api.py` | Beide zeitgleichen Exporte hochladen und Abschnitt 26.3 prüfen | Gespeicherte Antwort, repräsentative Artikel und idempotente Wiederholung | Transaktionsrollback lässt bisherigen Katalog unverändert |
 | D. Aktualisierungsprobe | Katalogtests und entbehrliche CSV-Kopien | Jede Zeile aus Abschnitt 26.4 testen | Zähler, Versionen, Fehlend/Reaktivierung und Aufträge entsprechen Erwartung | Import ablehnen und letzten akzeptierten Snapshot behalten |
 | E. Modellevaluation | `benchmarks/embeddings/*` | Smoke-, automatischen und geprüften Benchmark in Azure ausführen | Freigegebener Bericht, Fehleranalyse, Kosten und festgeschriebene Revision | Exakte/lexikalische/Historie mit deaktiviertem Modell weiterverwenden |

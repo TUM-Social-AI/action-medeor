@@ -56,7 +56,9 @@ class InMemoryHistoryRepository:
 
 class InMemoryVectorRepository:
     def __init__(self) -> None:
-        self.vectors: dict[tuple[str, str], tuple[ProductDomain, tuple[float, ...]]] = {}
+        self.vectors: dict[
+            tuple[str, str, str | None], tuple[ProductDomain, tuple[float, ...]]
+        ] = {}
 
     def add(
         self,
@@ -65,8 +67,9 @@ class InMemoryVectorRepository:
         model_id: str,
         domain: ProductDomain,
         embedding: Sequence[float],
+        snapshot_id: str | None = None,
     ) -> None:
-        self.vectors[(item_number, model_id)] = (domain, tuple(embedding))
+        self.vectors[(item_number, model_id, snapshot_id)] = (domain, tuple(embedding))
 
     async def search(
         self,
@@ -75,11 +78,20 @@ class InMemoryVectorRepository:
         model_id: str,
         domain: ProductDomain,
         limit: int,
+        snapshot_id: str | None = None,
     ) -> list[RetrievalHit]:
         query = tuple(embedding)
         scored: list[tuple[float, str]] = []
-        for (item_number, stored_model), (stored_domain, vector) in self.vectors.items():
-            if stored_model != model_id or stored_domain is not domain:
+        for (
+            item_number,
+            stored_model,
+            stored_snapshot,
+        ), (stored_domain, vector) in self.vectors.items():
+            if (
+                stored_model != model_id
+                or stored_domain is not domain
+                or stored_snapshot != snapshot_id
+            ):
                 continue
             if len(vector) != len(query):
                 raise ValueError("Embedding dimensions do not match")

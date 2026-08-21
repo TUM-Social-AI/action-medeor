@@ -34,6 +34,7 @@ class FakeCatalogService:
     async def import_files(self, **_: Any) -> CatalogImportResponseV1:
         return CatalogImportResponseV1(
             import_id=uuid4(),
+            catalog_snapshot_id=uuid4(),
             status=CatalogImportStatus.COMPLETED,
             inserted_items=1,
             inventory_refreshed_items=1,
@@ -126,6 +127,7 @@ async def test_catalog_import_and_offer_contracts() -> None:
             )
             assert catalog.status_code == 201
             assert catalog.json()["inserted_items"] == 1
+            assert catalog.json()["catalog_snapshot_id"] is not None
 
             payload = {
                 "source_version": "etag-1",
