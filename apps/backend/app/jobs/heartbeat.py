@@ -4,7 +4,6 @@ from sqlalchemy import text
 
 from app.db.session import engine
 
-
 CREATE_TABLE = text(
     """
     CREATE TABLE IF NOT EXISTS cron_heartbeat (

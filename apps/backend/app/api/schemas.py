@@ -2,7 +2,6 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-
 Priority = Literal["critical", "high", "medium", "low"]
 ItemStatus = Literal["verified", "needs_review", "low_confidence", "missing"]
 ImportFileType = Literal["pdf", "xlsx", "xls"]

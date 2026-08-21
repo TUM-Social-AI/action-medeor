@@ -1,0 +1,1165 @@
+# Allocura Matching: Detailed Walkthrough, Architecture and Rationale
+
+[German version](README_DETAILED_DE.md) · [Short plain-language overview](README.md)
+
+## 1. What exists today
+
+The current implementation is a working and tested Matching V1 data plane. It accepts one already
+normalized inquiry line, imports the two real Business Central CSV exports, versions catalogue text
+and stock separately, maintains SharePoint file links and normalized offer evidence, evaluates
+candidates, returns an explained ranking, and stores the later human decision.
+
+It is not yet a fully deployed production workflow. Inquiry/offer document extraction remains a
+separate workstream, the read-only Microsoft Graph and scheduled CSV-upload jobs still need Azure
+deployment configuration, and a production embedding model has not yet been approved. The schema and
+APIs needed for those handoffs are implemented.
+
+The most useful mental model is:
+
+> The engine, versioned database, ERP importer, and handoff APIs exist; deployment jobs, extraction,
+> and the selected production model still need to be connected.
+
+```mermaid
+flowchart LR
+    S["Excel, Outlook, ERP<br/>(outside this package)"] --> A["Normalized inquiry line"]
+    A --> B["Validate"]
+    B --> C["Build searchable text"]
+    C --> D["Retrieve candidates<br/>in four ways"]
+    D --> E["Fuse ranked lists"]
+    E --> F["Apply rules"]
+    F --> G["Packaging and stock"]
+    G --> H["Deterministic ranking"]
+    H --> I["Explained Top K"]
+    I --> J["Human decision"]
+    J --> K["Audit and future learning data"]
+```
+
+### The safety promise
+
+The system proposes; a person decides. It must not silently claim clinical equivalence, hide missing
+data or let price, stock, embeddings or customer history overrule a confirmed exclusion.
+
+Seven principles enforce this:
+
+1. Raw source values remain immutable evidence.
+2. Unknown does not mean false, zero, free or sufficient.
+3. Search relevance is not product approval.
+4. Hard exclusions cannot be outweighed by operational advantages.
+5. Algorithm, policy, source and model versions are recorded.
+6. A valid result may contain fewer than ten—or no—candidates.
+7. A recommendation and a human confirmation are separate stored events.
+
+## 2. How the code is divided
+
+The package uses small modules so that data access, matching behavior and HTTP handling can change
+independently.
+
+| Responsibility | Files | Plain-language role |
+|---|---|---|
+| Public data shapes | [`contracts.py`](contracts.py) | Defines exactly what may enter and leave matching |
+| Internal working state | [`domain.py`](domain.py) | Holds candidates while the algorithm is evaluating them |
+| Replaceable interfaces | [`ports.py`](ports.py) | Describes what catalogue, history, vectors, models and storage must provide |
+| Orchestration | [`service.py`](service.py) | Runs the complete sequence in the correct order |
+| Input checks | [`validation.py`](validation.py) | Adds warnings and matching-specific validation |
+| Searchable text | [`representation.py`](representation.py) | Normalizes descriptions and structured attributes |
+| Candidate search | [`retrieval/`](retrieval/) | Exact, lexical, vector and historical retrieval plus fusion |
+| Safety and attribute rules | [`constraints/`](constraints/) | Evaluates current versioned matching policy |
+| Packaging and stock | [`packaging.py`](packaging.py) | Calculates package alternatives and conservative availability |
+| Ranking | [`ranking/`](ranking/) | Creates inspectable features and deterministic ordering |
+| Database implementations | [`adapters/persistence.py`](adapters/persistence.py) | Reads PostgreSQL/pgvector and stores runs and decisions |
+| Test implementations | [`adapters/in_memory.py`](adapters/in_memory.py) | Provides deterministic data stores for tests without PostgreSQL |
+| HTTP endpoints | [`api.py`](api.py) | Makes matching available to a future UI or another service |
+| Human feedback checks | [`feedback.py`](feedback.py) | Ensures a decision refers to the correct run and candidate |
+
+### Why interfaces and adapters exist
+
+[`ports.py`](ports.py) contains interfaces rather than ERP-, SharePoint- or PostgreSQL-specific logic.
+[`service.py`](service.py) therefore asks for “catalogue items” or “historical offers” without knowing
+where they came from. Today an in-memory adapter supports tests and a PostgreSQL adapter supports the
+real backend. Later, the data source can change without rewriting the matching rules.
+
+This is also why the matching package does not parse Excel or Outlook itself. Parsing source formats
+and deciding whether products match are different failure domains and should be tested separately.
+
+## 3. What must enter matching
+
+### The system boundary
+
+```text
+Excel / Outlook / PDF / SharePoint / ERP
+                    │
+          source-specific extraction
+                    │
+     versioned normalized JSON contracts
+                    │
+            matching framework
+```
+
+The extraction workstream must convert source material into the contracts in
+[`contracts.py`](contracts.py). Matching never reads workbook layout, cell colors, MIME bodies, PDF
+positions or SharePoint folders.
+
+### `InquiryLineV1`
+
+One requested line enters as `InquiryLineV1`. Important fields include:
+
+- stable inquiry and line IDs;
+- `medicine` or `equipment` domain;
+- original description and optional translation;
+- optional requested article number;
+- normalized quantity and unit, while preserving the raw expression;
+- structured attributes such as ingredient, strength, CH size or sterility;
+- partner, destination, urgency and shelf-life request when known;
+- parsing warnings;
+- exact source reference.
+
+### `InventoryItemV1`
+
+Each catalogue item supplies:
+
+- article number as a string, so leading zeros are never lost;
+- domain and one or more descriptions;
+- normalized product attributes;
+- manufacturer, brand, family and package information;
+- authoritative active and quality-blocked flags;
+- a separate current stock snapshot;
+- source version and provenance.
+
+### `HistoricalOfferV1`
+
+Historical evidence supplies the old request wording, mapped article when known, customer and
+destination context, supplier, quantity, package, price basis, date and source. History is evidence
+for candidate generation—not proof that the old choice remains suitable.
+
+### `SourceReferenceV1`
+
+Every input can identify its source type, document, checksum, timestamp, sheet/row or another locator.
+This answers “where did this fact come from?” without requiring matching to understand the source
+format.
+
+All public models reject unexpected fields and require timezone-aware timestamps. This catches
+contract drift early instead of silently accepting a renamed unit, a floating-point article number or
+an ambiguous timestamp.
+
+### Outlook inquiries
+
+An Outlook connector is deliberately outside this package. It should eventually use an approved
+mailbox/folder, immutable Microsoft Graph message IDs, notifications plus delta reconciliation and
+immutable storage of MIME content and attachments. Its extractor should emit the same `InquiryLineV1`
+records as Excel. Matching then processes both sources identically; only their `SourceReferenceV1`
+differs.
+
+## 4. The worked example used below
+
+**Responsible files:** [`tests/matching/factories.py`](../../tests/matching/factories.py) creates the
+data and [`tests/matching/test_service.py`](../../tests/matching/test_service.py) executes the full
+pipeline. [`service.py`](service.py) orchestrates the behavior being demonstrated.
+
+The inquiry is:
+
+| Field | Value |
+|---|---|
+| Original description | `SONDE VESICALE FOLEY sterile CH18` |
+| Domain | Equipment |
+| Quantity | 50 pieces |
+| Structured attributes | `charriere=18 CH`, `sterile=true` |
+| Partner | `partner-1` |
+| Destination | `CD` |
+| Source | `request.xlsx`, sheet `Tabelle1`, row 7 |
+
+A shortened version of the normalized request looks like this:
+
+```json
+{
+  "inquiry_id": "request-1",
+  "line_id": "line-1",
+  "domain": "equipment",
+  "raw_description": "SONDE VESICALE FOLEY sterile CH18",
+  "quantity": {"value": "50", "unit": "piece", "raw_expression": "50"},
+  "attributes": {
+    "charriere": {"value": 18, "unit": "CH"},
+    "sterile": {"value": true}
+  },
+  "partner_id": "partner-1",
+  "destination_country": "CD",
+  "source": {
+    "source_type": "excel",
+    "document_id": "request.xlsx",
+    "sheet": "Tabelle1",
+    "row": 7
+  }
+}
+```
+
+The test catalogue contains:
+
+| Article | Description | Important facts |
+|---|---|---|
+| `410001001` | Foley urinary catheter sterile CH18 | Active, CH18, 80 pieces in stock |
+| `410001002` | Foley urinary catheter sterile CH12 | Active, CH12, 500 pieces in stock |
+| `410001003` | Foley urinary catheter sterile CH18 | Inactive, CH18, 500 pieces in stock, appears in history |
+
+Every item contains 12 pieces per package. The test also supplies a simple two-dimensional query
+embedding and stored vectors. These vectors prove the mechanics; they do not represent a production
+multilingual embedding model.
+
+## 5. Step 1 — Validate the request
+
+**Responsible files:** [`contracts.py`](contracts.py), [`validation.py`](validation.py) and the first
+part of [`service.py`](service.py).
+
+### What happens
+
+Pydantic first enforces the structural contract. The matching validator then reports whether quantity,
+unit, attributes or upstream parsing information are missing. A request embedding is accepted only
+together with its model ID, and every vector component must be finite.
+
+The result is one of:
+
+- `valid`;
+- `valid_with_warnings`;
+- `review_required`;
+- `invalid`.
+
+The example is `valid`. A missing normalized quantity would create a warning and disable packaging
+calculation, but it would not necessarily prevent text search.
+
+### Why this step exists
+
+Without a strict boundary, malformed source data could look like a legitimate zero, false value or
+unit. Validation makes uncertainty visible before ranking starts and keeps downstream modules simpler.
+
+### Current limitation
+
+The matching-specific validator is intentionally small. Domain-specific extraction confidence and
+field-level acceptance thresholds still belong to the future extraction agreement.
+
+## 6. Step 2 — Build deterministic searchable text
+
+**Responsible file:** [`representation.py`](representation.py).
+
+### What happens
+
+The code applies Unicode NFKC normalization, case folding and a deterministic token pattern. It builds:
+
+```text
+semantic core:
+  sonde vesicale foley sterile ch18
+
+canonical text:
+  sonde vesicale foley sterile ch18; charriere=18 ch; sterile=true
+```
+
+Attribute names are sorted, values and units are rendered consistently, and SHA-256 creates a stable
+content hash. Catalogue items are represented by their descriptions, manufacturer, brand and
+attributes using the same process.
+
+### Why two forms exist
+
+The semantic core keeps the natural product wording. The canonical text also includes facts that may
+otherwise be hidden or inconsistently phrased. The content hash tells the embedding store exactly
+which text version produced a vector, so unchanged products do not need to be embedded again.
+
+### Current multilingual reality
+
+This function does not translate. The ERP importer now supplies official base descriptions plus the
+`Artikeluebersetzungen.csv` descriptions, while inquiry extraction may provide an additional
+translation. This improves lexical coverage but does not replace a multilingual model. The model
+benchmark therefore tests genuine French-to-base-description retrieval and supports reviewed inquiry
+labels.
+
+## 7. Step 3 — Retrieve a broad candidate set
+
+**Responsible files:** [`retrieval/exact.py`](retrieval/exact.py),
+[`retrieval/lexical.py`](retrieval/lexical.py), [`retrieval/vector.py`](retrieval/vector.py),
+[`retrieval/history.py`](retrieval/history.py), [`ports.py`](ports.py) and
+[`adapters/persistence.py`](adapters/persistence.py).
+
+[`service.py`](service.py) first asks the catalogue repository for items in the requested domain. The
+default retrieval limit is 50 per channel. Four independent channels then create ranked lists.
+
+### 3A. Exact retrieval
+
+[`retrieval/exact.py`](retrieval/exact.py) finds:
+
+- an explicitly requested article number; or
+- an identical normalized semantic description.
+
+An article-number match is a strong navigation signal, but the item still passes through active,
+quality and attribute checks. Users and source files can contain outdated article numbers.
+
+The example contains no requested article number and no identical bilingual description, so exact
+retrieval adds no hit.
+
+### 3B. Lexical retrieval
+
+[`retrieval/lexical.py`](retrieval/lexical.py) combines:
+
+- character similarity using `SequenceMatcher`;
+- token-set overlap;
+- coverage of inquiry tokens by the product text.
+
+This channel is transparent, deterministic and useful for spelling variants, codes, numbers and
+technical names. It also provides a fallback when vectors are unavailable.
+
+It is not genuinely language-invariant. German/French wording and English catalogue wording only
+match when they share enough terms, codes or structure. There is currently no calibrated minimum
+lexical score; positive results can enter the bounded candidate pool and are controlled later by
+rules, ranking and human review.
+
+### 3C. Vector retrieval
+
+[`retrieval/vector.py`](retrieval/vector.py) delegates vector search through `VectorRepository`.
+[`PgVectorRepository`](adapters/persistence.py) then:
+
+1. loads the registered model dimensions;
+2. rejects unknown models or mismatched query dimensions;
+3. selects the latest catalogue version for each article;
+4. calculates exact cosine similarity using pgvector's `<=>` operator;
+5. returns the nearest items for the requested domain.
+
+Only vectors produced by the same model ID and dimension may be compared. The schema deliberately
+supports multiple model registrations and variable vector dimensions.
+
+In the test, article `410001001` and inactive article `410001003` have the strongest artificial vector
+match. This demonstrates that vector relevance is only candidate generation; it cannot approve an
+inactive item.
+
+### What exists and what is still missing for production vectors
+
+- [`../../../../benchmarks/embeddings`](../../../../benchmarks/embeddings) compares three open
+  multilingual models on the real offerable catalogue and optional reviewed labels;
+- [`../catalog/embeddings.py`](../catalog/embeddings.py) contains a durable incremental worker that
+  registers the selected model, initializes missing vectors, recovers stale work, and handles only
+  new/text-changed versions after later imports;
+- E5 query/document prefixes and the instruct-model retrieval prompt are applied consistently;
+- no model/revision has yet been approved, so the normal web image keeps heavy model dependencies out;
+- until a model-enabled runtime is deployed, callers can still provide `query_embedding` plus the
+  identical registered `embedding_model_id`;
+- no approximate HNSW/IVFFlat index is needed at the current catalogue size.
+
+### 3D. Historical retrieval
+
+[`PostgresHistoryRepository`](adapters/persistence.py) loads recent offers scoped by partner and
+destination when available. [`retrieval/history.py`](retrieval/history.py) compares the current query
+tokens with previous request wording and returns the article linked to a similar historical offer.
+
+In the example, history points to `410001003`. That may represent a real customer preference, an old
+exception or an outdated choice. History therefore improves recall but receives no authority over
+current rules.
+
+Historical records without an article number cannot retrieve a catalogue item. A historical article
+that is absent from the current catalogue is also discarded by [`service.py`](service.py).
+
+### Why the pipeline does not simply filter all attributes first
+
+Only the trusted product domain is used as an early filter. Detailed attributes are evaluated after
+retrieval because extraction may be incomplete and units or vocabularies may not yet be normalized.
+Using every attribute as a database filter would create false negatives: the correct item could
+disappear before the system has a chance to explain uncertainty.
+
+The chosen sequence is therefore:
+
+```text
+safe broad retrieval → authoritative exclusions → review annotations → deterministic ranking
+```
+
+Additional prefilters should only be added when they are proven safe and measured scale or latency
+requires them.
+
+## 8. Step 4 — Fuse the four ranked lists
+
+**Responsible file:** [`retrieval/fusion.py`](retrieval/fusion.py).
+
+### What happens
+
+Lexical, vector, exact and history scores use unrelated scales. Adding `0.7 lexical + 0.8 vector`
+would pretend those numbers mean the same thing. They do not.
+
+The framework therefore uses Reciprocal Rank Fusion (RRF):
+
+```text
+RRF(article) = sum(1 / (60 + rank_in_channel))
+```
+
+The method cares about a product's position in each list rather than the raw score. It deduplicates an
+article within each channel, rewards products found by several independent methods and keeps every
+underlying retrieval hit as evidence.
+
+### What happens in the example
+
+Inactive `410001003` can receive strong fused evidence because lexical, vector and historical channels
+all find it. `410001001` is also found strongly by lexical and vector search. `410001002` is found with
+weaker text/vector positions.
+
+Nothing is excluded at this stage. RRF answers only: “Which articles are worth checking?”
+
+### Why RRF is the conservative first choice
+
+It is deterministic, easy to inspect and does not require labelled training data or score
+calibration. A learned fusion or cross-encoder can be evaluated later, but only against a benchmark
+that proves an improvement without increasing hard-rule violations.
+
+## 9. Step 5 — Apply safety and attribute rules
+
+**Responsible files:** [`constraints/engine.py`](constraints/engine.py),
+[`config/default_policy_v1.json`](config/default_policy_v1.json),
+[`constraints/medicines.py`](constraints/medicines.py) and
+[`constraints/equipment.py`](constraints/equipment.py).
+
+### Possible rule outcomes
+
+Each rule creates an inspectable result:
+
+| Outcome | Meaning |
+|---|---|
+| `pass` | Confirmed compatible fact |
+| `exclude` | Candidate must not be offered automatically |
+| `review` | Important difference or missing fact requires a person |
+| `warning` | Relevant concern that does not currently block |
+| `unknown` | The available data cannot answer the question |
+
+Every result includes a stable code, explanation, attribute name and the requested/candidate values.
+
+### Current hard exclusions
+
+V1 automatically excludes only facts that are authoritative now:
+
+- wrong product domain;
+- catalogue item explicitly inactive;
+- catalogue item explicitly quality-blocked.
+
+These checks cannot be outweighed by search relevance, history, price or stock.
+
+### Attribute comparison
+
+The policy currently knows medicine attributes such as ingredient, strength, concentration, dosage
+form and route, and equipment attributes such as size, gauge, Charrière, sterility, material and
+compatibility.
+
+For each requested configured attribute, the engine compares normalized value and normalized unit.
+Missing or mismatching critical values normally produce `review`, not `exclude`, because action medeor
+has not yet approved exact substitution rules.
+
+This comparison currently expects extraction to normalize synonymous units and concepts. For example,
+`mg` and `milligram` are not yet resolved through an ontology inside matching.
+
+### Example decisions
+
+| Article | Checks | Result |
+|---|---|---|
+| `410001001` | Equipment, active, CH18 matches, sterile matches | `pass` |
+| `410001002` | Equipment, active, CH12 differs from requested CH18 | `review` |
+| `410001003` | Equipment and attributes match, but item is inactive | `exclude` |
+
+The CH12 product remains visible for explicit review. The inactive CH18 product is removed even though
+its search evidence is stronger.
+
+### Why the policy is data, not hidden logic
+
+Missing/mismatch severity lives in a versioned JSON policy. A future approved rule change can be
+reviewed, tested and published under a new version. Old match runs retain the policy version that
+produced them.
+
+## 10. Step 6 — Calculate packaging alternatives
+
+**Responsible file:** [`packaging.py`](packaging.py), function `calculate_packaging`.
+
+### What happens
+
+Packaging is calculated only when requested quantity, package size and units are known and comparable.
+For 50 requested pieces and 12 pieces per package:
+
+```text
+floor: 4 packages = 48 pieces = difference -2
+ceil:  5 packages = 60 pieces = difference +10
+```
+
+Both options are returned. An option is selected automatically only when the division is exact. For a
+non-exact division, the current code emits a warning and leaves `recommended_option` empty.
+
+### Why the code refuses to round automatically
+
+Different humanitarian workflows may prefer avoiding shortages, avoiding excess, respecting carton
+constraints or asking the customer. Until action medeor defines the rule, choosing four or five would
+be a hidden business decision. Returning both options preserves the decision and makes it reversible.
+
+### Fallbacks
+
+- missing requested quantity → packaging `unknown`;
+- missing package size → packaging `unknown`;
+- non-comparable units → `unit_mismatch`;
+- exact division → exact package count may be recommended.
+
+## 11. Step 7 — Inspect current availability
+
+**Responsible file:** [`packaging.py`](packaging.py), function `observed_availability`.
+
+### What happens
+
+The importer calculates `available_raw = on_hand + incoming_purchase_order - committed_order` and
+preserves negative results as operational evidence. Matching uses
+`fulfillable_quantity = max(0, available_raw)` only when its unit is confirmed comparable with the
+requested quantity. It can also compare package counts when stock is explicitly measured in packages
+and packaging has an exact recommended option.
+
+Possible results are:
+
+- `on_hand_sufficient`;
+- `on_hand_partial`;
+- `procurement_indicated` when comparable fulfillable stock is zero;
+- `unknown` when data or unit basis is missing;
+- `not_allowed` is reserved for future operational rules.
+
+In the example, both remaining articles have stock measured in pieces:
+
+```text
+410001001: 80 available versus 50 requested → sufficient
+410001002: 500 available versus 50 requested → sufficient
+```
+
+### Why purchasing inquiries are not added
+
+The approved V1 formula combines stored, ordered, and committed quantities. Purchasing inquiries are
+preserved separately because they are not confirmed purchase orders and are therefore not assumed to
+increase availability. Missing on-hand or a non-comparable unit remains `unknown`; a negative derived
+raw result remains visible but cannot become a negative promiseable quantity.
+
+Supplier availability follows the same principle: the architecture can add a source, but there is no
+approved supplier connector or shared stock semantics yet.
+
+## 12. Step 8 — Rank eligible candidates
+
+**Responsible files:** [`ranking/features.py`](ranking/features.py) and
+[`ranking/ranker.py`](ranking/ranker.py).
+
+### Inspectable components
+
+The feature calculation records available evidence separately:
+
+- fused RRF value;
+- strongest score from each retrieval channel;
+- `exact_reference=1` when exact retrieval found the item;
+- structured-attribute match ratio when attributes are comparable.
+
+These values explain ordering. They are not correctness probabilities.
+
+### Actual ordering policy
+
+Excluded products are removed. The rest are sorted lexicographically:
+
+1. `pass` before any review/warning candidate;
+2. exact article reference first;
+3. higher structured-attribute agreement;
+4. higher fused retrieval value;
+5. better comparable availability;
+6. article number as the stable final tie-breaker.
+
+Lexicographic means a later factor cannot compensate for an earlier one. Therefore 500 pieces of CH12
+do not outrank a fully matching CH18 product with 80 pieces merely because stock is higher.
+
+### Example result
+
+| Rank | Article | Review state | Availability | Reason |
+|---:|---|---|---|---|
+| 1 | `410001001` | `pass` | Sufficient | All requested attributes match |
+| 2 | `410001002` | `review` | Sufficient | CH12 differs from requested CH18 |
+| — | `410001003` | `exclude` | Not returned | Catalogue marks item inactive |
+
+Top K defaults to ten and may be set from 1 to 50. The result is not padded: two safe/reviewable
+articles remain two results.
+
+### Metrics deliberately absent from current ranking
+
+Price, shelf life, supplier reliability, purchase recency, documentation completeness and approved
+partner preferences are not active ranking factors yet. Their raw or future extension points exist,
+but comparable definitions and authoritative data are missing. Treating missing price as zero or an
+unknown shelf life as acceptable would create incorrect rankings.
+
+User-adjustable weights are also deferred. Unbounded weights could let a user make price compensate
+for a critical product mismatch and would make old runs difficult to reproduce.
+
+## 13. Step 9 — Build and return an explained result
+
+**Responsible files:** [`service.py`](service.py), [`contracts.py`](contracts.py) and
+[`api.py`](api.py).
+
+[`service.py`](service.py) creates a `MatchCandidateV1` for every ranked item. Each candidate contains:
+
+- stable candidate ID within the run;
+- article number, descriptions and manufacturer;
+- rank and review status;
+- availability status;
+- every retrieval hit with channel, rank, score and details;
+- separate score components;
+- every constraint result and compared value;
+- packaging alternatives and warnings;
+- catalogue provenance.
+
+The parent `MatchRunResponseV1` adds inquiry/line IDs, run status, algorithm version, policy version,
+embedding model ID, validation report and timestamps.
+
+A shortened response for the example is:
+
+```json
+{
+  "status": "completed",
+  "algorithm_version": "allocura-matching-v1",
+  "policy_version": "matching-policy-v1",
+  "candidates": [
+    {
+      "rank": 1,
+      "item_number": "410001001",
+      "review_status": "pass",
+      "availability_status": "on_hand_sufficient",
+      "packaging": {
+        "options": [
+          {"packages": 4, "total_units": "48", "difference": "-2"},
+          {"packages": 5, "total_units": "60", "difference": "10"}
+        ],
+        "recommended_option": null
+      }
+    },
+    {
+      "rank": 2,
+      "item_number": "410001002",
+      "review_status": "review",
+      "availability_status": "on_hand_sufficient"
+    }
+  ]
+}
+```
+
+### Why no confidence percentage exists
+
+Cosine similarity, lexical similarity, RRF and attribute agreement are not calibrated probabilities.
+Displaying “93% correct” would be misleading until a representative labelled dataset supports
+calibration and measures error by product type, language and missing-data pattern.
+
+## 14. Step 10 — Store the human decision safely
+
+**Responsible files:** [`feedback.py`](feedback.py), [`contracts.py`](contracts.py),
+[`adapters/persistence.py`](adapters/persistence.py) and [`api.py`](api.py).
+
+The result is a recommendation, not an order. A later `MatchDecisionRequestV1` can record:
+
+- `accept_suggestion`;
+- `select_alternative`;
+- `manual_match`;
+- `no_match`;
+- `procurement_required`.
+
+A selected product is required for suggestion, alternative and manual decisions. Selecting an
+alternative requires an override reason. For accepted suggestions and alternatives,
+[`feedback.py`](feedback.py) verifies that the item—and optional candidate ID—was actually exposed in
+the referenced completed run. It also verifies the inquiry line ID.
+
+### Why recommendation and decision are separate
+
+Separating them records both what the algorithm showed and what the person chose. That makes override
+analysis possible and prevents an accepted item from being presented later as an algorithmic fact.
+
+### What “learning” means today
+
+The decision is stored as immutable evidence. No weight or rule changes immediately after a click.
+Automatic online learning would absorb position bias, accidental clicks and potentially unsafe
+choices. Later, reviewed decisions can form a temporal offline dataset for evaluation and controlled
+learning-to-rank experiments.
+
+`partner_preferences` is prepared for explicit proposed/approved/retired preferences. It is never
+populated automatically from clicks.
+
+## 15. HTTP API and application wiring
+
+**Responsible files:** [`api.py`](api.py), [`service.py`](service.py),
+[`../db/session.py`](../db/session.py) and [`../main.py`](../main.py).
+
+### Create a run
+
+```text
+POST /api/v1/match-runs
+```
+
+Accepts `MatchRequestV1`, creates a `running` audit record, executes the pipeline and returns
+`MatchRunResponseV1` with HTTP 201. Contract or configuration errors become HTTP 422.
+
+### Read a run
+
+```text
+GET /api/v1/match-runs/{match_run_id}
+```
+
+Returns the stored result. It does not rerun matching against today's catalogue, which would change
+the historical meaning of the result. Unknown runs return HTTP 404.
+
+### Record a decision
+
+```text
+POST /api/v1/match-decisions
+```
+
+Stores a validated human decision and returns HTTP 201. Missing runs return 404; inconsistent
+decisions return 422.
+
+### How dependencies are assembled
+
+`get_matching_service` in [`api.py`](api.py) receives an asynchronous SQLAlchemy session and builds:
+
+- `PostgresCatalogRepository`;
+- `PostgresHistoryRepository`;
+- `PostgresMatchRunRepository`;
+- `PgVectorRepository`;
+- the default versioned matching policy.
+
+When `EMBEDDING_MODEL_NAME` and a pinned `EMBEDDING_MODEL_REVISION` are configured in a runtime that
+contains Sentence Transformers, the API creates query embeddings with the same provider used by the
+catalog worker. The lightweight default web image does not contain PyTorch/model weights; without a
+model-enabled runtime, requests use exact, lexical and historical retrieval unless they include a
+precomputed vector and matching model ID.
+
+The API is intentionally UI-independent. It accepts matching contracts, not React/Figma view models or
+uploaded source files.
+
+## 16. PostgreSQL and pgvector persistence
+
+**Responsible files:** [`adapters/persistence.py`](adapters/persistence.py),
+[`20260814_0001_matching_foundation.py`](../../migrations/versions/20260814_0001_matching_foundation.py),
+[`20260819_0002_catalog_offer_sync.py`](../../migrations/versions/20260819_0002_catalog_offer_sync.py),
+[`20260821_0003_review_consistency.py`](../../migrations/versions/20260821_0003_review_consistency.py)
+and [`docker-compose.yml`](../../../../docker-compose.yml).
+
+The Compose service still uses database name `allocura`, port 5432 and the existing named volume. Only
+the image changed from plain PostgreSQL 16 to PostgreSQL 16 with pgvector included. This enables
+`CREATE EXTENSION vector`; it does not rename or intentionally delete the database.
+
+### Source and catalogue tables
+
+| Table | What it stores | Why it is separate |
+|---|---|---|
+| `source_snapshots` | Source identity, checksum, capture time and locator | Immutable provenance for every imported version |
+| `catalog_items` | Stable article number, domain, active/quality status | Identity and authoritative status outlive descriptions |
+| `catalog_item_versions` | Descriptions, attributes, package, content hash, valid time and monotonic version sequence | Product content can change while identity stays stable; equal timestamps are still ordered |
+| `catalog_item_translations` | Raw language code and each translated description snapshot | ERP language evidence remains traceable |
+| `inventory_snapshots` | On-hand, incoming, inquiry, committed, unit, capture time and monotonic sequence | Frequent stock updates must not force re-embedding product text; latest selection never relies on UUID order |
+| `catalog_imports` | Pair checksums, monotonic import sequence, result counts, warnings and completion time | Only a repeat of the current pair is idempotent; A → B → A is reapplied and remains auditable |
+
+`PostgresCatalogRepository` selects the latest product version and latest stock snapshot per article.
+The import response returns `catalog_snapshot_id`. Supplying it to a match request pins the catalogue
+version, its inventory observation and vector retrieval to the same source snapshot. Without a pin,
+database-generated sequences select the latest rows deterministically even when capture timestamps
+are equal.
+
+### Embedding tables
+
+| Table | What it stores |
+|---|---|
+| `embedding_models` | Provider, model name/version, dimensions and cosine metric |
+| `product_embeddings` | Catalogue-version/model pair, content hash and vector |
+| `catalog_embedding_jobs` | Pending/running/completed/failed incremental embedding work |
+
+Vectors are attached to a catalogue item version rather than mutable stock. Exact cosine search is
+used now. A model-specific approximate index can be introduced later without replacing the matching
+service interface.
+
+### History, runs and feedback tables
+
+| Table | Purpose |
+|---|---|
+| `historical_offers` | Normalized, timestamped historical request and procurement evidence |
+| `sharepoint_offer_files` | Versioned file metadata, current/archive status, and live source URL |
+| `match_runs` | Original request, versions, status, complete result or error |
+| `match_candidates` | Candidate-level evidence for analytics and auditing |
+| `match_decisions` | The later human decision and override explanation |
+| `partner_preferences` | Explicit versioned proposed/approved/retired preferences |
+
+### Transaction behavior
+
+The run is first committed as `running`. Completion writes the result and candidate rows. If that
+transaction fails, the repository rolls it back before recording `failed`. This preserves a terminal
+audit state instead of leaving a partially stored candidate list.
+
+### What migration versus import does
+
+`alembic upgrade head` creates structure only and never silently imports private files. The explicit
+catalog API performs the first full load and later refreshes. The supplied files parse as 2,773
+articles, 2,879 translations, 1,124 non-offerable master rows, and 1,645 offerable variants. A
+model-registration/worker run performs the first vector initialization. This separation keeps schema
+deployment repeatable and data ingestion explicit.
+
+## 17. Reproducibility, provenance and limitations
+
+The framework records:
+
+- contract version;
+- algorithm version (`allocura-matching-v1`);
+- constraint-policy version (`matching-policy-v1`);
+- embedding model ID when used;
+- complete request and result payloads;
+- source document, checksum, timestamp and locator;
+- retrieval evidence and compared values;
+- human decision as a separate event.
+
+This makes a result explainable after the fact. Exact replay is strongest when callers pin the
+catalogue snapshot and embedding model. A pin now applies consistently to catalogue text, stock and
+vectors. If `catalog_snapshot_id` is omitted, the repository uses the latest sequenced catalogue and
+inventory versions at execution time. The stored payload and candidate provenance preserve the audit
+record, but a later full rerun against changed data is not guaranteed to recreate the original
+candidate pool.
+
+Raw values and normalized values remain separate. Unknown information is not silently filled. Errors
+are stored with the run where possible, truncated to a safe database length.
+
+## 18. Fallback and failure behavior
+
+| Situation | Current behavior | Reason |
+|---|---|---|
+| No query vector/provider | Exact, lexical and history continue | Matching remains usable without ML |
+| No history | Catalogue retrieval continues | New customers remain matchable |
+| Missing package size | Candidate remains with packaging warning | Product relevance may still be useful |
+| Unconfirmed stock unit | Availability is `unknown` | Avoid invalid quantity comparison |
+| All candidates excluded | Completed run with empty list | Never pad Top 10 with unsafe items |
+| Unknown model/dimension mismatch | Run fails visibly | Never compare incompatible vectors |
+| Database error during completion | Partial transaction rolls back; failure is recorded where possible | Avoid partial audit data |
+| Historical item not in current catalogue | Candidate is ignored | History cannot resurrect a removed catalogue record |
+
+## 19. Testing: what is proven
+
+**Responsible files:** [`tests/matching/`](../../tests/matching/),
+[`tests/test_matching_api.py`](../../tests/test_matching_api.py) and
+[`tests/integration/test_matching_postgres.py`](../../tests/integration/test_matching_postgres.py).
+
+Automated tests cover:
+
+- strict contracts, embedding pairs, finite vectors and timezone-aware sources;
+- exact and stable lexical retrieval;
+- RRF deduplication and multi-channel reward;
+- conservative mismatches and authoritative inactive exclusion;
+- packaging floor/ceil options and unknown stock basis;
+- vector/history fallback;
+- deterministic ordering in the worked example;
+- empty results instead of unsafe Top-10 padding;
+- decisions referring only to exposed candidates;
+- HTTP create/read behavior;
+- real catalogue JSON mapping and exact pgvector cosine search in the opt-in integration test.
+
+The standard test suite uses deterministic in-memory adapters. The pgvector integration test requires
+a migrated PostgreSQL/pgvector database and `MATCHING_TEST_DATABASE_URL`; it skips when this is not
+configured. Real partner files are not committed as fixtures.
+
+### What future evaluation must measure
+
+A labelled, temporally separated multilingual benchmark should measure Recall@1/3/10, MRR, coverage,
+p50/p95 latency, override/no-match rate and—most importantly—hard-constraint violations, whose target
+must be zero. Model selection should compare by product domain, language and missing-data pattern, not
+only one aggregate score.
+
+## 20. Figma UI integration boundary
+
+Transport contracts and both fixture/real matching adapters now exist in the frontend, but the
+visible application still selects the fixture workflow in `App.tsx`. Activating the real adapter is
+a separate integration step and must not flatten important matching states.
+
+The real UI must:
+
+- distinguish an algorithmic suggestion from a human confirmation;
+- show `pass`, `review`, warning and availability states without calling them confidence;
+- display attribute differences, provenance and packaging alternatives;
+- support manual match, no match, procurement required and override reason;
+- use only confirmed decisions in an order summary;
+- represent availability more accurately than a single `lowStock: bool`.
+
+A thin UI mapper should translate `MatchRunResponseV1` to display models. The matching domain must not
+import React types or Figma-specific assumptions.
+
+## 21. Scaling, filtering, ontologies and knowledge graphs
+
+### Current latency strategy
+
+At the current catalogue size, exact PostgreSQL/pgvector search and bounded lexical comparison are
+simple, fast and auditable. Premature microservices, Kafka or approximate indexes would add deployment
+and consistency cost before a measured bottleneck exists.
+
+The pipeline already avoids an unbounded full search by filtering trusted domain, limiting each
+retriever and retaining a clear index path. When p95 latency or catalogue volume crosses an agreed
+threshold, model-specific HNSW/IVFFlat, database text indexes, caching or safe prefilters can be added
+behind the existing ports.
+
+### Ontology before graph database
+
+A controlled vocabulary or ontology can provide value earlier than a graph database. Versioned
+concept IDs can normalize:
+
+- synonyms and translations;
+- ingredient and dosage-form concepts;
+- routes and units;
+- product families and compatibility codes;
+- approved ATC/SNOMED/GMDN mappings where licensing and purpose are confirmed.
+
+These identifiers can live in the existing relational attributes while raw source wording remains
+available. They would improve both retrieval and rule comparison—for example resolving `mg` and
+`milligram` to the same unit concept.
+
+A graph database does not inherently make vector search faster. It becomes justified only when
+measured workloads repeatedly need authoritative multi-hop traversal such as:
+
+```text
+product → compatible device → approved substitute → supplier → destination restriction
+```
+
+Until those relationships have owners, versioning rules and real query demand, PostgreSQL plus
+pgvector is the cleaner system.
+
+## 22. What is implemented and what is not operational
+
+| Area | Current status | Practical meaning |
+|---|---|---|
+| Contracts and validation | Implemented | Prepared normalized data can enter safely |
+| Exact/lexical retrieval | Implemented | Transparent baseline works without ML |
+| pgvector storage/search | Implemented | Schema and query adapter exist |
+| Historical retrieval | Implemented | Prepared old offers can contribute candidates |
+| RRF, rules, packaging, availability, ranking | Implemented | The tested matching core runs end to end |
+| API, runs and decisions | Implemented | A caller can match/read/record feedback when DB data exists |
+| Excel/Outlook extraction | Not implemented here | Extraction workstream must emit the contracts |
+| Two-file ERP catalogue ingestion | Implemented | Full first load, inventory refresh, first-absence flagging, reactivation, and idempotent replay |
+| Incremental product embedding indexing | Implemented | Durable worker exists; approved model/revision still required |
+| SharePoint file/offer handoff | Implemented | File list with live links and normalized-output API; extraction remains external |
+| Live SharePoint/ERP schedules | Deployment work | API boundaries exist; Azure jobs and credentials/site IDs must be configured |
+| Price/shelf-life/reliability ranking | Not active | Comparable data and approved rules are missing |
+| Active or learned ranking | Not active | Feedback is stored only for controlled future use |
+| Figma UI connection | Adapter prepared, activation pending | Transport contracts and real adapter exist; visible application still uses fixtures |
+
+## 23. Deliberately deferred work
+
+| Deferred | Why now | Prepared now | Activation condition |
+|---|---|---|---|
+| Excel/PDF/mail extraction | Different team and failure domain | Strict contracts and provenance | Extractor payload agreed |
+| Outlook connector | Needs mailbox, Entra, permissions and operations | Outlook source types/locators | Approved mailbox and access |
+| Business Central live sync | No confirmed API/schema access | Catalogue/inventory ports and snapshots | Read-only API and data dictionary |
+| SharePoint live sync | Graph site/drive IDs and runtime credential wiring are deployment-specific | Versioned file list, live URLs and provenance | Read-only Azure job configured |
+| Supplier stock APIs | Suppliers and semantics unknown | Supplier-ready boundary | One approved pilot source |
+| Production embedding model | Benchmark is ready but has not been run/approved | Free-first benchmark, provider, worker, registry and pgvector | Benchmark winner and privacy approval |
+| HNSW/IVFFlat | Current catalogue does not need approximate search | pgvector storage | p95 latency/scale threshold exceeded |
+| Cross-encoder | Extra latency/MLOps without measured gain | Reranking boundary | Recall@10 good, ordering measurably weak |
+| LLM as judge | Hallucination, cost, privacy and reproducibility | Not in critical path | Narrow non-safety use case only |
+| Online learning | Position bias and unsafe feedback loops | Immutable exposure/decision data | Not planned without strong controls |
+| Learning-to-rank | Too few reviewed labels | Feature and benchmark-ready records | Sufficient temporal reviewed dataset |
+| Confidence percentage | Retrieval scores are not probabilities | Evidence and review states | Successful calibration study |
+| Knowledge graph database | No proven multi-hop workload | Relational concepts can be added | Repeated authoritative graph queries |
+| Full ATC/SNOMED/GMDN mapping | Purpose/licence/mapping unconfirmed | Ontology-ready attributes | action medeor standard decision |
+| Substitution hard rules | Clinical/technical equivalence unconfirmed | Versioned policy | Explicit domain-owner approval |
+| More advanced availability policy | V1 uses stored + ordered - committed; lead times and supplier semantics remain unknown | Separate raw and derived quantities | Authoritative additions confirmed |
+| Automatic shelf-life exclusion | Arrival/receipt/route policy unresolved | Contract field and rule hook | Confirmed policy and lot data |
+| Price ranking | Currency/basis/freight/validity incomplete | Comparable-evidence extension point | Normalized price contract |
+| Supplier reliability score | No outcome history/minimum sample | Outcome-ready history model | Enough completed procurements |
+| Automatic pack rounding | Direction varies by workflow | Both reversible options | Confirmed policy/profile |
+| User-adjustable weights | Safety and reproducibility risk | Versioned server policy | Approved bounded scenario profiles |
+| Automatic confirmation | System is decision support | Explicit decision endpoint | Narrow proven case and approval |
+| Real Figma/React workflow activation | Extraction and rollout are separate concerns | Stable API, transport contracts and fixture/real adapters | Validated extraction lines and end-to-end UI acceptance |
+| Dashboards/forecasting/offers | Outside core matching acceptance | Auditable historical data | Stable matching MVP |
+| Microservices/Kafka | Operational overkill at current scale | Ports and module boundaries | Demonstrated deployment/team need |
+
+## 24. How to extend the framework safely
+
+### Add a production embedding provider
+
+1. Implement `EmbeddingProvider` from [`ports.py`](ports.py) with a stable model ID.
+2. Register provider, name, version, dimensions and cosine metric in `embedding_models`.
+3. Build canonical catalogue text with [`representation.py`](representation.py).
+4. Generate vectors only for missing `(catalogue version, model)` pairs.
+5. Validate dimensions and persist the content hash with every vector.
+6. Evaluate on a held-out multilingual, domain-specific benchmark.
+7. Complete licensing, privacy, retention, residency, cost and latency review.
+8. Wire only the approved model ID into the API/indexing workflow.
+
+Never compare vectors from different models or dimensions.
+
+### Add or change a constraint
+
+1. Obtain a documented decision from the appropriate domain owner.
+2. Add/normalize the attribute in the extraction contract.
+3. Add a versioned policy entry for missing and mismatch behavior.
+4. Add pass, mismatch, missing, unit and boundary tests.
+5. Run regression evaluation on existing labelled cases.
+6. Publish a new policy version; never change the historical meaning of an old version.
+
+### Connect a new data source
+
+1. Keep source parsing outside matching.
+2. Preserve raw data and create immutable source/checksum/version metadata.
+3. Map into the V1 contracts without source-specific fields leaking into matching logic.
+4. Implement or feed the relevant port: catalogue, history, vectors or decisions.
+5. Add contract, mapping, idempotency, update and failure-recovery tests.
+6. Define snapshot/as-of semantics before calling the integration production-ready.
+
+## 25. Definition of done for this foundation
+
+- frontend transport contracts/adapters remain separated from the currently active fixture workflow;
+- strict versioned contracts and provenance;
+- exact, lexical, vector and historical retrieval;
+- deterministic RRF fusion;
+- conservative policy-driven constraints;
+- reversible packaging and honest stock evidence;
+- deterministic, explained Top K without unsafe padding;
+- PostgreSQL/pgvector schema and adapters;
+- immutable match runs, candidates and human decisions;
+- API endpoints and fallback behavior;
+- automated unit/API tests and an opt-in real pgvector integration test;
+- English and German plain-language and detailed documentation.
+
+The foundation is complete as a matching core. Production readiness still depends on real ingestion,
+catalogue population, embedding-model selection, domain-policy approval, operational monitoring and a
+separate UI integration.
+
+## 26. Complete operational example using the real ERP files
+
+This section joins the catalogue, embedding, SharePoint and matching components into one reproducible
+staging procedure. It is deliberately more operational than the algorithm example in sections 4–14.
+
+### 26.1 Input contract for `Artikeldaten.csv`
+
+[`../catalog/parser.py`](../catalog/parser.py) requires a UTF-8, semicolon-separated file with these
+headers:
+
+```text
+Nr.;Nummer 2;Beschreibung;Beschreibung 2;Basiseinheit;Artikelkategoriencode;
+Zollware (T1);Lagerbestand;Menge in Bestellung;Menge in Auftrag;
+Wiederbeschaffungsverfahren
+```
+
+`Nr.` is the durable identity. Quantities are parsed with German formatting, for example `21.821` as
+21821 and `12,5` as 12.5. Negative source quantities, duplicate/missing article numbers and missing
+headers reject the entire pair. `Nummer 2` links a variant to its family; a `000` master row without a
+parent is retained for audit but not offered or embedded.
+
+### 26.2 Input contract for `Artikeluebersetzungen.csv`
+
+The same parser requires:
+
+```text
+Artikelnr.;Sprachcode;Beschreibung;Beschreibung 2
+```
+
+Each `(Artikelnr., Sprachcode)` must be unique and must reference an article in the accompanying
+article file. Known English/French Business Central codes are normalized while the raw language code
+is preserved. German article descriptions and every translation are deduplicated into the version's
+searchable descriptions. Canonical embedding text additionally contains normalized category and base
+unit so those meaningful text changes create a new content hash.
+
+### 26.3 First load and verification
+
+After `alembic upgrade head`, call the upload boundary in
+[`../catalog/api.py`](../catalog/api.py):
+
+```bash
+curl --fail-with-body -X POST http://localhost:8000/api/v1/catalog-imports \
+  -F article_data=@/secure-input/Artikeldaten.csv \
+  -F article_translations=@/secure-input/Artikeluebersetzungen.csv \
+  -F captured_at=2026-08-19T10:00:00Z \
+  -F source_uri=business-central://catalog-export/2026-08-19
+```
+
+[`../catalog/service.py`](../catalog/service.py) first parses both files, takes a transaction-level
+advisory lock, checks pair checksums, creates source snapshots and applies all changes in one
+transaction. No partially accepted catalogue can remain.
+
+For the supplied initial pair, verify approximately these source facts before accepting the load:
+
+| Fact | Supplied files |
+|---|---:|
+| Article rows/imported identities | 2,773 |
+| Translation rows | 2,879 |
+| Offerable current variants | 1,645 |
+| Non-offerable master rows | 1,124 |
+| Negative calculated raw availability | 31 |
+
+The response should report 2,773 inserted and inventory-refreshed items on an empty database. It can
+report zero embedding jobs because a model must not be active before evaluation. Store the full
+response and read representative medicine, equipment, master and negative-availability articles via
+`GET /api/v1/catalog-items/{item_number}`. Repeating the exact pair must return
+`idempotent_replay: true`.
+
+### 26.4 Incremental-update acceptance matrix
+
+Use a disposable staging copy to prove each change type before automating real exports:
+
+| Test change | Expected persistence | Expected counters/model work |
+|---|---|---|
+| Change only `Lagerbestand` | New inventory snapshot, same text version | `inventory_refreshed_items` includes item; no new embedding job |
+| Change description/translation/category/base unit | New immutable current product version; old version retained | `text_updated_items +1`; one job per active model |
+| Change only replenishment method or T1 | New auditable metadata version; same content hash | `metadata_updated_items +1`; compatible vectors copied/reused |
+| Add article and translations | New identity, version, translations and inventory | `inserted_items +1`; job only if matching-eligible and a model is active |
+| Remove one article from a complete report | Identity retained but `source_missing=true` | `missing_items +1`; excluded immediately from matching |
+| Reintroduce that article | Missing state cleared and current source updated | `reactivated_items +1` |
+| Upload exact same pair | No new versions/snapshots/jobs | `idempotent_replay=true` |
+| Upload fewer than half the previous identities | No change committed | HTTP 422 with `suspicious_row_drop` |
+
+Availability is stored as `on hand + confirmed incoming purchase orders - committed orders`.
+Purchasing inquiries are not confirmed stock. The negative raw result is auditable; only the
+fulfillable amount is clamped to zero.
+
+### 26.5 Mandatory embedding evaluation and activation
+
+[`../../../../benchmarks/embeddings/run.py`](../../../../benchmarks/embeddings/run.py) uses both ERP
+files again: article rows form the candidate catalogue and French translations with the same article
+number form automatic labelled queries. This proves cross-language retrieval on the real catalogue
+without committing private data.
+
+The gates are non-optional:
+
+1. cloud smoke test with one model and `--limit-queries 25`;
+2. full automatic comparison of MiniLM, BGE-M3 and multilingual E5-large-instruct;
+3. second comparison including human-reviewed real normalized inquiries;
+4. subgroup/failure review for domain, language, strength, dosage form, size, sterility and package;
+5. recorded Recall@1/3/10, MRR, throughput, latency, vector storage and measured Azure cost;
+6. licence/privacy review and approval of one immutable revision;
+7. staging worker run with every failed job explained;
+8. real matching runs using query vectors from the exact same model ID/revision.
+
+The executable commands and decision-record checklist are in
+[`../../../../benchmarks/embeddings/README.md`](../../../../benchmarks/embeddings/README.md). Product
+indexing is implemented by [`../catalog/embeddings.py`](../catalog/embeddings.py) and
+[`../catalog/embedding_worker.py`](../catalog/embedding_worker.py). The worker's model ID is
+`sentence-transformers:<model-name>@<revision>`; stored and query vectors from another identity or
+dimension must never be compared.
+
+The standard web image contains no Sentence Transformers dependency. Production design must either
+add a model-enabled runtime, call an internal embedding service, or supply `query_embedding` and the
+matching `embedding_model_id` in `MatchRequestV1`. Until then the exact, lexical and historical paths
+remain valid fallbacks, but semantic matching is not validated.
+
+### 26.6 SharePoint and extraction handoff example
+
+A separate least-privilege Graph job discovers a file and calls
+`PUT /api/v1/sharepoint-offer-files/{drive-item-id}` with its eTag/cTag, live `webUrl`, name,
+modification time, MIME type and size. [`../offers/files.py`](../offers/files.py) versions that metadata.
+The external extraction process obtains `GET ...?needs_extraction=true`, opens the live URL and sends
+normalized structured output to `PUT /api/v1/offers/{same-drive-item-id}`.
+[`../offers/service.py`](../offers/service.py) versions the offer. The shared Graph ID links both
+records; matching never guesses identity from a filename and never parses the source document.
+
+### 26.7 End-to-end acceptance
+
+After the catalogue, optional vectors and normalized inquiry line exist, create a match run. Confirm
+that expected retrieval channels appear, hard exclusions remove inactive/missing products, packaging
+does not silently round, availability uses the latest inventory snapshot and the employee can record
+an explicit decision. Then change only inventory, import again and confirm matching uses the new
+quantity without changing the product vector.
+
+## 27. Detailed implementation and rollout roadmap
+
+| Phase | Main code/configuration | Required action | Acceptance evidence | Safe fallback/rollback |
+|---|---|---|---|---|
+| A. Review | `.github/workflows/ci.yml`, tests and migrations | Merge only after backend Postgres/pgvector and frontend build checks pass | Green CI and reviewer approval | Keep feature branch; no database change |
+| B. Staging database | `20260814_0001`, `20260819_0002`, `20260821_0003`, `DATABASE_URL` | Provision protected PostgreSQL/pgvector, backups and run migrations | Healthy `/api/health`; schema at head; backup recorded | Restore/repair staging before any import; never downgrade a populated production DB casually |
+| C. Initial ERP load | `catalog/parser.py`, `catalog/service.py`, `catalog/api.py` | Upload both same-time exports and perform section 26.3 checks | Saved response, representative item checks and idempotent replay | Transaction rollback leaves previous catalogue unchanged |
+| D. Update rehearsal | Catalogue tests plus disposable CSV copies | Exercise every row in section 26.4 | Counters, versions, missing/reactivation and jobs match expectations | Reject import and retain last accepted snapshot |
+| E. Model evaluation | `benchmarks/embeddings/*` | Run smoke, automatic and reviewed-label gates in Azure | Approved report, failure analysis, cost and pinned revision | Continue exact/lexical/history with model disabled |
+| F. Vector rollout | `catalog/embeddings.py`, `embedding_worker.py` | Index staging, inspect failures and connect same-model query inference | Compatible current vectors and vector evidence in known runs | Disable model/query vector channel; keep stored audit data |
+| G. SharePoint metadata | `offers/files.py`, `offers/api.py`, Graph job outside repo | Deploy site-restricted read-only sync and archive handling | Live links, versions and extraction queue verified on a controlled folder | Stop job; API/database records remain versioned |
+| H. External extraction | `offers/contracts.py`, matching `InquiryLineV1` | Agree payloads and publish normalized output with stable IDs | Invalid payloads rejected; provenance preserved; no source parsing in matching | Keep files queued for human/external processing |
+| I. Frontend activation | `apps/frontend/src/features/matching/real-api.ts`, API clients | Switch from fixture workflow after extraction is ready | Multi-line partial failures, explanations, override reasons and decisions tested | Switch back to fixture only in non-production demonstration environments |
+| J. Production controls | Entra/ingress, secrets, monitoring, jobs, backups | Restrict writers, schedule imports/sync/worker, alert on failures and test restore | Named owners, runbook, backup restore, rollback and real-case acceptance signed off | Keep production closed; operate staging/manual process |
+
+Future model replacements repeat phases E and F with a new model ID. They never overwrite the meaning
+of old vectors or match runs. Future ERP exports repeat the controlled parts of phases C/D and then
+run only the incremental work from F.

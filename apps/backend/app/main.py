@@ -5,13 +5,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.routes import router as api_router
+from app.catalog.api import router as catalog_router
 from app.core.config import get_settings
 from app.db.session import engine
 from app.frontend import mount_frontend
+from app.matching.api import router as matching_router
+from app.offers.api import file_router as offer_files_router
+from app.offers.api import router as offers_router
 
 settings = get_settings()
 
 app = FastAPI(title=settings.service_name)
+app.include_router(matching_router)
+app.include_router(catalog_router)
+app.include_router(offers_router)
+app.include_router(offer_files_router)
 app.include_router(api_router)
 
 if settings.cors_origin_list:

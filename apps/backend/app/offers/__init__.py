@@ -1,0 +1,1 @@
+"""Normalized SharePoint offer synchronization."""
