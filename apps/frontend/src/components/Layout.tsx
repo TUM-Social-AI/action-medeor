@@ -114,7 +114,7 @@ export function Layout({ children, currentScreen, onNavigate }: LayoutProps) {
             </div>
             <div className="min-w-0">
               <div className="text-white truncate" style={{ fontSize: 13, fontWeight: 500 }}>
-                Lea Fischer
+                Leon Fischer
               </div>
               <div className="text-white/50" style={{ fontSize: 11 }}>
                 Procurement Manager

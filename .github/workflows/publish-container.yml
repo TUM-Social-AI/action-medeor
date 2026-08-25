@@ -76,6 +76,8 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           AZURE_CONTAINER_REGISTRY_NAME: ${{ vars.AZURE_CONTAINER_REGISTRY_NAME }}
           AZURE_CONTAINER_REGISTRY_LOGIN_SERVER: ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}
+          AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
         run: |
           set -euo pipefail
 
@@ -85,6 +87,8 @@ jobs:
             AZURE_SUBSCRIPTION_ID
             AZURE_CONTAINER_REGISTRY_NAME
             AZURE_CONTAINER_REGISTRY_LOGIN_SERVER
+            AZURE_CONTAINER_APP_NAME
+            AZURE_RESOURCE_GROUP
           )
           for variable in "${required_variables[@]}"; do
             if [[ -z "${!variable}" ]]; then
@@ -98,7 +102,7 @@ jobs:
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          allow-no-subscriptions: true
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Get short-lived ACR token
         id: acr-token
@@ -152,14 +156,85 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build and push production image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: |
-            ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}/allocura:${{ github.sha }}
-            ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}/allocura:latest
+          tags: ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}/allocura:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Install Container Apps CLI extension
+        run: az extension add --name containerapp --upgrade --only-show-errors
+
+      - name: Deploy production image
+        id: deploy
+        shell: bash
+        env:
+          ACR_LOGIN_SERVER: ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}
+          AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          revision_suffix="${GITHUB_SHA:0:10}-${GITHUB_RUN_ATTEMPT}"
+          image="${ACR_LOGIN_SERVER}/allocura@${IMAGE_DIGEST}"
+
+          revision_name="$(
+            az containerapp update \
+              --name "$AZURE_CONTAINER_APP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --image "$image" \
+              --revision-suffix "$revision_suffix" \
+              --query properties.latestRevisionName \
+              --output tsv \
+              --only-show-errors
+          )"
+
+          echo "revision_name=$revision_name" >> "$GITHUB_OUTPUT"
+
+          for attempt in $(seq 1 60); do
+            ready_revision="$(
+              az containerapp show \
+                --name "$AZURE_CONTAINER_APP_NAME" \
+                --resource-group "$AZURE_RESOURCE_GROUP" \
+                --query properties.latestReadyRevisionName \
+                --output tsv \
+                --only-show-errors
+            )"
+
+            if [[ "$ready_revision" == "$revision_name" ]]; then
+              echo "Revision $revision_name is ready."
+              exit 0
+            fi
+
+            az containerapp revision show \
+              --name "$AZURE_CONTAINER_APP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --revision "$revision_name" \
+              --query '{health:properties.healthState,running:properties.runningState}' \
+              --output json \
+              --only-show-errors || true
+
+            sleep 10
+          done
+
+          echo "::error::Revision did not become ready within 10 minutes."
+          exit 1
+
+      - name: Move latest to deployed image
+        shell: bash
+        env:
+          ACR_LOGIN_SERVER: ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create \
+            --prefer-index=false \
+            --tag "${ACR_LOGIN_SERVER}/allocura:latest" \
+            "${ACR_LOGIN_SERVER}/allocura@${IMAGE_DIGEST}"
