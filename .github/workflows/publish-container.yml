@@ -1,7 +1,9 @@
 name: Publish production container
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -12,8 +14,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
+  check-deployment-label:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      deploy: ${{ steps.check.outputs.deploy }}
+
+    steps:
+      - name: Check merged PR for deployment label
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          pull_requests="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls"
+          )"
+
+          deploy="$(
+            jq -r \
+              'any(.[]; any(.labels[]?; .name == "deploy:production"))' \
+              <<< "$pull_requests"
+          )"
+
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+
+          if [[ "$deploy" == "true" ]]; then
+            echo "Deployment label found."
+          else
+            echo "No deployment label found. Skipping image publication."
+          fi
+
   publish:
-    if: github.ref == 'refs/heads/main'
+    needs: check-deployment-label
+    if: needs.check-deployment-label.outputs.deploy == 'true'
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
     env:
       AZURE_CORE_OUTPUT: none
@@ -114,6 +158,8 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}/allocura:${{ github.sha }}
+          tags: |
+            ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}/allocura:${{ github.sha }}
+            ${{ vars.AZURE_CONTAINER_REGISTRY_LOGIN_SERVER }}/allocura:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
