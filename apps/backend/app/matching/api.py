@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.catalog.embeddings import SentenceTransformerEmbeddingProvider
+from app.catalog.embedding_factory import create_embedding_provider
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.matching.adapters.persistence import (
@@ -30,14 +30,7 @@ router = APIRouter(prefix="/api/v1", tags=["matching"])
 
 def get_matching_service(session: AsyncSession = Depends(get_session)) -> MatchingService:
     settings = get_settings()
-    embedding_provider = (
-        SentenceTransformerEmbeddingProvider(
-            settings.embedding_model_name,
-            revision=settings.embedding_model_revision,
-        )
-        if settings.embedding_model_name
-        else None
-    )
+    embedding_provider = create_embedding_provider(settings)
     return MatchingService(
         catalog_repository=PostgresCatalogRepository(session),
         history_repository=PostgresHistoryRepository(session),

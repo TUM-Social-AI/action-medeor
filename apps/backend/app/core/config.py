@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOCAL_CORS_ORIGINS = [
@@ -17,10 +18,22 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://allocura:allocura@localhost:5432/allocura"
     )
     cors_origins: str = ""
+    embedding_provider: str = ""
     embedding_model_name: str = ""
+    embedding_model_version: str = ""
     embedding_model_revision: str = "main"
+    embedding_deployment: str = ""
+    embedding_dimensions: int | None = None
+    embedding_batch_size: int = 32
+    azure_foundry_endpoint: str = ""
+    azure_foundry_api_key: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @field_validator("embedding_dimensions", mode="before")
+    @classmethod
+    def empty_embedding_dimensions_are_unset(cls, value: object) -> object:
+        return None if value == "" else value
 
     @property
     def cors_origin_list(self) -> list[str]:

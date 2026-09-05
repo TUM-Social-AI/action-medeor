@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import csv
 import json
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -16,14 +17,35 @@ import numpy as np
 BACKEND = Path(__file__).resolve().parents[2] / "apps" / "backend"
 sys.path.insert(0, str(BACKEND))
 
-from app.catalog.embeddings import SentenceTransformerEmbeddingProvider  # noqa: E402
+from app.catalog.embeddings import (  # noqa: E402
+    CatalogEmbeddingProvider,
+    SentenceTransformerEmbeddingProvider,
+)
+from app.catalog.foundry_embeddings import (  # noqa: E402
+    AzureCohereEmbeddingProvider,
+    AzureOpenAIEmbeddingProvider,
+)
 from app.matching.representation import normalize_text  # noqa: E402
 
-DEFAULT_MODELS = (
+DEFAULT_SENTENCE_TRANSFORMER_MODELS = (
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     "BAAI/bge-m3",
     "intfloat/multilingual-e5-large-instruct",
 )
+
+DEFAULT_FOUNDRY_MODELS = (
+    "text-embedding-3-small",
+    "text-embedding-3-large",
+)
+
+DEFAULT_COHERE_MODELS = ("Cohere-embed-v3-multilingual",)
+
+# User-supplied Foundry prices, normalized to USD per 1,000,000 input tokens.
+DEFAULT_API_PRICES_PER_MILLION = {
+    ("azure-openai", "text-embedding-3-small"): 0.02,
+    ("azure-openai", "text-embedding-3-large"): 0.14,
+    ("azure-cohere", "Cohere-embed-v3-multilingual"): 0.10,
+}
 
 
 @dataclass(frozen=True)
@@ -125,19 +147,14 @@ def build_evaluation_set(
 
 
 async def benchmark_model(
-    model_name: str,
-    revision: str,
+    provider: CatalogEmbeddingProvider,
     candidates: list[Candidate],
     queries: list[Query],
     *,
     batch_size: int,
     compute_cost_per_hour: float | None,
+    price_per_million_tokens: float | None,
 ) -> dict[str, object]:
-    provider = SentenceTransformerEmbeddingProvider(
-        model_name,
-        revision=revision,
-        batch_size=batch_size,
-    )
     spec = await provider.spec()
     started = time.perf_counter()
     candidate_vectors = np.asarray(
@@ -184,6 +201,7 @@ async def benchmark_model(
                 }
             )
     count = len(queries)
+    input_tokens = getattr(provider, "input_tokens_used", None)
     return {
         "model": asdict(spec),
         "dataset": {"candidates": len(candidates), "queries": count},
@@ -205,6 +223,13 @@ async def benchmark_model(
                 else None
             ),
             "compute_cost_per_hour": compute_cost_per_hour,
+            "input_tokens": input_tokens,
+            "price_per_million_tokens": price_per_million_tokens,
+            "estimated_api_cost": (
+                input_tokens / 1_000_000 * price_per_million_tokens
+                if input_tokens is not None and price_per_million_tokens is not None
+                else None
+            ),
         },
         "failures": failures[:100],
     }
@@ -223,23 +248,75 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
     if not queries:
         raise ValueError("No evaluation queries were found")
     reports = []
-    for model in args.models:
+    deployments = args.deployments or [""] * len(args.models)
+    dimensions = args.dimensions or [None] * len(args.models)
+    for model, deployment, model_dimensions in zip(
+        args.models, deployments, dimensions, strict=True
+    ):
+        provider: CatalogEmbeddingProvider | None = None
         try:
+            if args.provider == "sentence-transformers":
+                provider = SentenceTransformerEmbeddingProvider(
+                    model,
+                    revision=args.revision,
+                    batch_size=args.batch_size,
+                )
+            elif args.provider == "azure-openai":
+                endpoint = os.environ.get("AZURE_FOUNDRY_ENDPOINT", "")
+                api_key = os.environ.get("AZURE_FOUNDRY_API_KEY", "")
+                provider = AzureOpenAIEmbeddingProvider(
+                    endpoint=endpoint,
+                    deployment=deployment,
+                    model_name=model,
+                    model_version=args.model_version,
+                    dimensions=model_dimensions,
+                    api_key=api_key,
+                    batch_size=args.batch_size,
+                )
+            else:
+                endpoint = os.environ.get("AZURE_FOUNDRY_ENDPOINT", "")
+                api_key = os.environ.get("AZURE_FOUNDRY_API_KEY", "")
+                provider = AzureCohereEmbeddingProvider(
+                    endpoint=endpoint,
+                    deployment=deployment,
+                    model_name=model,
+                    model_version=args.model_version,
+                    dimensions=model_dimensions,
+                    api_key=api_key,
+                    batch_size=args.batch_size,
+                )
             reports.append(
                 await benchmark_model(
-                    model,
-                    args.revision,
+                    provider,
                     candidates,
                     queries,
                     batch_size=args.batch_size,
                     compute_cost_per_hour=args.compute_cost_per_hour,
+                    price_per_million_tokens=(
+                        args.price_per_million_tokens
+                        if args.price_per_million_tokens is not None
+                        else DEFAULT_API_PRICES_PER_MILLION.get(
+                            (args.provider, model)
+                        )
+                    ),
                 )
             )
         except Exception as exc:
+            version = (
+                args.revision
+                if args.provider == "sentence-transformers"
+                else args.model_version
+            )
+            message = str(exc) or "request timed out"
             reports.append(
                 {
-                    "model": {"name": model, "version": args.revision},
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "model": {"name": model, "version": version},
+                    "error": f"{type(exc).__name__}: {message}",
+                    "partial_progress": (
+                        getattr(provider, "diagnostics", None)
+                        if provider is not None
+                        else None
+                    ),
                 }
             )
     return {
@@ -258,21 +335,62 @@ def main() -> None:
     parser.add_argument("--articles", type=Path, required=True)
     parser.add_argument("--translations", type=Path, required=True)
     parser.add_argument("--labels", type=Path)
-    parser.add_argument("--models", nargs="+", default=list(DEFAULT_MODELS))
+    parser.add_argument(
+        "--provider",
+        choices=("sentence-transformers", "azure-openai", "azure-cohere"),
+        default="azure-openai",
+    )
+    parser.add_argument("--models", nargs="+")
     parser.add_argument("--revision", default="main")
+    parser.add_argument("--deployments", nargs="+")
+    parser.add_argument("--model-version", default="")
+    parser.add_argument("--dimensions", nargs="+", type=int)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument(
         "--compute-cost-per-hour",
         type=float,
         help="Optional Azure/job price used to estimate the measured benchmark run cost",
     )
+    parser.add_argument(
+        "--price-per-million-tokens",
+        type=float,
+        help="Override the built-in model price in USD per 1,000,000 input tokens",
+    )
     parser.add_argument("--limit-queries", type=int)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.models is None:
+        if args.provider == "azure-openai":
+            args.models = list(DEFAULT_FOUNDRY_MODELS)
+        elif args.provider == "azure-cohere":
+            args.models = list(DEFAULT_COHERE_MODELS)
+        else:
+            args.models = list(DEFAULT_SENTENCE_TRANSFORMER_MODELS)
     if args.batch_size < 1:
         parser.error("--batch-size must be positive")
     if args.compute_cost_per_hour is not None and args.compute_cost_per_hour < 0:
         parser.error("--compute-cost-per-hour cannot be negative")
+    if args.price_per_million_tokens is not None and args.price_per_million_tokens < 0:
+        parser.error("--price-per-million-tokens cannot be negative")
+    if args.provider in {"azure-openai", "azure-cohere"}:
+        if not args.deployments:
+            parser.error("--deployments is required for Foundry API providers")
+        if len(args.deployments) != len(args.models):
+            parser.error("--deployments must contain one value for every --models value")
+        if not args.model_version:
+            parser.error("--model-version is required for Foundry API providers")
+        if not args.dimensions or len(args.dimensions) != len(args.models):
+            parser.error("--dimensions must contain one value for every --models value")
+        if any(value < 1 for value in args.dimensions):
+            parser.error("all --dimensions values must be positive")
+        if not os.environ.get("AZURE_FOUNDRY_ENDPOINT"):
+            parser.error("AZURE_FOUNDRY_ENDPOINT is required for Foundry API providers")
+        if not os.environ.get("AZURE_FOUNDRY_API_KEY"):
+            parser.error("AZURE_FOUNDRY_API_KEY is required for Foundry API providers")
+    elif args.deployments or args.dimensions:
+        parser.error(
+            "--deployments and --dimensions are only valid with --provider azure-openai"
+        )
     report = asyncio.run(run(args))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
