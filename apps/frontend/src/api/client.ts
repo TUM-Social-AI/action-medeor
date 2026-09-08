@@ -90,7 +90,7 @@ export function getTrends() {
 export function getFileType(fileName: string): ImportFileType {
   const extension = fileName.toLowerCase().split('.').pop();
 
-  if (extension === 'pdf' || extension === 'xlsx' || extension === 'xls') {
+  if (extension === 'pdf' || extension === 'xlsx' || extension === 'xls' || extension === 'docx') {
     return extension;
   }
 

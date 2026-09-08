@@ -28,8 +28,9 @@ SUPPORTED_IMPORT_CONTENT_TYPES = {
     "application/pdf": "pdf",
     "application/vnd.ms-excel": "xls",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
 }
-SUPPORTED_IMPORT_EXTENSIONS = {"pdf", "xlsx", "xls"}
+SUPPORTED_IMPORT_EXTENSIONS = {"pdf", "xlsx", "xls", "docx"}
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
 

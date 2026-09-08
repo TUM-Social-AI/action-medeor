@@ -22,6 +22,18 @@ def build_xlsx(rows: list[list[Any]]) -> bytes:
     return buffer.getvalue()
 
 
+def build_docx(paragraphs: list[str]) -> bytes:
+    from docx import Document
+
+    document = Document()
+    for text in paragraphs:
+        document.add_paragraph(text)
+
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
 @pytest.mark.asyncio
 async def test_home_returns_stats_and_recent_requests() -> None:
     response = await request("GET", "/api/home")
@@ -129,6 +141,38 @@ async def test_create_import_parses_excel_and_persists_review_payload() -> None:
     assert patched_body["itemNumber"] == "ORS-WHO-100"
     assert patched_body["shelfLife"] == "18 months"
     assert patched_body["status"] == "verified"
+
+
+@pytest.mark.asyncio
+async def test_create_import_parses_docx_free_text() -> None:
+    # No ANTHROPIC_API_KEY in the test environment, so this exercises the naive-parse fallback
+    # end to end through the real upload endpoint - not just the parser module in isolation.
+    docx_bytes = build_docx(
+        [
+            "Request from partner clinic - please supply the following:",
+            "Amoxicillin 500mg caps 2000 pcs - blister pack preferred",
+            "Paracetamol 500mg tablets 5000 tabs - generic acceptable",
+        ]
+    )
+
+    response = await request(
+        "POST",
+        "/api/imports",
+        files={
+            "file": (
+                "partner_request.docx",
+                docx_bytes,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requestId"].startswith("IMP-")
+    assert body["counts"]["total"] == 2
+    assert body["items"][0]["quantity"] == 2000
+    assert body["items"][0]["unit"] == "pcs"
 
 
 @pytest.mark.asyncio

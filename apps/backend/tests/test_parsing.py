@@ -1,5 +1,6 @@
 import io
 
+from app.parsing.docx_parser import parse_docx
 from app.parsing.excel_parser import parse_excel
 from app.parsing.keywords import match_column_role
 from app.parsing.pdf_parser import parse_pdf
@@ -54,6 +55,25 @@ def build_minimal_pdf(lines: list[str]) -> bytes:
         out += f"{offset:010d} 00000 n \n".encode()
     out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF".encode()
     return bytes(out)
+
+
+def build_docx(paragraphs: list[str], table_rows: list[list[str]] | None = None) -> bytes:
+    from docx import Document
+
+    document = Document()
+    for text in paragraphs:
+        document.add_paragraph(text)
+
+    if table_rows:
+        table = document.add_table(rows=0, cols=len(table_rows[0]))
+        for row_values in table_rows:
+            row = table.add_row()
+            for cell, value in zip(row.cells, row_values, strict=True):
+                cell.text = value
+
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
 
 
 def test_match_column_role_recognizes_multiple_languages() -> None:
@@ -268,3 +288,55 @@ def test_parse_pdf_free_text_falls_back_to_naive_parsing_without_llm_key(monkeyp
     assert document.items[0].quantity == 2000
     assert document.items[0].unit == "pcs"
     assert document.items[0].confidence == 40
+
+
+def test_parse_docx_falls_back_to_naive_parsing_without_llm_key(monkeypatch) -> None:
+    # .docx always goes straight to the free-text path (no table-detection step), so this
+    # exercises the same LLM -> naive fallback as PDF free text, just via a different reader.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    content = build_docx(
+        [
+            "Partner request - urgent medical resupply",
+            "Amoxicillin 500mg caps 2000 pcs - blister pack preferred",
+            "Paracetamol 500mg tablets 5000 tabs - generic acceptable",
+        ]
+    )
+
+    document = parse_docx(content)
+
+    assert document.used_llm_fallback is False
+    assert any("LLM fallback unavailable" in warning for warning in document.warnings)
+    assert document.rows_detected == 2
+    assert document.items[0].quantity == 2000
+    assert document.items[0].unit == "pcs"
+    assert document.items[0].confidence == 40
+
+
+def test_parse_docx_includes_table_text(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    content = build_docx(
+        ["Supplies needed for the clinic:"],
+        table_rows=[["Wound Dressing 10x10cm 1000 pcs sterile"]],
+    )
+
+    document = parse_docx(content)
+
+    assert document.rows_detected == 1
+    assert document.items[0].quantity == 1000
+
+
+def test_parse_docx_empty_document_warns() -> None:
+    content = build_docx([])
+
+    document = parse_docx(content)
+
+    assert document.rows_detected == 0
+    assert any("no readable text" in warning for warning in document.warnings)
