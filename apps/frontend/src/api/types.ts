@@ -73,6 +73,8 @@ export type ExtractedItem = {
   quantity: number | null;
   unit: string;
   notes: string;
+  itemNumber: string;
+  shelfLife: string;
   priority: Priority;
   confidence: number | null;
   status: ItemStatus;
@@ -95,7 +97,9 @@ export type ReviewResponse = {
   counts: ReviewCounts;
 };
 
-export type ItemUpdate = Partial<Pick<ExtractedItem, 'name' | 'quantity' | 'unit' | 'notes' | 'priority'>>;
+export type ItemUpdate = Partial<
+  Pick<ExtractedItem, 'name' | 'quantity' | 'unit' | 'notes' | 'itemNumber' | 'shelfLife' | 'priority'>
+>;
 
 export type PartnerUpdate = Pick<PartnerDetails, 'partner' | 'region' | 'requestId' | 'contact'>;
 

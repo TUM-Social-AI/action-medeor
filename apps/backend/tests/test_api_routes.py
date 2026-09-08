@@ -1,3 +1,4 @@
+import io
 from typing import Any
 
 import pytest
@@ -6,6 +7,19 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 
 REQUEST_ID = "SD-2024-0611"
+
+
+def build_xlsx(rows: list[list[Any]]) -> bytes:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    for row in rows:
+        sheet.append(row)
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
 
 
 @pytest.mark.asyncio
@@ -60,14 +74,23 @@ async def test_recent_imports_returns_supported_file_types() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_import_returns_review_payload() -> None:
+async def test_create_import_parses_excel_and_persists_review_payload() -> None:
+    workbook_bytes = build_xlsx(
+        [
+            ["Item number", "Item", "Quantity", "Unit", "desired shelf life", "Notes"],
+            ["AM500-001", "Amoxicillin 500mg Capsules", 2000, "caps", "24 months", "Blister pack preferred"],
+            ["PC500-001", "Paracetamol 500mg Tablets", 5000, "tabs", None, "Generic acceptable"],
+            [None, "ORS Sachets (WHO formula)", None, "sachets", None, "Quantity illegible in scan"],
+        ]
+    )
+
     response = await request(
         "POST",
         "/api/imports",
         files={
             "file": (
                 "Sudan_EmergencyRequest_MSF_June2024.xlsx",
-                b"mock workbook bytes",
+                workbook_bytes,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             ),
         },
@@ -75,9 +98,54 @@ async def test_create_import_returns_review_payload() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["requestId"] == REQUEST_ID
-    assert body["counts"]["total"] == 8
+    assert body["requestId"].startswith("IMP-")
+    assert body["source"]["fileName"] == "Sudan_EmergencyRequest_MSF_June2024.xlsx"
+    assert body["counts"]["total"] == 3
+    assert body["items"][0]["name"] == "Amoxicillin 500mg Capsules"
+    assert body["items"][0]["quantity"] == 2000
+    assert body["items"][0]["status"] == "verified"
+    assert body["items"][0]["itemNumber"] == "AM500-001"
+    assert body["items"][0]["shelfLife"] == "24 months"
     assert body["items"][2]["status"] == "missing"
+    assert body["items"][2]["itemNumber"] == ""
+
+    request_id = body["requestId"]
+
+    # The freshly persisted request must be retrievable by its real requestId, not just the fixture.
+    follow_up = await request("GET", f"/api/requests/{request_id}/review")
+    assert follow_up.status_code == 200
+    assert follow_up.json()["items"][0]["name"] == "Amoxicillin 500mg Capsules"
+
+    # Editing itemNumber/shelfLife on a real (non-fixture) request exercises the camelCase ->
+    # snake_case field mapping in repository.update_item_fields.
+    item_id = body["items"][2]["id"]
+    patched = await request(
+        "PATCH",
+        f"/api/requests/{request_id}/items/{item_id}",
+        json={"quantity": 500, "itemNumber": "ORS-WHO-100", "shelfLife": "18 months"},
+    )
+    assert patched.status_code == 200
+    patched_body = patched.json()
+    assert patched_body["itemNumber"] == "ORS-WHO-100"
+    assert patched_body["shelfLife"] == "18 months"
+    assert patched_body["status"] == "verified"
+
+
+@pytest.mark.asyncio
+async def test_create_import_rejects_unparsable_workbook() -> None:
+    response = await request(
+        "POST",
+        "/api/imports",
+        files={
+            "file": (
+                "broken.xlsx",
+                b"not actually a workbook",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+        },
+    )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio

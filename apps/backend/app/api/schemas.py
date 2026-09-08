@@ -71,6 +71,8 @@ class ExtractedItem(BaseModel):
     quantity: int | None
     unit: str
     notes: str
+    itemNumber: str = ""
+    shelfLife: str = ""
     priority: Priority
     confidence: int | None
     status: ItemStatus
@@ -98,6 +100,8 @@ class ItemUpdate(BaseModel):
     quantity: int | None = None
     unit: str | None = None
     notes: str | None = None
+    itemNumber: str | None = None
+    shelfLife: str | None = None
     priority: Priority | None = None
 
 

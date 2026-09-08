@@ -143,6 +143,8 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       quantity: item.quantity,
       unit: item.unit,
       notes: item.notes,
+      itemNumber: item.itemNumber,
+      shelfLife: item.shelfLife,
       priority: item.priority,
     });
   };
@@ -158,6 +160,8 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
         quantity: editValues.quantity,
         unit: editValues.unit,
         notes: editValues.notes,
+        itemNumber: editValues.itemNumber,
+        shelfLife: editValues.shelfLife,
         priority: editValues.priority,
       });
       setItems(prev => prev.map(item => (item.id === updated.id ? updated : item)));
@@ -274,7 +278,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50/80">
-                  {['#', 'Item Name', 'Qty', 'Unit', 'Notes', 'Priority', 'Confidence', 'Status', 'Actions'].map(header => (
+                  {['#', 'Item #', 'Item Name', 'Qty', 'Unit', 'Shelf Life', 'Notes', 'Priority', 'Confidence', 'Status', 'Actions'].map(header => (
                     <th
                       key={header}
                       className="text-left px-4 py-3 text-xs text-gray-500"
@@ -306,6 +310,13 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     >
                       <td className="px-4 py-3 text-xs text-gray-400">{index + 1}</td>
                       <td className="px-4 py-3">
+                        {item.itemNumber ? (
+                          <span className="text-xs text-gray-500 font-mono">{item.itemNumber}</span>
+                        ) : (
+                          <span className="text-xs text-gray-300 italic">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
                         <button
                           onClick={() => openEdit(item)}
                           className={`text-left transition-colors hover:underline ${
@@ -330,6 +341,13 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                           <span className="text-sm text-gray-500">{item.unit}</span>
                         ) : (
                           <span className="text-sm text-gray-400 italic">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {item.shelfLife ? (
+                          <span className="text-xs text-gray-500">{item.shelfLife}</span>
+                        ) : (
+                          <span className="text-xs text-gray-300 italic">-</span>
                         )}
                       </td>
                       <td className="px-4 py-3 max-w-xs">
@@ -578,6 +596,33 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             <div className="px-6 py-5">
               <SourceReferencePanel item={editingItem} reference={sourceReferences[editingItem.id]} />
               <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                      Item #
+                    </label>
+                    <input
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] font-mono"
+                      value={editValues.itemNumber ?? ''}
+                      onChange={event =>
+                        setEditValues(values => ({ ...values, itemNumber: event.target.value }))
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                      Shelf Life
+                    </label>
+                    <input
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                      placeholder="e.g. 24 months"
+                      value={editValues.shelfLife ?? ''}
+                      onChange={event =>
+                        setEditValues(values => ({ ...values, shelfLife: event.target.value }))
+                      }
+                    />
+                  </div>
+                </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
                     Item Name

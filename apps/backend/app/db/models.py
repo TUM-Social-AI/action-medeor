@@ -1,0 +1,89 @@
+"""SQLAlchemy models for persisted partner import requests and their extracted line items."""
+
+from __future__ import annotations
+
+import datetime as dt
+
+from sqlalchemy import JSON, ForeignKey, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class ImportRequestRow(Base):
+    """One uploaded partner request file and the partner metadata collected for it."""
+
+    __tablename__ = "import_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(unique=True, index=True)
+
+    source_file_name: Mapped[str]
+    rows_detected: Mapped[int] = mapped_column(default=0)
+
+    partner: Mapped[str] = mapped_column(default="")
+    region: Mapped[str] = mapped_column(default="")
+    contact: Mapped[str] = mapped_column(default="")
+    confirmed: Mapped[bool] = mapped_column(default=False)
+    request_date: Mapped[str | None] = mapped_column(default=None)
+
+    used_llm_fallback: Mapped[bool] = mapped_column(default=False)
+    parser_warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
+
+    items: Mapped[list["RequestItemRow"]] = relationship(
+        back_populates="request",
+        cascade="all, delete-orphan",
+        order_by="RequestItemRow.position",
+    )
+    source_references: Mapped[list["RequestSourceReferenceRow"]] = relationship(
+        back_populates="request",
+        cascade="all, delete-orphan",
+    )
+
+
+class RequestItemRow(Base):
+    """One extracted line item. Its id is the global "item id" used in existing item routes."""
+
+    __tablename__ = "request_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey("import_requests.request_id"), index=True)
+    position: Mapped[int] = mapped_column(default=0)
+
+    name: Mapped[str]
+    quantity: Mapped[int | None] = mapped_column(default=None)
+    unit: Mapped[str] = mapped_column(default="")
+    notes: Mapped[str] = mapped_column(default="")
+    item_number: Mapped[str] = mapped_column(default="")
+    shelf_life: Mapped[str] = mapped_column(default="")
+    priority: Mapped[str] = mapped_column(default="medium")
+    confidence: Mapped[int | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(default="needs_review")
+
+    request: Mapped[ImportRequestRow] = relationship(back_populates="items")
+    source_reference: Mapped["RequestSourceReferenceRow | None"] = relationship(
+        back_populates="item",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class RequestSourceReferenceRow(Base):
+    """The source excerpt (page/row + raw text) an item was extracted from."""
+
+    __tablename__ = "request_source_references"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey("import_requests.request_id"), index=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("request_items.id"), unique=True)
+
+    page: Mapped[int] = mapped_column(default=0)
+    row: Mapped[int] = mapped_column(default=0)
+    excerpt: Mapped[str] = mapped_column(default="")
+
+    request: Mapped[ImportRequestRow] = relationship(back_populates="source_references")
+    item: Mapped[RequestItemRow] = relationship(back_populates="source_reference")

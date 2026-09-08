@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     embedding_model_name: str = ""
     embedding_model_revision: str = "main"
 
+    # Fallback extractor for PDFs whose layout isn't a clean, heuristically-parseable table.
+    # Left unset in most environments; extraction degrades to a lower-confidence naive parse.
+    anthropic_api_key: str | None = None
+    anthropic_extraction_model: str = "claude-haiku-4-5"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
