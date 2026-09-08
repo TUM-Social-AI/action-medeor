@@ -74,8 +74,15 @@ async def save_parsed_request(
 
     session.add(request)
     await session.commit()
-    await session.refresh(request, attribute_names=["items"])
-    return request
+
+    # session.refresh(request, attribute_names=["items"]) reloads the items collection but does
+    # NOT eager-load each item's source_reference - to_review_response() touching it afterward
+    # (a plain sync call, not awaited) then triggers a real lazy-load outside any async-bridged
+    # context, which fails with MissingGreenlet. get_request_by_id() eager-loads both levels in
+    # one query via selectinload, so nothing downstream ever needs an implicit lazy load.
+    refreshed = await get_request_by_id(session, request_id)
+    assert refreshed is not None  # we just committed this row in the same session
+    return refreshed
 
 
 async def get_request_by_id(session: AsyncSession, request_id: str) -> ImportRequestRow | None:
