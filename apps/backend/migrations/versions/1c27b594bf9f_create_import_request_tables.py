@@ -1,19 +1,17 @@
 """create import request tables
 
 Revision ID: 1c27b594bf9f
-Revises: 
+Revises: 20260821_0003
 Create Date: 2026-08-20 07:12:22.596307
 """
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
-
+from alembic import op
 
 revision: str = '1c27b594bf9f'
-down_revision: str | None = None
+down_revision: str | None = '20260821_0003'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
