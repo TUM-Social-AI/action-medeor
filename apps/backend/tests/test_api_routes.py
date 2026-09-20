@@ -34,6 +34,19 @@ def build_docx(paragraphs: list[str]) -> bytes:
     return buffer.getvalue()
 
 
+def force_llm_unavailable(monkeypatch) -> None:
+    """Force extract_items_with_llm() to raise LlmUnavailable deterministically, regardless of
+    what a developer's local .env happens to set (e.g. LLM_PROVIDER=gemini + a real key) -
+    env vars take precedence over .env file values in pydantic-settings."""
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+
 @pytest.mark.asyncio
 async def test_home_returns_stats_and_recent_requests() -> None:
     response = await request("GET", "/api/home")
@@ -144,9 +157,11 @@ async def test_create_import_parses_excel_and_persists_review_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_import_parses_docx_free_text() -> None:
-    # No ANTHROPIC_API_KEY in the test environment, so this exercises the naive-parse fallback
-    # end to end through the real upload endpoint - not just the parser module in isolation.
+async def test_create_import_parses_docx_free_text(monkeypatch) -> None:
+    # No LLM key available, so this exercises the naive-parse fallback end to end through the
+    # real upload endpoint - not just the parser module in isolation.
+    force_llm_unavailable(monkeypatch)
+
     docx_bytes = build_docx(
         [
             "Request from partner clinic - please supply the following:",

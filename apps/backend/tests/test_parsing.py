@@ -8,6 +8,20 @@ from app.parsing.table_parser import is_table_well_structured, parse_table_rows
 from app.parsing.text_heuristics import classify_item, extract_quantity_and_unit, parse_number
 
 
+def force_llm_unavailable(monkeypatch) -> None:
+    """Force extract_items_with_llm() to raise LlmUnavailable deterministically, regardless of
+    what a developer's local .env happens to set (e.g. LLM_PROVIDER=gemini + a real key) -
+    env vars take precedence over .env file values in pydantic-settings, so this is reliable
+    even when the process was started with a fully configured .env on disk."""
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+
 def build_xlsx(rows: list[list[object]]) -> bytes:
     from openpyxl import Workbook
 
@@ -266,12 +280,9 @@ def test_parse_excel_falls_back_to_free_text_quantity_unit() -> None:
 
 
 def test_parse_pdf_free_text_falls_back_to_naive_parsing_without_llm_key(monkeypatch) -> None:
-    # No ANTHROPIC_API_KEY configured in the test environment, so the free-text page (no
-    # detectable table) should degrade to the naive per-line regex parser, not raise.
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    from app.core.config import get_settings
-
-    get_settings.cache_clear()
+    # No LLM key configured, so the free-text page (no detectable table) should degrade to the
+    # naive per-line regex parser, not raise.
+    force_llm_unavailable(monkeypatch)
 
     content = build_minimal_pdf(
         [
@@ -293,10 +304,7 @@ def test_parse_pdf_free_text_falls_back_to_naive_parsing_without_llm_key(monkeyp
 def test_parse_docx_falls_back_to_naive_parsing_without_llm_key(monkeypatch) -> None:
     # .docx always goes straight to the free-text path (no table-detection step), so this
     # exercises the same LLM -> naive fallback as PDF free text, just via a different reader.
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    from app.core.config import get_settings
-
-    get_settings.cache_clear()
+    force_llm_unavailable(monkeypatch)
 
     content = build_docx(
         [
@@ -317,10 +325,7 @@ def test_parse_docx_falls_back_to_naive_parsing_without_llm_key(monkeypatch) -> 
 
 
 def test_parse_docx_includes_table_text(monkeypatch) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    from app.core.config import get_settings
-
-    get_settings.cache_clear()
+    force_llm_unavailable(monkeypatch)
 
     content = build_docx(
         ["Supplies needed for the clinic:"],

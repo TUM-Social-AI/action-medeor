@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     anthropic_extraction_model: str = "claude-haiku-4-5"
     gemini_api_key: str | None = None
-    gemini_extraction_model: str = "gemini-2.0-flash"
+    gemini_extraction_model: str = "gemini-2.5-flash"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
