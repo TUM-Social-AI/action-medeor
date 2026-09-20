@@ -14,6 +14,24 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+# Only part of the schema has ORM models: the matching/catalog/offers tables are created by
+# hand-written migrations with no SQLAlchemy model behind them. Without this filter,
+# --autogenerate sees them as "tables not in the metadata" and emits drop_table() for every one
+# of them. Restrict comparison to the tables Base actually owns.
+OWNED_TABLES = frozenset(Base.metadata.tables)
+
+
+def include_object(object_, name, type_, reflected, compare_to) -> bool:
+    if type_ == "table":
+        return name in OWNED_TABLES
+
+    parent_table = getattr(object_, "table", None)
+    parent_name = getattr(parent_table, "name", None)
+    if parent_name is not None:
+        return parent_name in OWNED_TABLES
+
+    return True
+
 
 def run_migrations_offline() -> None:
     context.configure(
@@ -21,6 +39,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -28,7 +47,11 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_object=include_object,
+    )
 
     with context.begin_transaction():
         context.run_migrations()

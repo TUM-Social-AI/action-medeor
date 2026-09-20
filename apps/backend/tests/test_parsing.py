@@ -345,3 +345,91 @@ def test_parse_docx_empty_document_warns() -> None:
 
     assert document.rows_detected == 0
     assert any("no readable text" in warning for warning in document.warnings)
+
+
+PUI_HEADER = [
+    "No",
+    "Code PUI",
+    "Designation",
+    "Unit Qty / Qté unitaire (ex: 1 comprimé, 1 ampoule etc)",
+    "Supplier code / Code fournisseur",
+    "Pack Size / Packaging",
+    "Unit Price / Prix à l'unité",
+    "Manufacturer Name / Nom du Fabricant",
+    "Vendors comments",
+    "Article priority / Priorité d'article",
+    "Quality assurance requirements for validation",
+    "Additional documents required",
+    "Comments / Commentaires",
+]
+
+
+def test_parse_table_rows_handles_supplier_block_in_the_middle() -> None:
+    # Premiere Urgence's form sandwiches the supplier's section between the request columns and
+    # the requester's own fields, unlike the Anfrage trackers which append it at the end. The
+    # requester fields after the block must survive.
+    rows = [
+        PUI_HEADER,
+        [1, "DORAACSA7TG", "Acid ACETYLSALICYLIC, 75mg, tab.", 25330, "209126003", 100, 1.33,
+         "Reyoung Pharmaceutical Co., Ltd.", "some vendor note", "Standard",
+         "Source mandatory (manufacturer+country)", None, "Must be WHO prequalified"],
+    ]
+
+    result = parse_table_rows(rows)
+
+    assert result.rows_detected == 1
+    item = result.items[0]
+    # "Designation" must win the name role even though it lacks the accent our keyword carries.
+    assert item.name == "Acid ACETYLSALICYLIC, 75mg, tab."
+    assert item.quantity == 25330
+    assert item.item_number == "DORAACSA7TG"
+    # Nothing from the supplier's section leaks into the item or its excerpt.
+    assert "Reyoung" not in item.excerpt
+    assert "vendor" not in item.excerpt.lower()
+    # ...while the requester's own columns after that block are kept.
+    assert item.attributes["Article priority / Priorité d'article"] == "Standard"
+    assert "Source mandatory" in item.attributes["Quality assurance requirements for validation"]
+    assert item.notes == "Must be WHO prequalified"
+
+
+def test_parse_table_rows_drops_ordinal_and_all_empty_columns() -> None:
+    rows = [
+        PUI_HEADER,
+        [1, "A1", "Item one", 10, None, None, None, None, None, "Standard", "QA note", None, None],
+        [2, "A2", "Item two", 20, None, None, None, None, None, "Standard", "QA note", None, None],
+    ]
+
+    result = parse_table_rows(rows)
+
+    # "No" is a bare row ordinal (redundant with the table's own numbering) and "Additional
+    # documents required" is empty on every row - neither earns a column.
+    assert "No" not in result.attribute_columns
+    assert "Additional documents required" not in result.attribute_columns
+    assert result.attribute_columns == [
+        "Article priority / Priorité d'article",
+        "Quality assurance requirements for validation",
+    ]
+
+
+def test_unrecognized_priority_wording_is_kept_raw_instead_of_forced() -> None:
+    rows = [
+        PUI_HEADER,
+        [1, "A1", "Item one", 10, None, None, None, None, None, "Prioritaire-Priority",
+         "QA note", None, None],
+    ]
+
+    result = parse_table_rows(rows)
+    item = result.items[0]
+
+    # "Prioritaire-Priority" has no equivalent on our critical/high/medium/low scale, so the
+    # priority field stays at its default and the partner's own wording is preserved verbatim.
+    assert item.priority == "medium"
+    assert item.attributes["Article priority / Priorité d'article"] == "Prioritaire-Priority"
+
+
+def test_accent_folding_matches_headers_written_without_accents() -> None:
+    assert match_column_role("Designation") == "name"
+    assert match_column_role("Désignation") == "name"
+    assert match_column_role("Qte") == "quantity"
+    assert match_column_role("Qté") == "quantity"
+    assert match_column_role("Unite") == "unit"

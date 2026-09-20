@@ -84,6 +84,7 @@ def build_item(
     notes: str = "",
     item_number: str = "",
     shelf_life: str = "",
+    attributes: dict[str, str] | None = None,
     priority: Priority | None = None,
     default_priority: Priority | None = None,
     page: int = 0,
@@ -99,6 +100,7 @@ def build_item(
         notes=notes.strip(),
         item_number=item_number.strip(),
         shelf_life=shelf_life.strip(),
+        attributes=dict(attributes or {}),
         # Precedence: an explicit column value, then a keyword found on this row's own text,
         # then the request-level hint (e.g. from "Besondere Informationen:"), then "medium".
         priority=priority or detect_priority(f"{name} {notes}") or default_priority or "medium",

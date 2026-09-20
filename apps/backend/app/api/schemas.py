@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 Priority = Literal["critical", "high", "medium", "low"]
 ItemStatus = Literal["verified", "needs_review", "low_confidence", "missing"]
@@ -73,6 +73,8 @@ class ExtractedItem(BaseModel):
     notes: str
     itemNumber: str = ""
     shelfLife: str = ""
+    # File-specific columns that don't map to a core field, keyed by their source header label.
+    attributes: dict[str, str] = Field(default_factory=dict)
     priority: Priority
     confidence: int | None
     status: ItemStatus
@@ -93,6 +95,9 @@ class ReviewResponse(BaseModel):
     items: list[ExtractedItem]
     sourceReferences: list[SourceReference]
     counts: ReviewCounts
+    # Labels of the extra columns found in this file, in source order - the review table renders
+    # these per import, so a richer request form shows more than a bare name/qty/unit one.
+    attributeColumns: list[str] = Field(default_factory=list)
 
 
 class ItemUpdate(BaseModel):

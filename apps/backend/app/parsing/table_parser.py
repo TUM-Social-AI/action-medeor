@@ -6,7 +6,9 @@ to roles (name/quantity/unit/notes/priority) using the multilingual keyword dict
 the remaining rows into ParsedLineItem records.
 """
 
-from app.parsing.keywords import SPECIAL_INFO_KEYWORDS, is_supplier_block_start, match_column_role
+from dataclasses import dataclass, field
+
+from app.parsing.keywords import SPECIAL_INFO_KEYWORDS, classify_columns, match_column_role
 from app.parsing.text_heuristics import (
     build_item,
     detect_priority,
@@ -21,32 +23,42 @@ _HEADER_SEARCH_WINDOW = 10
 _REQUIRED_ROLES = {"name"}
 
 
+@dataclass
+class _HeaderLayout:
+    """How one detected header row maps onto the core fields and the extra columns."""
+
+    row_index: int
+    roles: dict[int, str] = field(default_factory=dict)
+    # Request-side columns with no core role, as {col_index: original header label}. These
+    # become per-item attributes, which is how a file's own vocabulary survives extraction.
+    extras: dict[int, str] = field(default_factory=dict)
+    labels: dict[int, str] = field(default_factory=dict)
+
+
 def _cell_text(value: object) -> str:
     if value is None:
         return ""
     return str(value).strip()
 
 
-def _find_header_row(
-    rows: list[list[object]],
-) -> tuple[int, dict[int, str], int | None] | None:
-    """Returns (header_row_index, {col_index: role}, boundary) where boundary is the first
-    column index that starts a supplier/quote block (RFQ trackers), or None if there isn't one -
-    everything from boundary onward is out of scope for both role-mapping and excerpts."""
+def _find_header_row(rows: list[list[object]]) -> _HeaderLayout | None:
     for row_index, row in enumerate(rows[:_HEADER_SEARCH_WINDOW]):
-        column_roles: dict[int, str] = {}
-        boundary: int | None = None
-        for col_index, cell in enumerate(row):
-            text = _cell_text(cell)
-            if is_supplier_block_start(text):
-                boundary = col_index
-                break
+        cells = [_cell_text(cell) for cell in row]
+        keep_column = classify_columns(cells)
+        layout = _HeaderLayout(row_index=row_index)
+
+        for col_index, text in enumerate(cells):
+            if not text or not keep_column[col_index]:
+                continue
+            layout.labels[col_index] = text
             role = match_column_role(text)
-            if role and role not in column_roles.values():
-                column_roles[col_index] = role
-        found_roles = set(column_roles.values())
-        if _REQUIRED_ROLES <= found_roles:
-            return row_index, column_roles, boundary
+            if role and role not in layout.roles.values():
+                layout.roles[col_index] = role
+            else:
+                layout.extras[col_index] = text
+
+        if _REQUIRED_ROLES <= set(layout.roles.values()):
+            return layout
     return None
 
 
@@ -91,30 +103,26 @@ def parse_table_rows(
     default_priority: Priority | None = None,
 ) -> ParsedDocument:
     document = ParsedDocument()
-    header = _find_header_row(rows)
+    layout = _find_header_row(rows)
 
-    if header is None:
+    if layout is None:
         document.warnings.append("No recognizable header row found; treated as headerless table")
-        column_roles = {0: "name", 1: "quantity", 2: "unit", 3: "notes"}
+        layout = _HeaderLayout(row_index=-1, roles={0: "name", 1: "quantity", 2: "unit", 3: "notes"})
         data_rows = rows
-        start_index = 0
-        boundary = None
+        in_scope_columns = None
     else:
-        header_index, column_roles, boundary = header
-        data_rows = rows[header_index + 1 :]
-        start_index = header_index + 1
-        if boundary is not None:
-            document.warnings.append(
-                f"Ignored columns from index {boundary} onward (supplier/quote block)"
-            )
+        data_rows = rows[layout.row_index + 1 :]
+        in_scope_columns = set(layout.labels)
+        skipped = _skipped_column_labels(rows[layout.row_index], in_scope_columns)
+        if skipped:
+            document.warnings.append(f"Ignored supplier/admin columns: {', '.join(skipped)}")
+
+    start_index = layout.row_index + 1
 
     for offset, row in enumerate(data_rows):
-        in_scope_row = row[:boundary] if boundary is not None else row
         row_number = start_index + offset + 1
         values = {
-            role: _cell_text(in_scope_row[col])
-            for col, role in column_roles.items()
-            if col < len(in_scope_row)
+            role: _cell_text(row[col]) for col, role in layout.roles.items() if col < len(row)
         }
         name = values.get("name", "")
         if not name:
@@ -134,7 +142,25 @@ def parse_table_rows(
         if translation:
             notes = f"Translation: {translation}" + (f" · {notes}" if notes else "")
 
-        excerpt = " | ".join(cell for cell in (_cell_text(v) for v in in_scope_row) if cell)
+        attributes = {
+            label: _cell_text(row[col])
+            for col, label in layout.extras.items()
+            if col < len(row) and _cell_text(row[col])
+        }
+
+        # A priority column whose wording we don't recognize ("Prioritaire-Priority",
+        # "Optionnel-Optional") stays raw rather than being force-fitted onto our four levels -
+        # the value is still real information, so it's kept as an attribute instead of dropped.
+        raw_priority = values.get("priority", "")
+        mapped_priority = detect_priority(raw_priority) if raw_priority else None
+        if raw_priority and mapped_priority is None:
+            attributes[_priority_label(layout)] = raw_priority
+
+        excerpt = " | ".join(
+            text
+            for col, text in ((col, _cell_text(cell)) for col, cell in enumerate(row))
+            if text and (in_scope_columns is None or col in in_scope_columns)
+        )
         document.items.append(
             build_item(
                 name=name,
@@ -143,7 +169,8 @@ def parse_table_rows(
                 notes=notes,
                 item_number=values.get("item_number", ""),
                 shelf_life=values.get("shelf_life", ""),
-                priority=detect_priority(values["priority"]) if values.get("priority") else None,
+                attributes=attributes,
+                priority=mapped_priority,
                 default_priority=default_priority,
                 page=page,
                 row=row_number,
@@ -152,4 +179,31 @@ def parse_table_rows(
         )
 
     document.rows_detected = len(document.items)
+    document.attribute_columns = _surviving_attribute_columns(document)
     return document
+
+
+def _priority_label(layout: _HeaderLayout) -> str:
+    for col, role in layout.roles.items():
+        if role == "priority":
+            return layout.labels.get(col, "Priority")
+    return "Priority"
+
+
+def _skipped_column_labels(header_row: list[object], kept: set[int]) -> list[str]:
+    return [
+        _cell_text(cell)
+        for col, cell in enumerate(header_row)
+        if col not in kept and _cell_text(cell)
+    ]
+
+
+def _surviving_attribute_columns(document: ParsedDocument) -> list[str]:
+    """Extra columns in first-seen order, dropping any that were empty on every row - that's
+    what makes the review table adapt to the file instead of showing a wall of blank columns."""
+    ordered: list[str] = []
+    for item in document.items:
+        for label in item.attributes:
+            if label not in ordered:
+                ordered.append(label)
+    return ordered

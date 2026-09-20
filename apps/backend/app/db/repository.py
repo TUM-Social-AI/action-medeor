@@ -47,6 +47,7 @@ async def save_parsed_request(
         request_date=dt.date.today().isoformat(),
         used_llm_fallback=parsed.used_llm_fallback,
         parser_warnings=parsed.warnings,
+        attribute_columns=parsed.attribute_columns,
     )
 
     for position, parsed_item in enumerate(parsed.items):
@@ -59,6 +60,7 @@ async def save_parsed_request(
             notes=parsed_item.notes,
             item_number=parsed_item.item_number,
             shelf_life=parsed_item.shelf_life,
+            attributes=parsed_item.attributes,
             priority=parsed_item.priority,
             confidence=parsed_item.confidence,
             status=parsed_item.status,
@@ -153,6 +155,7 @@ def to_extracted_item(row: RequestItemRow) -> ExtractedItem:
         notes=row.notes,
         itemNumber=row.item_number,
         shelfLife=row.shelf_life,
+        attributes=row.attributes or {},
         priority=row.priority,
         confidence=row.confidence,
         status=row.status,
@@ -195,6 +198,7 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
         items=items,
         sourceReferences=source_references,
         counts=review_counts(items),
+        attributeColumns=row.attribute_columns or [],
     )
 
 

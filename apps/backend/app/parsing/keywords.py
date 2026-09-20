@@ -4,9 +4,19 @@ Partner request files arrive in English, German, French, or Arabic (from Ingesti
 supported-languages note in the frontend). These keyword lists are intentionally small and
 substring-matched rather than exhaustive dictionaries or NLP models - they only need to
 recognize common header wording, not translate full sentences.
+
+Matching is accent-insensitive: partners write both "Désignation" and "Designation", "Qté" and
+"Qte", so headers and keywords are both folded to unaccented lowercase before comparison.
 """
 
 import re
+import unicodedata
+
+
+def normalize(text: str) -> str:
+    """Lowercase + strip accents, so "Désignation" and "Designation" compare equal."""
+    decomposed = unicodedata.normalize("NFKD", text.strip().lower())
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
 
 # Column role -> list of header substrings (lowercased) that identify it, across languages.
 # "item"/"artikel" are safe here only because match_column_role() checks ITEM_NUMBER_PATTERNS
@@ -82,32 +92,82 @@ SPECIAL_INFO_KEYWORDS = [
     "informations speciales",
 ]
 
-# A reference/SKU column ("Item number", "Artikelnummer", "SKU") - real, useful data, but must
-# never be confused with the item-name column. Checked before COLUMN_KEYWORDS so "Item number"
-# doesn't fall through to the generic "item"-adjacent name matching.
+# A reference/SKU column ("Item number", "Artikelnummer", "SKU", "Code PUI") - real, useful data,
+# but must never be confused with the item-name column. Checked before COLUMN_KEYWORDS so
+# "Item number" doesn't fall through to the generic "item"-adjacent name matching. Patterns are
+# matched against accent-folded text, so they never need accented variants.
 ITEM_NUMBER_PATTERNS = [
     re.compile(r"item\s*[-.]?\s*(no\.?|number|#|id)\b"),
     re.compile(r"\bsku\b"),
     re.compile(r"artikel\s*[-.]?\s*(nr\.?|nummer)"),
     re.compile(r"material\s*[-.]?\s*(nr\.?|nummer|number)"),
-    re.compile(r"référence"),
+    re.compile(r"\breference\b"),
     re.compile(r"reference\s*(no\.?|number)"),
+    re.compile(r"\bcode\b"),
 ]
 
-# Marks the start of a supplier/procurement-quote block ("Supplier I", "Anbieter III") in RFQ
-# tracker workbooks. Column scanning stops there - what a partner requested ends at this
-# boundary; everything after is action medeor's own quote/order tracking for that line.
+# Opens a supplier/procurement-quote block ("Supplier I", "Anbieter III", "Supplier code").
 SUPPLIER_BLOCK_KEYWORDS = ["supplier", "anbieter", "fournisseur", "proveedor"]
+
+# Columns belonging to a supplier's quote, or to action medeor's own order administration -
+# never part of what the partner requested. Only applied *inside* a supplier block (see
+# classify_columns), which is what makes ambiguous entries like "unit qty" safe to list: the
+# identically-named request column sits before the block starts.
+SUPPLIER_FIELD_KEYWORDS = [
+    "offered", "on offer", "im angebot",
+    "unit price", "total price", "ek_price", "prix", "preis",
+    "availability", "disponibilit", "verfugbar",
+    "delivery time", "lieferzeit", "delai",
+    "manufacturing date", "expiry date", "date d'expiration", "haltbarkeitsdatum",
+    "manufacturer", "fabricant", "hersteller",
+    "country", "pays", "herkunftsland",
+    "vendor",
+    "pack size", "packaging", "qty pack", "unit qty",
+]
+
+# Marks a column as partner-request-side even when it appears after a supplier block - RFQ forms
+# like Premiere Urgence's put the requester's own fields ("Article priority", "Quality assurance
+# requirements", "Comments") *after* the block the supplier fills in.
+REQUEST_SIDE_KEYWORDS = [
+    "enquiry", "anfrage", "requested", "request", "demande", "desired",
+    "priorit", "quality assurance", "assurance qualit",
+    "additional document", "documentation additionnelle",
+    "comment", "commentaire",
+]
 
 
 def match_item_number_column(header_text: str) -> bool:
-    lowered = header_text.strip().lower()
-    return any(pattern.search(lowered) for pattern in ITEM_NUMBER_PATTERNS)
+    normalized = normalize(header_text)
+    return any(pattern.search(normalized) for pattern in ITEM_NUMBER_PATTERNS)
 
 
 def is_supplier_block_start(header_text: str) -> bool:
-    lowered = header_text.strip().lower()
-    return any(keyword in lowered for keyword in SUPPLIER_BLOCK_KEYWORDS)
+    normalized = normalize(header_text)
+    return any(keyword in normalized for keyword in SUPPLIER_BLOCK_KEYWORDS)
+
+
+def is_supplier_field(header_text: str) -> bool:
+    normalized = normalize(header_text)
+    return any(keyword in normalized for keyword in SUPPLIER_FIELD_KEYWORDS)
+
+
+def is_request_side(header_text: str) -> bool:
+    normalized = normalize(header_text)
+    return any(keyword in normalized for keyword in REQUEST_SIDE_KEYWORDS)
+
+
+# A bare row-ordinal column ("No", "Nr.", "#", "Pos"). Real, but redundant with the row numbering
+# the review screen already shows, so it's dropped rather than surfaced as an extra column.
+# Matched on exact equality, so a descriptive header like "No. of units" is unaffected.
+ORDINAL_COLUMN_LABELS = {
+    "no", "no.", "nr", "nr.", "n", "n°", "#", "pos", "pos.", "position",
+    "s/n", "sn", "sl", "sr", "seq", "line", "line no", "zeile", "lfd. nr", "lfd nr",
+}
+
+
+def is_ordinal_column(header_text: str) -> bool:
+    return normalize(header_text) in ORDINAL_COLUMN_LABELS
+
 
 # Free-text unit tokens recognized when pulling a "<qty> <unit>" expression out of a sentence,
 # e.g. "2000 pcs", "50 vials", "500 Beutel". Longest tokens should be checked first by callers.
@@ -137,12 +197,52 @@ PRIORITY_TOKENS: dict[str, str] = {
 
 def match_column_role(header_text: str) -> str | None:
     """Return the column role ('name', 'quantity', ...) whose keywords appear in header_text."""
-    lowered = header_text.strip().lower()
-    if not lowered:
+    normalized = normalize(header_text)
+    if not normalized:
         return None
-    if match_item_number_column(lowered):
+    if match_item_number_column(header_text):
         return "item_number"
     for role, keywords in COLUMN_KEYWORDS.items():
-        if any(keyword in lowered for keyword in keywords):
+        if any(normalize(keyword) in normalized for keyword in keywords):
             return role
     return None
+
+
+def classify_columns(header_cells: list[str]) -> list[bool]:
+    """Decide, per column, whether it describes what the partner requested.
+
+    Layouts differ in where the supplier's section sits: the Anfrage trackers append it at the
+    end, while Premiere Urgence's form sandwiches it between the request columns and the
+    requester's own fields. So rather than cutting the row at the first supplier column, track
+    whether we're inside a supplier block and let an explicitly request-side header close it.
+    """
+    in_supplier_block = False
+    keep: list[bool] = []
+
+    for cell in header_cells:
+        text = cell.strip()
+        if not text or is_ordinal_column(text):
+            keep.append(False)
+            continue
+
+        if is_supplier_block_start(text):
+            in_supplier_block = True
+            keep.append(False)
+            continue
+
+        if in_supplier_block:
+            if is_supplier_field(text):
+                keep.append(False)
+                continue
+            if is_request_side(text):
+                in_supplier_block = False
+                keep.append(True)
+                continue
+            # Unrecognized while inside the block (order numbers, certificates, "Info Status"):
+            # stay conservative and treat it as the supplier's/our own administration.
+            keep.append(False)
+            continue
+
+        keep.append(True)
+
+    return keep

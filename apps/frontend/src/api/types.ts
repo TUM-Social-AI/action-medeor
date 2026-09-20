@@ -75,6 +75,8 @@ export type ExtractedItem = {
   notes: string;
   itemNumber: string;
   shelfLife: string;
+  /** File-specific columns that don't map to a core field, keyed by their source header label. */
+  attributes: Record<string, string>;
   priority: Priority;
   confidence: number | null;
   status: ItemStatus;
@@ -95,6 +97,8 @@ export type ReviewResponse = {
   items: ExtractedItem[];
   sourceReferences: SourceReference[];
   counts: ReviewCounts;
+  /** Extra column labels discovered in this file, in source order. */
+  attributeColumns: string[];
 };
 
 export type ItemUpdate = Partial<

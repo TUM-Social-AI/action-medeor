@@ -31,6 +31,9 @@ class ImportRequestRow(Base):
 
     used_llm_fallback: Mapped[bool] = mapped_column(default=False)
     parser_warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Ordered labels of the extra, file-specific columns this import contributed, so the review
+    # table can render the same columns it extracted rather than a fixed set.
+    attribute_columns: Mapped[list[str]] = mapped_column(JSON, default=list)
 
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
 
@@ -60,6 +63,9 @@ class RequestItemRow(Base):
     notes: Mapped[str] = mapped_column(default="")
     item_number: Mapped[str] = mapped_column(default="")
     shelf_life: Mapped[str] = mapped_column(default="")
+    # {source column label: value} for columns outside the core fields - see
+    # ImportRequestRow.attribute_columns for the ordering used when displaying them.
+    attributes: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     priority: Mapped[str] = mapped_column(default="medium")
     confidence: Mapped[int | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="needs_review")
