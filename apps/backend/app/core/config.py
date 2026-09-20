@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,10 +21,16 @@ class Settings(BaseSettings):
     embedding_model_name: str = ""
     embedding_model_revision: str = "main"
 
-    # Fallback extractor for PDFs whose layout isn't a clean, heuristically-parseable table.
-    # Left unset in most environments; extraction degrades to a lower-confidence naive parse.
+    # Fallback extractor for documents whose layout isn't a clean, heuristically-parseable table
+    # (free-form PDF pages, Word documents). Left unset in most environments; extraction
+    # degrades to a lower-confidence naive parse. "gemini" is a free-tier option for testing
+    # this pipeline before committing to a paid anthropic/azure key - same prompt/schema either
+    # way, see app/parsing/llm_extractor.py.
+    llm_provider: Literal["anthropic", "gemini"] = "anthropic"
     anthropic_api_key: str | None = None
     anthropic_extraction_model: str = "claude-haiku-4-5"
+    gemini_api_key: str | None = None
+    gemini_extraction_model: str = "gemini-2.0-flash"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
