@@ -15,6 +15,11 @@ from app.parsing.types import CustomColumnSpec, ParsedDocument, Priority
 __all__ = ["LlmUnavailable", "extract_items_with_llm"]
 
 
+class _ExtraField(BaseModel):
+    key: str
+    value: str
+
+
 class _LlmLineItem(BaseModel):
     name: str
     quantity: int | None = None
@@ -27,10 +32,13 @@ class _LlmLineItem(BaseModel):
     # ExtractedItem only carry a single `confidence`.
     name_confidence: int = Field(ge=0, le=100)
     quantity_confidence: int = Field(ge=0, le=100)
-    # Populated only when the caller requested custom columns (see _custom_columns_section) -
-    # keyed by exactly the display names given in the prompt, value omitted/empty when the text
-    # doesn't mention that field for this item.
-    extra_fields: dict[str, str] = Field(default_factory=dict)
+    # Populated only when the caller requested custom columns (see _custom_columns_section) - a
+    # list of {key, value} rather than dict[str, str] because Gemini's Developer API (the
+    # api-key, non-Vertex tier we use for the free-tier option) rejects "additionalProperties" in
+    # a response_schema, which is exactly what an open-ended dict field compiles to. key should
+    # be exactly one of the display names given in the prompt; omit an entry entirely for an item
+    # if the text doesn't mention that field for it.
+    extra_fields: list[_ExtraField] = Field(default_factory=list)
 
 
 class _LlmExtractionResult(BaseModel):
@@ -79,9 +87,10 @@ Document text:
 
 _CUSTOM_COLUMNS_SECTION = """
 Additionally, the user has asked for these specific fields to be extracted whenever the text
-mentions them for a given item. Put them in "extra_fields" using EXACTLY the names given below
-as keys; omit a key entirely for an item if the text doesn't mention that field for it - do not
-guess or invent a value:
+mentions them for a given item. Add one entry to "extra_fields" per field you find, with "key"
+set to EXACTLY the name given below and "value" set to what the text says - omit an entry
+entirely for an item if the text doesn't mention that field for it. Do not guess or invent a
+value, and do not add an entry with an empty value:
 {requests_text}
 """
 
@@ -106,7 +115,11 @@ def extract_items_with_llm(
     requested_names = {spec.display_name for spec in custom_columns}
     document = ParsedDocument(used_llm_fallback=True)
     for entry in result.items:
-        attributes = {k: v for k, v in entry.extra_fields.items() if k in requested_names and v}
+        attributes = {
+            field.key: field.value
+            for field in entry.extra_fields
+            if field.key in requested_names and field.value
+        }
         document.items.append(
             build_item(
                 name=entry.name,
