@@ -146,6 +146,31 @@ async def update_partner(
     return request
 
 
+async def update_column_label(
+    session: AsyncSession,
+    request_id: str,
+    column_key: str,
+    label: str,
+) -> ImportRequestRow | None:
+    request = await get_request_by_id(session, request_id)
+    if request is None:
+        return None
+
+    # Reassign rather than mutate in place: SQLAlchemy's change-tracking for a JSON column only
+    # notices a new object being assigned to the attribute, not an in-place dict mutation.
+    updated_labels = dict(request.column_labels or {})
+    label = label.strip()
+    if label:
+        updated_labels[column_key] = label
+    else:
+        updated_labels.pop(column_key, None)  # blank label = reset to the default
+    request.column_labels = updated_labels
+
+    await session.commit()
+    await session.refresh(request)
+    return request
+
+
 def to_extracted_item(row: RequestItemRow) -> ExtractedItem:
     return ExtractedItem(
         id=row.id,
@@ -199,6 +224,7 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
         sourceReferences=source_references,
         counts=review_counts(items),
         attributeColumns=row.attribute_columns or [],
+        columnLabels=row.column_labels or {},
     )
 
 

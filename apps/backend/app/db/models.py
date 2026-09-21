@@ -34,6 +34,9 @@ class ImportRequestRow(Base):
     # Ordered labels of the extra, file-specific columns this import contributed, so the review
     # table can render the same columns it extracted rather than a fixed set.
     attribute_columns: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # User-renamed column headers for this request: {column key: custom label}. Core fields use
+    # a fixed key ("name", "quantity", ...); attribute columns use their own label as the key.
+    column_labels: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
 
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
 

@@ -8,10 +8,10 @@ configured - see free_text_parser.py).
 """
 
 from app.parsing.free_text_parser import extract_from_free_text
-from app.parsing.types import ParsedDocument
+from app.parsing.types import CustomColumnSpec, ParsedDocument
 
 
-def parse_docx(content: bytes) -> ParsedDocument:
+def parse_docx(content: bytes, custom_columns: list[CustomColumnSpec] | None = None) -> ParsedDocument:
     import io
 
     from docx import Document
@@ -32,8 +32,11 @@ def parse_docx(content: bytes) -> ParsedDocument:
         document.warnings.append("Word document contained no readable text")
         return document
 
-    document.items.extend(extract_from_free_text(full_text, document))
+    document.items.extend(extract_from_free_text(full_text, document, custom_columns=custom_columns))
     document.rows_detected = len(document.items)
+    document.attribute_columns = list(
+        dict.fromkeys(label for item in document.items for label in item.attributes)
+    )
     if not document.items:
         document.warnings.append("No line items could be extracted from this document")
     return document

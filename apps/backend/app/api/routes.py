@@ -1,8 +1,11 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import fixtures
 from app.api.schemas import (
+    ColumnLabelUpdate,
+    CustomColumnRequest,
     ErpMatch,
     ExtractedItem,
     HomeResponse,
@@ -20,7 +23,8 @@ from app.api.schemas import (
 )
 from app.db import repository
 from app.db.session import get_session
-from app.parsing import ParsingError, parse_upload
+from app.parsing import CustomColumnSpec, ParsingError, parse_upload
+from app.parsing.service import MAX_CUSTOM_COLUMNS
 
 router = APIRouter(prefix="/api")
 
@@ -78,9 +82,32 @@ async def recent_imports() -> list[RecentImport]:
     return fixtures.RECENT_IMPORTS
 
 
+_CustomColumnsList = TypeAdapter(list[CustomColumnRequest])
+
+
+def _parse_custom_columns(raw: str) -> list[CustomColumnSpec]:
+    """raw is a JSON-encoded array from the multipart form (see IngestionScreen) - a plain string
+    field rather than real multipart list support, since the fields inside each entry need their
+    own validation. Silently caps at MAX_CUSTOM_COLUMNS rather than rejecting the whole upload
+    over a list that's merely too long."""
+    if not raw or not raw.strip():
+        return []
+    try:
+        requests = _CustomColumnsList.validate_json(raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid customColumns: {exc}") from exc
+
+    return [
+        CustomColumnSpec(display_name=item.displayName, hint=item.hint)
+        for item in requests[:MAX_CUSTOM_COLUMNS]
+        if item.displayName.strip()
+    ]
+
+
 @router.post("/imports")
 async def create_import(
     file: UploadFile = File(...),
+    custom_columns: str = Form("[]"),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
     file_name = file.filename or ""
@@ -100,8 +127,12 @@ async def create_import(
         if len(content) > MAX_IMPORT_BYTES:
             raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
 
+    custom_column_specs = _parse_custom_columns(custom_columns)
+
     try:
-        parsed = parse_upload(filename=file_name, content=bytes(content))
+        parsed = parse_upload(
+            filename=file_name, content=bytes(content), custom_columns=custom_column_specs
+        )
     except ParsingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -171,6 +202,26 @@ async def update_partner(
 
     require_mock_request(request_id)
     return PartnerDetails(**payload.model_dump(), confirmed=True)
+
+
+@router.patch("/requests/{request_id}/column-labels")
+async def update_column_label(
+    request_id: str,
+    payload: ColumnLabelUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is not None:
+        updated = await repository.update_column_label(
+            session, request_id, payload.columnKey, payload.label
+        )
+        return updated.column_labels or {}
+
+    # The fixture demo request has nothing to persist to - echo the rename back so the frontend
+    # can still apply it to its local state, same as every other fixture-fallback route here.
+    require_mock_request(request_id)
+    label = payload.label.strip()
+    return {payload.columnKey: label} if label else {}
 
 
 @router.post("/requests/{request_id}/matching")

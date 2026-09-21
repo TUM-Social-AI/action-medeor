@@ -1,4 +1,5 @@
 import type {
+  CustomColumnRequest,
   ErpMatch,
   ExtractedItem,
   HomeResponse,
@@ -23,9 +24,12 @@ export function getRecentImports() {
   return requestJson<RecentImport[]>('/api/imports/recent');
 }
 
-export function createImport(file: File) {
+export function createImport(file: File, customColumns: CustomColumnRequest[] = []) {
   const formData = new FormData();
   formData.append('file', file);
+  if (customColumns.length > 0) {
+    formData.append('custom_columns', JSON.stringify(customColumns));
+  }
 
   return requestJson<ReviewResponse>('/api/imports', {
     method: 'POST',
@@ -54,6 +58,14 @@ export function updatePartner(requestId: string, payload: PartnerUpdate) {
   return requestJson<PartnerDetails>(`/api/requests/${requestId}/partner`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+/** label='' resets that column back to its default (removes the rename). */
+export function updateColumnLabel(requestId: string, columnKey: string, label: string) {
+  return requestJson<Record<string, string>>(`/api/requests/${requestId}/column-labels`, {
+    method: 'PATCH',
+    body: JSON.stringify({ columnKey, label }),
   });
 }
 

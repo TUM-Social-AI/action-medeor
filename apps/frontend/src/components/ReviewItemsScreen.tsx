@@ -14,7 +14,7 @@ import {
   Pencil,
   X,
 } from 'lucide-react';
-import { getReview, updateItem, updatePartner, verifyItem } from '../api/client';
+import { getReview, updateColumnLabel, updateItem, updatePartner, verifyItem } from '../api/client';
 import type {
   ExtractedItem,
   ItemStatus,
@@ -73,6 +73,61 @@ function needsManualReview(item: ExtractedItem) {
   return item.status === 'low_confidence' || item.status === 'missing';
 }
 
+/** A column header or attribute label that renames itself in place - click to edit, Enter/blur
+ * saves, Escape cancels. Used for both <th> core-column headers and <dt> attribute labels, since
+ * both are just "this column's display name" from the rename endpoint's point of view. */
+function EditableLabel({ value, onSave }: { value: string; onSave: (next: string) => void }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => setDraft(value), [value]);
+
+  if (isEditing) {
+    const commit = () => {
+      setIsEditing(false);
+      const trimmed = draft.trim();
+      if (trimmed && trimmed !== value) {
+        onSave(trimmed);
+      } else {
+        setDraft(value);
+      }
+    };
+
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onFocus={event => event.target.select()}
+        onChange={event => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            event.currentTarget.blur();
+          } else if (event.key === 'Escape') {
+            setDraft(value);
+            setIsEditing(false);
+          }
+        }}
+        onClick={event => event.stopPropagation()}
+        className="border border-[#1B4E8A] rounded px-1 py-0.5 outline-none bg-white"
+        style={{ font: 'inherit', letterSpacing: 'inherit', textTransform: 'inherit', width: '9rem' }}
+      />
+    );
+  }
+
+  return (
+    <button
+      onClick={() => setIsEditing(true)}
+      className="group inline-flex items-center gap-1 hover:text-[#1B4E8A] transition-colors"
+      title="Click to rename this column"
+      type="button"
+    >
+      <span>{value}</span>
+      <Pencil size={10} className="opacity-0 group-hover:opacity-60 transition-opacity flex-shrink-0" />
+    </button>
+  );
+}
+
 export function ReviewItemsScreen({ requestId, initialData, onContinue }: ReviewItemsScreenProps) {
   const [data, setData] = useState<ReviewResponse | null>(initialData ?? null);
   const [items, setItems] = useState<ExtractedItem[]>(initialData?.items ?? []);
@@ -87,6 +142,23 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(!initialData);
   const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
+  const [columnLabels, setColumnLabels] = useState<Record<string, string>>(
+    initialData?.columnLabels ?? {},
+  );
+
+  // key is a core-field key ('name', 'quantity', ...) or an attribute column's own label - see
+  // ReviewResponse.columnLabels. Optimistic: applies locally first so the header doesn't flicker
+  // back to its old text while the request is in flight, then reconciles with the server's copy.
+  const renameColumn = (key: string, label: string) => {
+    setColumnLabels(previous => ({ ...previous, [key]: label }));
+    updateColumnLabel(requestId, key, label)
+      .then(setColumnLabels)
+      .catch(caught => {
+        setError(caught instanceof Error ? caught.message : 'Unable to rename column');
+      });
+  };
+
+  const columnLabel = (key: string, fallback: string) => columnLabels[key] ?? fallback;
 
   const toggleExpanded = (itemId: number) =>
     setExpandedItems(previous => {
@@ -104,6 +176,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       setData(initialData);
       setItems(initialData.items);
       setPartnerDetails(initialData.partner);
+      setColumnLabels(initialData.columnLabels ?? {});
       setIsLoading(false);
       return;
     }
@@ -116,6 +189,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
           setData(response);
           setItems(response.items);
           setPartnerDetails(response.partner);
+          setColumnLabels(response.columnLabels ?? {});
           setError(null);
         }
       })
@@ -314,25 +388,32 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50/80">
                   {[
-                    ...(attributeColumns.length > 0 ? [''] : []),
-                    '#',
-                    ...(showItemNumber ? ['Item #'] : []),
-                    'Item Name',
-                    'Qty',
-                    ...(showUnit ? ['Unit'] : []),
-                    ...(showShelfLife ? ['Shelf Life'] : []),
-                    ...(showNotes ? ['Notes'] : []),
-                    'Priority',
-                    'Confidence',
-                    'Status',
-                    'Actions',
+                    ...(attributeColumns.length > 0 ? [{ key: null, label: '' }] : []),
+                    { key: null, label: '#' },
+                    ...(showItemNumber ? [{ key: 'itemNumber', label: 'Item #' }] : []),
+                    { key: 'name', label: 'Item Name' },
+                    { key: 'quantity', label: 'Qty' },
+                    ...(showUnit ? [{ key: 'unit', label: 'Unit' }] : []),
+                    ...(showShelfLife ? [{ key: 'shelfLife', label: 'Shelf Life' }] : []),
+                    ...(showNotes ? [{ key: 'notes', label: 'Notes' }] : []),
+                    { key: 'priority', label: 'Priority' },
+                    { key: null, label: 'Confidence' },
+                    { key: null, label: 'Status' },
+                    { key: null, label: 'Actions' },
                   ].map((header, headerIndex) => (
                     <th
-                      key={`${header}-${headerIndex}`}
+                      key={`${header.label}-${headerIndex}`}
                       className="text-left px-4 py-3 text-xs text-gray-500"
                       style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}
                     >
-                      {header}
+                      {header.key ? (
+                        <EditableLabel
+                          value={columnLabel(header.key, header.label)}
+                          onSave={next => renameColumn(header.key!, next)}
+                        />
+                      ) : (
+                        header.label
+                      )}
                     </th>
                   ))}
                 </tr>
@@ -509,8 +590,14 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                           <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1.5 max-w-3xl">
                             {attributeColumns.map(label => (
                               <Fragment key={label}>
+                                {/* label (not the renamed text) is always the lookup key into
+                                    item.attributes and the rename endpoint's columnKey - only
+                                    what's displayed changes when the user renames it. */}
                                 <dt className="text-xs text-gray-500" style={{ fontWeight: 600 }}>
-                                  {label}
+                                  <EditableLabel
+                                    value={columnLabel(label, label)}
+                                    onSave={next => renameColumn(label, next)}
+                                  />
                                 </dt>
                                 <dd
                                   className={`text-xs ${

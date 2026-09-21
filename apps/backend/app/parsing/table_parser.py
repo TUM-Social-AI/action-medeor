@@ -16,7 +16,7 @@ from app.parsing.text_heuristics import (
     extract_quantity_and_unit,
     parse_number,
 )
-from app.parsing.types import ParsedDocument, Priority
+from app.parsing.types import CustomColumnSpec, ParsedDocument, Priority
 
 # How many leading rows we're willing to scan looking for a header.
 _HEADER_SEARCH_WINDOW = 10
@@ -103,6 +103,7 @@ def parse_table_rows(
     page: int = 0,
     default_priority: Priority | None = None,
     layout: HeaderLayout | None = None,
+    custom_columns: list[CustomColumnSpec] | None = None,
 ) -> ParsedDocument:
     """layout, when given, skips heuristic header detection entirely - lets a caller hand in an
     already-computed layout instead of the keyword-derived one this module computes on its own."""
@@ -208,6 +209,13 @@ def parse_table_rows(
 
     document.rows_detected = len(document.items)
     document.attribute_columns = _surviving_attribute_columns(document)
+
+    if custom_columns and layout.row_index >= 0:
+        # Lazy import: custom_columns.py imports cell_text/HeaderLayout from this module.
+        from app.parsing.custom_columns import apply_custom_columns
+
+        apply_custom_columns(rows, layout.row_index, custom_columns, document)
+
     return document
 
 

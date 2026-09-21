@@ -4,25 +4,33 @@ from app.parsing.csv_parser import parse_csv
 from app.parsing.docx_parser import parse_docx
 from app.parsing.excel_parser import parse_excel
 from app.parsing.pdf_parser import parse_pdf
-from app.parsing.types import ParsedDocument
+from app.parsing.types import CustomColumnSpec, ParsedDocument
+
+MAX_CUSTOM_COLUMNS = 10
 
 
 class ParsingError(Exception):
     """Raised when a file can't be parsed at all (corrupt/unreadable), vs. yielding 0 items."""
 
 
-def parse_upload(*, filename: str, content: bytes) -> ParsedDocument:
+def parse_upload(
+    *,
+    filename: str,
+    content: bytes,
+    custom_columns: list[CustomColumnSpec] | None = None,
+) -> ParsedDocument:
     extension = filename.lower().rsplit(".", maxsplit=1)[-1] if "." in filename else ""
+    custom_columns = (custom_columns or [])[:MAX_CUSTOM_COLUMNS]
 
     try:
         if extension in ("xlsx", "xls"):
-            return parse_excel(content, filename)
+            return parse_excel(content, filename, custom_columns=custom_columns)
         if extension == "pdf":
-            return parse_pdf(content)
+            return parse_pdf(content, custom_columns=custom_columns)
         if extension == "docx":
-            return parse_docx(content)
+            return parse_docx(content, custom_columns=custom_columns)
         if extension == "csv":
-            return parse_csv(content)
+            return parse_csv(content, custom_columns=custom_columns)
     except ParsingError:
         raise
     except Exception as exc:  # noqa: BLE001 - convert any parser-library failure into ParsingError

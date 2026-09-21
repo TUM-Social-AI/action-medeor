@@ -7,13 +7,13 @@ import csv
 import io
 
 from app.parsing.table_parser import extract_request_priority_hint, parse_table_rows
-from app.parsing.types import ParsedDocument
+from app.parsing.types import CustomColumnSpec, ParsedDocument
 
 _DECODE_ATTEMPTS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
 _SNIFF_SAMPLE_CHARS = 4096
 
 
-def parse_csv(content: bytes) -> ParsedDocument:
+def parse_csv(content: bytes, custom_columns: list[CustomColumnSpec] | None = None) -> ParsedDocument:
     text = _decode(content)
     rows = _read_rows(text)
 
@@ -23,7 +23,7 @@ def parse_csv(content: bytes) -> ParsedDocument:
         return document
 
     default_priority = extract_request_priority_hint(rows)
-    return parse_table_rows(rows, default_priority=default_priority)
+    return parse_table_rows(rows, default_priority=default_priority, custom_columns=custom_columns)
 
 
 def _decode(content: bytes) -> str:

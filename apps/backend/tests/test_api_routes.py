@@ -214,6 +214,87 @@ async def test_create_import_parses_csv() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_import_applies_custom_columns_via_hint() -> None:
+    # Hint-based matching is deterministic (no LLM call needed), so this stays fast and
+    # network-independent regardless of what's configured in a local .env.
+    csv_bytes = (
+        "Item,Quantity,Unit,Manufacturer\n"
+        "Amoxicillin 500mg Capsules,2000,caps,Reyoung Pharmaceutical\n"
+    ).encode("utf-8")
+
+    response = await request(
+        "POST",
+        "/api/imports",
+        files={"file": ("partner_request.csv", csv_bytes, "text/csv")},
+        data={"custom_columns": '[{"displayName": "Maker", "hint": "Manufacturer"}]'},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Maker" in body["attributeColumns"]
+    assert body["items"][0]["attributes"]["Maker"] == "Reyoung Pharmaceutical"
+
+
+@pytest.mark.asyncio
+async def test_create_import_rejects_malformed_custom_columns() -> None:
+    csv_bytes = b"Item,Quantity,Unit\nAmoxicillin 500mg Capsules,2000,caps\n"
+
+    response = await request(
+        "POST",
+        "/api/imports",
+        files={"file": ("partner_request.csv", csv_bytes, "text/csv")},
+        data={"custom_columns": "not valid json"},
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_column_label_renames_core_and_attribute_columns() -> None:
+    csv_bytes = (
+        "Item,Quantity,Unit,Manufacturer\n"
+        "Amoxicillin 500mg Capsules,2000,caps,Reyoung Pharmaceutical\n"
+    ).encode("utf-8")
+    created = await request(
+        "POST",
+        "/api/imports",
+        files={"file": ("partner_request.csv", csv_bytes, "text/csv")},
+    )
+    request_id = created.json()["requestId"]
+
+    core_rename = await request(
+        "PATCH",
+        f"/api/requests/{request_id}/column-labels",
+        json={"columnKey": "quantity", "label": "Requested Amount"},
+    )
+    assert core_rename.status_code == 200
+    assert core_rename.json()["quantity"] == "Requested Amount"
+
+    attribute_rename = await request(
+        "PATCH",
+        f"/api/requests/{request_id}/column-labels",
+        json={"columnKey": "Manufacturer", "label": "Supplier Name"},
+    )
+    assert attribute_rename.status_code == 200
+    body = attribute_rename.json()
+    assert body["quantity"] == "Requested Amount"
+    assert body["Manufacturer"] == "Supplier Name"
+
+    # Persists - a fresh GET sees both renames.
+    review = await request("GET", f"/api/requests/{request_id}/review")
+    assert review.json()["columnLabels"] == body
+
+    # A blank label resets that column back to its default (removes the override).
+    reset = await request(
+        "PATCH",
+        f"/api/requests/{request_id}/column-labels",
+        json={"columnKey": "quantity", "label": ""},
+    )
+    assert "quantity" not in reset.json()
+    assert reset.json()["Manufacturer"] == "Supplier Name"
+
+
+@pytest.mark.asyncio
 async def test_create_import_rejects_unparsable_workbook() -> None:
     response = await request(
         "POST",

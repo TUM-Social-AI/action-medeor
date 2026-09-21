@@ -6,6 +6,23 @@ from typing import Literal
 Priority = Literal["critical", "high", "medium", "low"]
 ItemStatus = Literal["verified", "needs_review", "low_confidence", "missing"]
 
+_MAX_CUSTOM_COLUMN_NAME = 60
+
+
+@dataclass
+class CustomColumnSpec:
+    """A column the user explicitly asked to be extracted, specified before upload (see
+    IngestionScreen) - display_name is what they want it called; hint, if given, is a source
+    column name or short description of where to find it. Applies across all parsers (table and
+    free-text); an explicit request overrides the default supplier/admin-column exclusion."""
+
+    display_name: str
+    hint: str = ""
+
+    def __post_init__(self) -> None:
+        self.display_name = self.display_name.strip()[:_MAX_CUSTOM_COLUMN_NAME]
+        self.hint = self.hint.strip()[:_MAX_CUSTOM_COLUMN_NAME]
+
 
 @dataclass
 class ParsedLineItem:

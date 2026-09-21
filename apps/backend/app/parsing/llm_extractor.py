@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.parsing.llm_client import LlmUnavailable, call_llm
 from app.parsing.text_heuristics import build_item
-from app.parsing.types import ParsedDocument, Priority
+from app.parsing.types import CustomColumnSpec, ParsedDocument, Priority
 
 __all__ = ["LlmUnavailable", "extract_items_with_llm"]
 
@@ -27,6 +27,10 @@ class _LlmLineItem(BaseModel):
     # ExtractedItem only carry a single `confidence`.
     name_confidence: int = Field(ge=0, le=100)
     quantity_confidence: int = Field(ge=0, le=100)
+    # Populated only when the caller requested custom columns (see _custom_columns_section) -
+    # keyed by exactly the display names given in the prompt, value omitted/empty when the text
+    # doesn't mention that field for this item.
+    extra_fields: dict[str, str] = Field(default_factory=dict)
 
 
 class _LlmExtractionResult(BaseModel):
@@ -66,26 +70,43 @@ For each distinct requested item, extract:
 
 Do not invent items that aren't in the text. If a field can't be determined, use null/"" rather
 than guessing.
-
+{custom_columns_section}
 Document text:
 ---
 {text}
 ---
 """
 
+_CUSTOM_COLUMNS_SECTION = """
+Additionally, the user has asked for these specific fields to be extracted whenever the text
+mentions them for a given item. Put them in "extra_fields" using EXACTLY the names given below
+as keys; omit a key entirely for an item if the text doesn't mention that field for it - do not
+guess or invent a value:
+{requests_text}
+"""
+
 _MAX_INPUT_CHARS = 20_000  # keeps a single fallback call cheap and within a small model's comfort zone
 
 
-def extract_items_with_llm(raw_text: str) -> ParsedDocument:
+def extract_items_with_llm(
+    raw_text: str,
+    custom_columns: list[CustomColumnSpec] | None = None,
+) -> ParsedDocument:
     text = raw_text.strip()
     if not text:
         raise LlmUnavailable("No text extracted from document to send to the LLM")
 
-    prompt = _PROMPT.format(text=text[:_MAX_INPUT_CHARS])
+    custom_columns = [spec for spec in (custom_columns or []) if spec.display_name]
+    custom_columns_section = _format_custom_columns_section(custom_columns)
+    prompt = _PROMPT.format(
+        text=text[:_MAX_INPUT_CHARS], custom_columns_section=custom_columns_section
+    )
     result = call_llm(prompt, _LlmExtractionResult)
 
+    requested_names = {spec.display_name for spec in custom_columns}
     document = ParsedDocument(used_llm_fallback=True)
     for entry in result.items:
+        attributes = {k: v for k, v in entry.extra_fields.items() if k in requested_names and v}
         document.items.append(
             build_item(
                 name=entry.name,
@@ -94,11 +115,30 @@ def extract_items_with_llm(raw_text: str) -> ParsedDocument:
                 notes=entry.notes,
                 priority=entry.priority,
                 excerpt=entry.source_excerpt,
+                attributes=attributes,
                 confidence=_combine_confidence(entry.name_confidence, entry.quantity_confidence),
             )
         )
     document.rows_detected = len(document.items)
+    if custom_columns:
+        # User-requested columns stay visible even if this particular document never mentioned
+        # them for any item - consistent with the table-path behavior in custom_columns.py.
+        document.attribute_columns = sorted(requested_names)
+        found = {label for item in document.items for label in item.attributes}
+        missing = requested_names - found
+        if missing:
+            document.warnings.append(f"Could not find a mention of: {', '.join(sorted(missing))}")
     return document
+
+
+def _format_custom_columns_section(custom_columns: list[CustomColumnSpec]) -> str:
+    if not custom_columns:
+        return ""
+    requests_text = "\n".join(
+        f'- "{spec.display_name}"' + (f" (hint: {spec.hint})" if spec.hint else "")
+        for spec in custom_columns
+    )
+    return _CUSTOM_COLUMNS_SECTION.format(requests_text=requests_text)
 
 
 def _combine_confidence(name_confidence: int, quantity_confidence: int) -> int:

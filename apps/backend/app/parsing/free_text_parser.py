@@ -6,17 +6,25 @@ per-line regex parse so the endpoint still returns *something* rather than faili
 
 from app.parsing.llm_extractor import LlmUnavailable, extract_items_with_llm
 from app.parsing.text_heuristics import build_item, extract_quantity_and_unit
-from app.parsing.types import ParsedDocument, ParsedLineItem
+from app.parsing.types import CustomColumnSpec, ParsedDocument, ParsedLineItem
 
 
-def extract_from_free_text(text: str, document: ParsedDocument) -> list[ParsedLineItem]:
+def extract_from_free_text(
+    text: str,
+    document: ParsedDocument,
+    custom_columns: list[CustomColumnSpec] | None = None,
+) -> list[ParsedLineItem]:
     try:
-        llm_result = extract_items_with_llm(text)
+        llm_result = extract_items_with_llm(text, custom_columns=custom_columns)
         document.warnings.extend(llm_result.warnings)
         document.used_llm_fallback = True
         return llm_result.items
     except LlmUnavailable as exc:
         document.warnings.append(f"LLM fallback unavailable ({exc}); used naive text parsing")
+        if custom_columns:
+            document.warnings.append(
+                "Custom columns could not be extracted without an LLM (naive text parsing only)"
+            )
         return naive_line_parse(text)
 
 

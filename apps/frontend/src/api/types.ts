@@ -99,6 +99,13 @@ export type ReviewResponse = {
   counts: ReviewCounts;
   /** Extra column labels discovered in this file, in source order. */
   attributeColumns: string[];
+  /**
+   * User-renamed column headers for this request, keyed by column identifier: core fields use a
+   * fixed key ('name', 'quantity', 'unit', 'shelfLife', 'itemNumber', 'notes', 'priority');
+   * attribute columns use their own label (from attributeColumns) as the key. A column missing
+   * from this map just shows its default label.
+   */
+  columnLabels: Record<string, string>;
 };
 
 export type ItemUpdate = Partial<
@@ -106,6 +113,16 @@ export type ItemUpdate = Partial<
 >;
 
 export type PartnerUpdate = Pick<PartnerDetails, 'partner' | 'region' | 'requestId' | 'contact'>;
+
+/** A field the user asks to be extracted before uploading (see IngestionScreen). displayName is
+ * what the column will be called; hint is optional guidance (a source column name or short
+ * description of where to find it) - leave blank to let extraction find it semantically. */
+export type CustomColumnRequest = {
+  displayName: string;
+  hint: string;
+};
+
+export const MAX_CUSTOM_COLUMNS = 10;
 
 export type RequestedItem = {
   id: number;

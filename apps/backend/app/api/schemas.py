@@ -98,6 +98,25 @@ class ReviewResponse(BaseModel):
     # Labels of the extra columns found in this file, in source order - the review table renders
     # these per import, so a richer request form shows more than a bare name/qty/unit one.
     attributeColumns: list[str] = Field(default_factory=list)
+    # User-renamed column headers for this request, keyed by column identifier: core fields use
+    # a fixed key ("name", "quantity", "unit", "shelfLife", "itemNumber", "notes", "priority");
+    # extra/attribute columns use their own label (from attributeColumns) as the key. Missing
+    # from this map means "show the default label" - see ColumnLabelUpdate below.
+    columnLabels: dict[str, str] = Field(default_factory=dict)
+
+
+class CustomColumnRequest(BaseModel):
+    """A field the user asked to be extracted before uploading - see IngestionScreen. displayName
+    is required and is what the column will be called; hint is optional guidance (a source
+    column name or short description of where to find it)."""
+
+    displayName: str
+    hint: str = ""
+
+
+class ColumnLabelUpdate(BaseModel):
+    columnKey: str
+    label: str
 
 
 class ItemUpdate(BaseModel):

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { createImport } from './api/client';
-import type { LoadingType, ReviewResponse, Screen } from './api/types';
+import type { CustomColumnRequest, LoadingType, ReviewResponse, Screen } from './api/types';
 import { DEFAULT_REQUEST_ID } from './api/types';
 import { HomeScreen } from './components/HomeScreen';
 import { IngestionScreen } from './components/IngestionScreen';
@@ -28,12 +28,15 @@ export default function App() {
     setCurrentScreen(screen);
   };
 
-  const handleImport = async (file: File) => {
+  const handleImport = async (file: File, customColumns: CustomColumnRequest[]) => {
     setWorkflowError(null);
     setLoadingType('extracting');
 
     try {
-      const [response] = await Promise.all([createImport(file), delay(EXTRACTION_LOADING_DURATION)]);
+      const [response] = await Promise.all([
+        createImport(file, customColumns),
+        delay(EXTRACTION_LOADING_DURATION),
+      ]);
       setReviewData(response);
       setRequestId(response.requestId);
       setCurrentScreen('review');
@@ -75,7 +78,10 @@ export default function App() {
           )}
           {currentScreen === 'dashboard' && <TrendDashboard />}
           {currentScreen === 'ingestion' && (
-            <IngestionScreen onContinue={file => void handleImport(file)} error={workflowError} />
+            <IngestionScreen
+              onContinue={(file, customColumns) => void handleImport(file, customColumns)}
+              error={workflowError}
+            />
           )}
           {currentScreen === 'review' && (
             <ReviewItemsScreen

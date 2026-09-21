@@ -3,10 +3,14 @@
 import io
 
 from app.parsing.table_parser import extract_request_priority_hint, parse_table_rows
-from app.parsing.types import ParsedDocument
+from app.parsing.types import CustomColumnSpec, ParsedDocument
 
 
-def parse_excel(content: bytes, filename: str) -> ParsedDocument:
+def parse_excel(
+    content: bytes,
+    filename: str,
+    custom_columns: list[CustomColumnSpec] | None = None,
+) -> ParsedDocument:
     if filename.lower().endswith(".xls"):
         rows = _read_xls(content)
     else:
@@ -18,7 +22,7 @@ def parse_excel(content: bytes, filename: str) -> ParsedDocument:
         return document
 
     default_priority = extract_request_priority_hint(rows)
-    return parse_table_rows(rows, default_priority=default_priority)
+    return parse_table_rows(rows, default_priority=default_priority, custom_columns=custom_columns)
 
 
 def _read_xlsx(content: bytes) -> list[list[object]]:

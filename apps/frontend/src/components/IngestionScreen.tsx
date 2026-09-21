@@ -6,16 +6,19 @@ import {
   FileSpreadsheet,
   FileText,
   Info,
+  ListPlus,
+  Plus,
   Upload,
   X,
 } from 'lucide-react';
 import { getRecentImports } from '../api/client';
-import type { RecentImport } from '../api/types';
+import type { CustomColumnRequest, RecentImport } from '../api/types';
+import { MAX_CUSTOM_COLUMNS } from '../api/types';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { WorkflowStepper } from './WorkflowStepper';
 
 type IngestionScreenProps = {
-  onContinue: (file: File) => void;
+  onContinue: (file: File, customColumns: CustomColumnRequest[]) => void;
   error?: string | null;
 };
 
@@ -31,7 +34,24 @@ export function IngestionScreen({ onContinue, error: workflowError }: IngestionS
   const [imports, setImports] = useState<RecentImport[]>([]);
   const [isLoadingImports, setIsLoadingImports] = useState(true);
   const [importsError, setImportsError] = useState<string | null>(null);
+  const [customColumns, setCustomColumns] = useState<CustomColumnRequest[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const addCustomColumn = () => {
+    if (customColumns.length < MAX_CUSTOM_COLUMNS) {
+      setCustomColumns(previous => [...previous, { displayName: '', hint: '' }]);
+    }
+  };
+
+  const updateCustomColumn = (index: number, patch: Partial<CustomColumnRequest>) => {
+    setCustomColumns(previous =>
+      previous.map((column, i) => (i === index ? { ...column, ...patch } : column)),
+    );
+  };
+
+  const removeCustomColumn = (index: number) => {
+    setCustomColumns(previous => previous.filter((_, i) => i !== index));
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -184,9 +204,73 @@ export function IngestionScreen({ onContinue, error: workflowError }: IngestionS
             </p>
           </div>
 
+          <div className="mt-4 bg-white rounded-xl border border-gray-200 p-4">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2">
+                <ListPlus size={15} className="text-gray-400" />
+                <h3 className="text-gray-900 text-sm" style={{ fontWeight: 600 }}>
+                  Extract additional columns
+                </h3>
+                <span className="text-xs text-gray-400">(optional)</span>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">
+              Name any extra fields you want pulled out - e.g. "Batch Number" or "Manufacturer".
+              A hint (a column name or short description) helps but isn't required.
+            </p>
+
+            {customColumns.length > 0 && (
+              <div className="space-y-2 mb-3">
+                {customColumns.map((column, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      placeholder="Column name (e.g. Batch Number)"
+                      value={column.displayName}
+                      onChange={event =>
+                        updateCustomColumn(index, { displayName: event.target.value })
+                      }
+                      className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Hint - where to find it (optional)"
+                      value={column.hint}
+                      onChange={event => updateCustomColumn(index, { hint: event.target.value })}
+                      className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                    />
+                    <button
+                      onClick={() => removeCustomColumn(index)}
+                      aria-label="Remove column"
+                      className="p-1.5 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors flex-shrink-0"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {customColumns.length < MAX_CUSTOM_COLUMNS && (
+              <button
+                onClick={addCustomColumn}
+                className="flex items-center gap-1.5 text-xs text-[#1B4E8A] hover:text-[#163d6d] transition-colors"
+                style={{ fontWeight: 600 }}
+              >
+                <Plus size={13} /> Add column
+              </button>
+            )}
+          </div>
+
           <div className="mt-6 flex items-center justify-end">
             <button
-              onClick={() => uploadedFile && onContinue(uploadedFile)}
+              onClick={() =>
+                uploadedFile &&
+                onContinue(
+                  uploadedFile,
+                  customColumns.filter(column => column.displayName.trim()),
+                )
+              }
               disabled={!uploadedFile}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm transition-all ${
                 uploadedFile
