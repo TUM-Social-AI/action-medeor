@@ -11,10 +11,19 @@ import {
   Info,
   ChevronDown,
   ChevronRight,
+  ListPlus,
   Pencil,
+  Plus,
   X,
 } from 'lucide-react';
-import { getReview, updateColumnLabel, updateItem, updatePartner, verifyItem } from '../api/client';
+import {
+  addCustomColumn,
+  getReview,
+  updateColumnLabel,
+  updateItem,
+  updatePartner,
+  verifyItem,
+} from '../api/client';
 import type {
   ExtractedItem,
   ItemStatus,
@@ -145,6 +154,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   const [columnLabels, setColumnLabels] = useState<Record<string, string>>(
     initialData?.columnLabels ?? {},
   );
+  const [availableColumns, setAvailableColumns] = useState<string[]>(
+    initialData?.availableColumns ?? [],
+  );
+  const [newColumnName, setNewColumnName] = useState('');
+  const [isAddingColumn, setIsAddingColumn] = useState(false);
 
   // key is a core-field key ('name', 'quantity', ...) or an attribute column's own label - see
   // ReviewResponse.columnLabels. Optimistic: applies locally first so the header doesn't flicker
@@ -159,6 +173,37 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   };
 
   const columnLabel = (key: string, fallback: string) => columnLabels[key] ?? fallback;
+
+  const existingColumnLabels = useMemo(
+    () => new Set((data?.attributeColumns ?? []).map(label => label.toLowerCase())),
+    [data],
+  );
+
+  // Passes the same string as both displayName and hint: it's either picked verbatim from
+  // availableColumns (an exact detected header, so the deterministic hint match resolves it for
+  // free) or typed freely by the user, in which case it still guides the LLM fallback match the
+  // same way a hint would - see CustomColumnRequest / app.parsing.custom_columns.
+  const submitNewColumn = async () => {
+    const trimmed = newColumnName.trim();
+    if (!trimmed || existingColumnLabels.has(trimmed.toLowerCase())) {
+      return;
+    }
+
+    setIsAddingColumn(true);
+    try {
+      const response = await addCustomColumn(requestId, { displayName: trimmed, hint: trimmed });
+      setData(response);
+      setItems(response.items);
+      setColumnLabels(response.columnLabels ?? {});
+      setAvailableColumns(response.availableColumns ?? []);
+      setNewColumnName('');
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to add column');
+    } finally {
+      setIsAddingColumn(false);
+    }
+  };
 
   const toggleExpanded = (itemId: number) =>
     setExpandedItems(previous => {
@@ -177,6 +222,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       setItems(initialData.items);
       setPartnerDetails(initialData.partner);
       setColumnLabels(initialData.columnLabels ?? {});
+      setAvailableColumns(initialData.availableColumns ?? []);
       setIsLoading(false);
       return;
     }
@@ -190,6 +236,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
           setItems(response.items);
           setPartnerDetails(response.partner);
           setColumnLabels(response.columnLabels ?? {});
+          setAvailableColumns(response.availableColumns ?? []);
           setError(null);
         }
       })
@@ -380,6 +427,50 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
               </div>
             </div>
           )}
+
+          <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-3 flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5 text-gray-500 flex-shrink-0">
+              <ListPlus size={14} />
+              <span className="text-xs" style={{ fontWeight: 600 }}>
+                Add column
+              </span>
+            </div>
+            <input
+              type="text"
+              list="available-columns-suggestions"
+              placeholder={
+                availableColumns.length > 0
+                  ? 'Pick a detected column or type your own...'
+                  : 'Type a column name (e.g. Batch Number)...'
+              }
+              value={newColumnName}
+              onChange={event => setNewColumnName(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  void submitNewColumn();
+                }
+              }}
+              disabled={isAddingColumn}
+              className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] disabled:bg-gray-50"
+            />
+            <datalist id="available-columns-suggestions">
+              {availableColumns.map(column => (
+                <option key={column} value={column} />
+              ))}
+            </datalist>
+            <button
+              onClick={() => void submitNewColumn()}
+              disabled={!newColumnName.trim() || isAddingColumn}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs flex-shrink-0 transition-colors ${
+                newColumnName.trim() && !isAddingColumn
+                  ? 'bg-[#1B4E8A] text-white hover:bg-[#163d6d]'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              }`}
+              style={{ fontWeight: 600 }}
+            >
+              <Plus size={12} /> {isAddingColumn ? 'Adding...' : 'Add'}
+            </button>
+          </div>
 
           {/* overflow-x-auto, not overflow-hidden: the column set adapts to the uploaded file,
               so the table can exceed the container and must scroll rather than clip Actions. */}

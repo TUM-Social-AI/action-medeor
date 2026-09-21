@@ -103,12 +103,18 @@ class ReviewResponse(BaseModel):
     # extra/attribute columns use their own label (from attributeColumns) as the key. Missing
     # from this map means "show the default label" - see ColumnLabelUpdate below.
     columnLabels: dict[str, str] = Field(default_factory=dict)
+    # Header labels detected in the source file that aren't in attributeColumns yet - offered on
+    # the review screen as suggestions for the "Add column" control (see CustomColumnRequest).
+    # Empty for free-text documents, which have no detected header row to offer choices from.
+    availableColumns: list[str] = Field(default_factory=list)
 
 
 class CustomColumnRequest(BaseModel):
-    """A field the user asked to be extracted before uploading - see IngestionScreen. displayName
-    is required and is what the column will be called; hint is optional guidance (a source
-    column name or short description of where to find it)."""
+    """A field the user wants extracted, requested from the review screen after the initial
+    extraction (see ReviewItemsScreen's "Add column" control). displayName is required and is
+    what the column will be called; hint is optional guidance (typically the exact source column
+    name when the user picked one of the availableColumns suggestions) - a substring match against
+    a real header resolves for free, otherwise an LLM call looks for the best-matching column."""
 
     displayName: str
     hint: str = ""

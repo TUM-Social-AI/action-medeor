@@ -1,5 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import TypeAdapter, ValidationError
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import fixtures
@@ -22,9 +21,9 @@ from app.api.schemas import (
     TrendsResponse,
 )
 from app.db import repository
+from app.db.repository import RawFileUnavailable
 from app.db.session import get_session
-from app.parsing import CustomColumnSpec, ParsingError, parse_upload
-from app.parsing.service import MAX_CUSTOM_COLUMNS
+from app.parsing import ParsingError, parse_upload
 
 router = APIRouter(prefix="/api")
 
@@ -82,32 +81,9 @@ async def recent_imports() -> list[RecentImport]:
     return fixtures.RECENT_IMPORTS
 
 
-_CustomColumnsList = TypeAdapter(list[CustomColumnRequest])
-
-
-def _parse_custom_columns(raw: str) -> list[CustomColumnSpec]:
-    """raw is a JSON-encoded array from the multipart form (see IngestionScreen) - a plain string
-    field rather than real multipart list support, since the fields inside each entry need their
-    own validation. Silently caps at MAX_CUSTOM_COLUMNS rather than rejecting the whole upload
-    over a list that's merely too long."""
-    if not raw or not raw.strip():
-        return []
-    try:
-        requests = _CustomColumnsList.validate_json(raw)
-    except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid customColumns: {exc}") from exc
-
-    return [
-        CustomColumnSpec(display_name=item.displayName, hint=item.hint)
-        for item in requests[:MAX_CUSTOM_COLUMNS]
-        if item.displayName.strip()
-    ]
-
-
 @router.post("/imports")
 async def create_import(
     file: UploadFile = File(...),
-    custom_columns: str = Form("[]"),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
     file_name = file.filename or ""
@@ -127,16 +103,14 @@ async def create_import(
         if len(content) > MAX_IMPORT_BYTES:
             raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
 
-    custom_column_specs = _parse_custom_columns(custom_columns)
-
     try:
-        parsed = parse_upload(
-            filename=file_name, content=bytes(content), custom_columns=custom_column_specs
-        )
+        parsed = parse_upload(filename=file_name, content=bytes(content))
     except ParsingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    request = await repository.save_parsed_request(session, parsed=parsed, file_name=file_name)
+    request = await repository.save_parsed_request(
+        session, parsed=parsed, file_name=file_name, raw_file=bytes(content)
+    )
     return repository.to_review_response(request)
 
 
@@ -222,6 +196,43 @@ async def update_column_label(
     require_mock_request(request_id)
     label = payload.label.strip()
     return {payload.columnKey: label} if label else {}
+
+
+@router.post("/requests/{request_id}/custom-columns")
+async def add_custom_column(
+    request_id: str,
+    payload: CustomColumnRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ReviewResponse:
+    """Adds one more field to extract, requested from the review screen after the fact - see
+    ReviewItemsScreen's "Add column" control. Re-parses the original file and merges the newly
+    resolved values into the already-persisted items; existing items (including manual edits) are
+    otherwise untouched. See repository.add_custom_column for how re-parsing is kept consistent
+    across repeated additions."""
+    if not payload.displayName.strip():
+        raise HTTPException(status_code=400, detail="Column name is required")
+
+    request = await repository.get_request_by_id(session, request_id)
+    if request is not None:
+        try:
+            updated = await repository.add_custom_column(
+                session, request_id, payload.displayName, payload.hint
+            )
+        except RawFileUnavailable as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="The original file is no longer available for this request - re-upload it to add columns.",
+            ) from exc
+        except ParsingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Request not found")
+        return repository.to_review_response(updated)
+
+    require_mock_request(request_id)
+    raise HTTPException(
+        status_code=422, detail="Columns can't be added to the demo request - upload a file first."
+    )
 
 
 @router.post("/requests/{request_id}/matching")

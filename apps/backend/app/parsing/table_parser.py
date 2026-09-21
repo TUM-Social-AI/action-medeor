@@ -130,6 +130,7 @@ def parse_table_rows(
         skipped = _skipped_column_labels(rows[layout.row_index], in_scope_columns)
         if skipped:
             document.warnings.append(f"Ignored supplier/admin columns: {', '.join(skipped)}")
+            document.available_columns = skipped
 
     start_index = layout.row_index + 1
 

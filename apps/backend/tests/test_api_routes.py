@@ -214,39 +214,84 @@ async def test_create_import_parses_csv() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_import_applies_custom_columns_via_hint() -> None:
-    # Hint-based matching is deterministic (no LLM call needed), so this stays fast and
-    # network-independent regardless of what's configured in a local .env.
+async def test_create_import_lists_skipped_columns_as_available() -> None:
+    # "Supplier code"/"Unit Price" open a supplier/admin block the heuristic scopes out of the
+    # initial extraction entirely - they should come back as suggestions for the post-upload
+    # "Add column" control rather than just vanishing.
     csv_bytes = (
-        "Item,Quantity,Unit,Manufacturer\n"
-        "Amoxicillin 500mg Capsules,2000,caps,Reyoung Pharmaceutical\n"
+        "Item,Quantity,Unit,Supplier code,Unit Price\n"
+        "Amoxicillin 500mg Capsules,2000,caps,SUP-001,1.33\n"
     ).encode("utf-8")
 
     response = await request(
         "POST",
         "/api/imports",
         files={"file": ("partner_request.csv", csv_bytes, "text/csv")},
-        data={"custom_columns": '[{"displayName": "Maker", "hint": "Manufacturer"}]'},
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert "Maker" in body["attributeColumns"]
-    assert body["items"][0]["attributes"]["Maker"] == "Reyoung Pharmaceutical"
+    assert body["availableColumns"] == ["Supplier code", "Unit Price"]
+    assert body["attributeColumns"] == []
+    assert body["items"][0]["attributes"] == {}
 
 
 @pytest.mark.asyncio
-async def test_create_import_rejects_malformed_custom_columns() -> None:
-    csv_bytes = b"Item,Quantity,Unit\nAmoxicillin 500mg Capsules,2000,caps\n"
-
-    response = await request(
+async def test_add_custom_column_applies_via_hint_and_updates_available_columns() -> None:
+    # Hint-based matching is deterministic (no LLM call needed), so this stays fast and
+    # network-independent regardless of what's configured in a local .env.
+    csv_bytes = (
+        "Item,Quantity,Unit,Supplier code,Unit Price\n"
+        "Amoxicillin 500mg Capsules,2000,caps,SUP-001,1.33\n"
+    ).encode("utf-8")
+    created = await request(
         "POST",
         "/api/imports",
         files={"file": ("partner_request.csv", csv_bytes, "text/csv")},
-        data={"custom_columns": "not valid json"},
+    )
+    request_id = created.json()["requestId"]
+
+    response = await request(
+        "POST",
+        f"/api/requests/{request_id}/custom-columns",
+        json={"displayName": "Price", "hint": "Unit Price"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Price" in body["attributeColumns"]
+    assert body["items"][0]["attributes"]["Price"] == "1.33"
+    assert body["availableColumns"] == ["Supplier code"]
+
+
+@pytest.mark.asyncio
+async def test_add_custom_column_rejects_blank_name() -> None:
+    csv_bytes = b"Item,Quantity,Unit\nAmoxicillin 500mg Capsules,2000,caps\n"
+    created = await request(
+        "POST",
+        "/api/imports",
+        files={"file": ("partner_request.csv", csv_bytes, "text/csv")},
+    )
+    request_id = created.json()["requestId"]
+
+    response = await request(
+        "POST",
+        f"/api/requests/{request_id}/custom-columns",
+        json={"displayName": "   ", "hint": ""},
     )
 
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_add_custom_column_rejects_demo_request() -> None:
+    response = await request(
+        "POST",
+        f"/api/requests/{REQUEST_ID}/custom-columns",
+        json={"displayName": "Maker", "hint": ""},
+    )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio

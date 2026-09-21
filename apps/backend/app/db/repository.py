@@ -17,11 +17,17 @@ from app.api.schemas import (
     SourceReference,
 )
 from app.db.models import ImportRequestRow, RequestItemRow, RequestSourceReferenceRow
-from app.parsing.types import ParsedDocument
+from app.parsing.service import parse_upload
+from app.parsing.types import CustomColumnSpec, ParsedDocument
 
 
 def generate_request_id() -> str:
     return f"IMP-{dt.date.today():%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+
+
+class RawFileUnavailable(Exception):
+    """Raised by add_custom_column() when the request has no stored source file to re-parse -
+    rows created before this feature, or the fixture demo request."""
 
 
 # ItemUpdate (API, camelCase) -> RequestItemRow (SQLAlchemy, snake_case) attribute names, for the
@@ -38,6 +44,7 @@ async def save_parsed_request(
     *,
     parsed: ParsedDocument,
     file_name: str,
+    raw_file: bytes | None = None,
 ) -> ImportRequestRow:
     request_id = generate_request_id()
     request = ImportRequestRow(
@@ -48,6 +55,8 @@ async def save_parsed_request(
         used_llm_fallback=parsed.used_llm_fallback,
         parser_warnings=parsed.warnings,
         attribute_columns=parsed.attribute_columns,
+        available_columns=parsed.available_columns,
+        raw_file=raw_file,
     )
 
     for position, parsed_item in enumerate(parsed.items):
@@ -171,6 +180,74 @@ async def update_column_label(
     return request
 
 
+async def add_custom_column(
+    session: AsyncSession,
+    request_id: str,
+    display_name: str,
+    hint: str,
+) -> ImportRequestRow | None:
+    """Adds one more field to extract, requested from the review screen after the fact (see
+    ReviewItemsScreen's "Add column" control) - re-parses the original file with every custom
+    column requested so far (this one plus any earlier ones) and merges only the newly resolved
+    values into the already-persisted items, by position. Re-parsing the same bytes is
+    deterministic, so item order/count is stable across calls - existing items (including any
+    manual edits to their core fields) are otherwise left untouched."""
+    request = await get_request_by_id(session, request_id)
+    if request is None:
+        return None
+
+    spec = CustomColumnSpec(display_name=display_name, hint=hint)
+    if not spec.display_name:
+        return request
+
+    existing_specs = [CustomColumnSpec(**entry) for entry in (request.custom_columns or [])]
+    if any(existing.display_name.lower() == spec.display_name.lower() for existing in existing_specs):
+        return request  # already requested - no-op rather than erroring on a duplicate click
+
+    if request.raw_file is None:
+        raise RawFileUnavailable(request_id)
+
+    all_specs = [*existing_specs, spec]
+    parsed = parse_upload(
+        filename=request.source_file_name, content=request.raw_file, custom_columns=all_specs
+    )
+
+    for position, item in enumerate(request.items):
+        if position >= len(parsed.items):
+            continue
+        value = parsed.items[position].attributes.get(spec.display_name)
+        if value:
+            updated_attributes = dict(item.attributes or {})
+            updated_attributes[spec.display_name] = value
+            item.attributes = updated_attributes
+
+    request.custom_columns = [
+        *(request.custom_columns or []),
+        {"display_name": spec.display_name, "hint": spec.hint},
+    ]
+    if spec.display_name not in request.attribute_columns:
+        request.attribute_columns = [*request.attribute_columns, spec.display_name]
+
+    normalized_name = spec.display_name.strip().lower()
+    normalized_hint = spec.hint.strip().lower()
+    request.available_columns = [
+        label
+        for label in request.available_columns or []
+        if label.strip().lower() not in (normalized_name, normalized_hint)
+    ]
+
+    await session.commit()
+
+    # Same MissingGreenlet trap as save_parsed_request(): session.refresh(request) would reload
+    # the request's own columns but not eager-load items.source_reference, and
+    # to_review_response() touching it afterward would trigger a real lazy-load outside any
+    # async-bridged context. Re-fetch via get_request_by_id() instead, which eager-loads both
+    # levels in one query.
+    refreshed = await get_request_by_id(session, request_id)
+    assert refreshed is not None  # we just committed this row in the same session
+    return refreshed
+
+
 def to_extracted_item(row: RequestItemRow) -> ExtractedItem:
     return ExtractedItem(
         id=row.id,
@@ -225,6 +302,7 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
         counts=review_counts(items),
         attributeColumns=row.attribute_columns or [],
         columnLabels=row.column_labels or {},
+        availableColumns=row.available_columns or [],
     )
 
 

@@ -34,6 +34,7 @@ def parse_pdf(content: bytes, custom_columns: list[CustomColumnSpec] | None = No
             else:
                 free_text_pages.append((page_index, page.extract_text() or ""))
 
+    available_columns: list[str] = []
     if structured_pages:
         for page_number, table in structured_pages:
             page_result = parse_table_rows(table, page=page_number, custom_columns=custom_columns)
@@ -41,6 +42,9 @@ def parse_pdf(content: bytes, custom_columns: list[CustomColumnSpec] | None = No
             document.warnings.extend(page_result.warnings)
             if page_result.used_llm_fallback:
                 document.used_llm_fallback = True
+            for label in page_result.available_columns:
+                if label not in available_columns:
+                    available_columns.append(label)
 
     remaining_text = "\n".join(text for _, text in free_text_pages if text.strip())
     if remaining_text:
@@ -48,6 +52,7 @@ def parse_pdf(content: bytes, custom_columns: list[CustomColumnSpec] | None = No
 
     document.rows_detected = len(document.items)
     document.attribute_columns = _merge_attribute_columns(document)
+    document.available_columns = available_columns
     if not document.items:
         document.warnings.append("No line items could be extracted from this PDF")
     return document

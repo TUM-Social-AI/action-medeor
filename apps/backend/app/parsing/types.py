@@ -11,10 +11,12 @@ _MAX_CUSTOM_COLUMN_NAME = 60
 
 @dataclass
 class CustomColumnSpec:
-    """A column the user explicitly asked to be extracted, specified before upload (see
-    IngestionScreen) - display_name is what they want it called; hint, if given, is a source
-    column name or short description of where to find it. Applies across all parsers (table and
-    free-text); an explicit request overrides the default supplier/admin-column exclusion."""
+    """A column the user explicitly asked to be extracted, requested after the initial extraction
+    from the review screen (see ReviewItemsScreen's "Add column" control) - display_name is what
+    they want it called; hint, if given, is a source column name or short description of where to
+    find it (the "Add column" control passes the picked/typed text as both). Applies across all
+    parsers (table and free-text); an explicit request overrides the default supplier/admin-column
+    exclusion."""
 
     display_name: str
     hint: str = ""
@@ -57,3 +59,8 @@ class ParsedDocument:
     # Ordered labels of the extra columns this document contributed, in source column order.
     # Columns that were empty for every row are dropped, so this reflects what's worth showing.
     attribute_columns: list[str] = field(default_factory=list)
+    # Header labels this document's table has but that weren't extracted (supplier/admin columns
+    # scoped out by classify_columns) - offered back to the user after the fact as "other columns
+    # you can add" (see custom_columns.py / the /custom-columns endpoint). Empty for headerless
+    # tables and free-text documents, where there's no detected header row to offer choices from.
+    available_columns: list[str] = field(default_factory=list)

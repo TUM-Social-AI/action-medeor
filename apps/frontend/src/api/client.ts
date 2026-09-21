@@ -24,12 +24,9 @@ export function getRecentImports() {
   return requestJson<RecentImport[]>('/api/imports/recent');
 }
 
-export function createImport(file: File, customColumns: CustomColumnRequest[] = []) {
+export function createImport(file: File) {
   const formData = new FormData();
   formData.append('file', file);
-  if (customColumns.length > 0) {
-    formData.append('custom_columns', JSON.stringify(customColumns));
-  }
 
   return requestJson<ReviewResponse>('/api/imports', {
     method: 'POST',
@@ -66,6 +63,17 @@ export function updateColumnLabel(requestId: string, columnKey: string, label: s
   return requestJson<Record<string, string>>(`/api/requests/${requestId}/column-labels`, {
     method: 'PATCH',
     body: JSON.stringify({ columnKey, label }),
+  });
+}
+
+/** Requests one more field to extract, after the fact - see ReviewItemsScreen's "Add column"
+ * control. Re-parses the original file server-side and returns the full, updated review payload
+ * (new attribute values merged into the existing items, availableColumns/attributeColumns
+ * updated) rather than just the one new column, since every item can gain a value at once. */
+export function addCustomColumn(requestId: string, column: CustomColumnRequest) {
+  return requestJson<ReviewResponse>(`/api/requests/${requestId}/custom-columns`, {
+    method: 'POST',
+    body: JSON.stringify(column),
   });
 }
 

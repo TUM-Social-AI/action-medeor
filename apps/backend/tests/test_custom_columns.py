@@ -1,4 +1,5 @@
-"""Tests for user-requested custom column extraction (see IngestionScreen).
+"""Tests for user-requested custom column extraction (see ReviewItemsScreen's "Add column"
+control, applied via repository.add_custom_column after the initial extraction).
 
 Hint-based matching is pure/deterministic and tested directly. The "no LLM key" path is
 exercised through parse_table_rows, mirroring force_llm_unavailable's use elsewhere in this

@@ -1,6 +1,7 @@
-"""User-requested custom columns: fields a user explicitly asked to be extracted (see
-IngestionScreen), by display name and an optional hint (a source column name or short
-description). Unlike every other extraction path in this package, an explicit request
+"""User-requested custom columns: fields a user explicitly asked to be extracted after the fact,
+from the review screen's "Add column" control (see ReviewItemsScreen and
+repository.add_custom_column), by display name and an optional hint (a source column name or
+short description). Unlike every other extraction path in this package, an explicit request
 deliberately overrides the default supplier/admin-column exclusion - if the user names it, we
 look for it everywhere in the document, not just the columns already scoped as "the partner's
 own request".

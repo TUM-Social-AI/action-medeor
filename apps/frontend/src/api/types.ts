@@ -106,6 +106,12 @@ export type ReviewResponse = {
    * from this map just shows its default label.
    */
   columnLabels: Record<string, string>;
+  /**
+   * Header labels detected in the source file that aren't in attributeColumns yet - suggestions
+   * for the "Add column" control on the review screen. Empty for free-text documents (no
+   * detected header row to offer choices from).
+   */
+  availableColumns: string[];
 };
 
 export type ItemUpdate = Partial<
@@ -114,15 +120,14 @@ export type ItemUpdate = Partial<
 
 export type PartnerUpdate = Pick<PartnerDetails, 'partner' | 'region' | 'requestId' | 'contact'>;
 
-/** A field the user asks to be extracted before uploading (see IngestionScreen). displayName is
- * what the column will be called; hint is optional guidance (a source column name or short
- * description of where to find it) - leave blank to let extraction find it semantically. */
+/** A field the user wants extracted, requested after the initial extraction from the review
+ * screen's "Add column" control - either picked from availableColumns or typed freely. displayName
+ * is what the column will be called; hint is optional guidance (typically the exact source column
+ * name when picked from availableColumns) - leave blank to let extraction find it semantically. */
 export type CustomColumnRequest = {
   displayName: string;
   hint: string;
 };
-
-export const MAX_CUSTOM_COLUMNS = 10;
 
 export type RequestedItem = {
   id: number;

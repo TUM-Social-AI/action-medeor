@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import JSON, ForeignKey, func
+from sqlalchemy import JSON, ForeignKey, LargeBinary, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -37,6 +37,18 @@ class ImportRequestRow(Base):
     # User-renamed column headers for this request: {column key: custom label}. Core fields use
     # a fixed key ("name", "quantity", ...); attribute columns use their own label as the key.
     column_labels: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    # Header labels detected in the source file but not extracted into attribute_columns - offered
+    # back to the user on the review screen as "other columns you can add" (see
+    # repository.add_custom_column). Shrinks as columns get added; empty for free-text documents.
+    available_columns: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Custom columns the user has added after the fact from the review screen, as
+    # [{"display_name": ..., "hint": ...}, ...] - kept so a later addition can be re-applied on
+    # top of every prior one when the file is re-parsed (see repository.add_custom_column).
+    custom_columns: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    # The originally uploaded file, kept so a custom column requested after the fact can be
+    # extracted by re-parsing the same source rather than asking the user to re-upload. Absent
+    # (None) for rows that predate this column or the fixture demo request.
+    raw_file: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
 
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
 
