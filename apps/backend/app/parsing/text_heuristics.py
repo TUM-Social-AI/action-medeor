@@ -2,7 +2,7 @@
 
 import re
 
-from app.parsing.keywords import PRIORITY_TOKENS, UNIT_TOKENS
+from app.parsing.keywords import PRIORITY_TOKENS, PROCUREMENT_PRIORITY_TOKENS, UNIT_TOKENS
 from app.parsing.types import ItemStatus, ParsedLineItem, Priority
 
 # "2000 pcs", "2,000 pcs", "2000pcs", "500 Beutel" - number optionally followed by a unit word.
@@ -63,6 +63,18 @@ def detect_priority(text: str) -> Priority | None:
         if token in lowered:
             return priority
     return None
+
+
+def detect_priority_from_column_value(text: str) -> Priority | None:
+    """Maps a partner's own priority-tier wording, found in a dedicated priority column, onto
+    our scale. Checks the procurement-specific vocabulary first, then falls back to the same
+    urgency words detect_priority() recognizes (a column literally containing "High"/"Critical"
+    already works via that set)."""
+    lowered = text.lower()
+    for token, priority in PROCUREMENT_PRIORITY_TOKENS.items():
+        if token in lowered:
+            return priority
+    return detect_priority(text)
 
 
 def classify_item(name: str, quantity: int | None, unit: str) -> tuple[ItemStatus, int]:

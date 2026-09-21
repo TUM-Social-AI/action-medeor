@@ -3,7 +3,10 @@
 Strategy (see apps/backend README / PR description for the rationale):
 1. Extract text + tables per page with pdfplumber (free, deterministic).
 2. If a page's table is well-structured (recognizable header, consistent column count), parse it
-   with the same heuristics as Excel - no LLM call.
+   with the same heuristics as Excel - no LLM call. table_parser.parse_table_rows transparently
+   tries an LLM quantity gap-fill only when the heuristic scoped columns but found no quantity
+   signal among them at all (see llm_table_classifier.py) - it can enrich a result, never
+   override an already-correct one.
 3. Otherwise, hand the raw text to the shared free-text fallback (LLM, then naive regex parse -
    see free_text_parser.py).
 """

@@ -71,14 +71,36 @@ TRANSLATION_KEYWORDS = [
     "ترجمة",
 ]
 
+# A form can split the requested quantity across two columns instead of reporting one total: how
+# many packs/boxes/cartons, and separately how many individual units make up one pack. Checked
+# before the generic UNIT_KEYWORDS/QUANTITY_KEYWORDS below - "Units Per Pack" contains "unit" and
+# would otherwise be misread as the generic unit-of-measure-text role, which both steals the
+# wrong meaning AND (since it then already has a role) makes it unavailable as a candidate for
+# the LLM quantity gap-fill (see llm_table_classifier.py) that exists for less predictable
+# phrasings of this same pattern.
+QUANTITY_PACKS_KEYWORDS = [
+    "packs requested", "qty pack", "quantity pack", "number of packs", "boxes requested",
+    "anzahl packungen", "colis demandés",
+]
+UNITS_PER_PACK_KEYWORDS = [
+    "units per pack", "unit per pack", "units/pack", "unit/pack",
+    "einheiten pro packung", "unités par colis", "unités par paquet",
+]
+
+# Order matters: match_column_role() returns the first role whose keywords appear in a header, so
+# the more specific roles are checked first and "name" - the most generic, most collision-prone
+# list ("article"/"item"/"produkt" are common words inside other compound headers too, e.g.
+# "Article priority" contains "article") - is checked last, as a catch-all.
 COLUMN_KEYWORDS: dict[str, list[str]] = {
-    "name": NAME_KEYWORDS,
+    "quantity_packs": QUANTITY_PACKS_KEYWORDS,
+    "units_per_pack": UNITS_PER_PACK_KEYWORDS,
     "quantity": QUANTITY_KEYWORDS,
     "unit": UNIT_KEYWORDS,
     "notes": NOTES_KEYWORDS,
     "priority": PRIORITY_KEYWORDS,
     "shelf_life": SHELF_LIFE_KEYWORDS,
     "translation": TRANSLATION_KEYWORDS,
+    "name": NAME_KEYWORDS,
 }
 
 # Request-level free-text field ("Besondere Informationen:" / "Special information:") some RFQ
@@ -192,6 +214,22 @@ PRIORITY_TOKENS: dict[str, str] = {
     "low": "low",
     "niedrig": "low",
     "faible": "low",
+}
+
+# Procurement priority-tier wording ("Prioritaire-Priority", "Standard", "Optionnel-Optional")
+# found in a dedicated priority/article-priority *column* - distinct from PRIORITY_TOKENS, which
+# scans free-running name/notes text for urgency language. Deliberately not merged into
+# PRIORITY_TOKENS: "standard" and "optional" are common enough words in item descriptions
+# ("standard gauze", "optional attachment") that reusing the same scanner against name/notes
+# text would misfire. No bare "priority"/"priorité" token here either - a value like "Low
+# priority" would otherwise match the wrong tier depending on dict order.
+PROCUREMENT_PRIORITY_TOKENS: dict[str, str] = {
+    "prioritaire": "high",
+    "urgence": "critical",
+    "alternative": "low",
+    "optionnel": "low",
+    "optional": "low",
+    "standard": "medium",
 }
 
 

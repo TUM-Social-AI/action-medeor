@@ -386,8 +386,10 @@ def test_parse_table_rows_handles_supplier_block_in_the_middle() -> None:
     # Nothing from the supplier's section leaks into the item or its excerpt.
     assert "Reyoung" not in item.excerpt
     assert "vendor" not in item.excerpt.lower()
-    # ...while the requester's own columns after that block are kept.
-    assert item.attributes["Article priority / Priorité d'article"] == "Standard"
+    # ...while the requester's own columns after that block are kept. "Article priority" maps
+    # onto our scale (this partner's "Standard" tier -> medium) rather than staying a raw
+    # attribute - see test_procurement_priority_is_mapped_not_kept_raw for the mapping itself.
+    assert item.priority == "medium"
     assert "Source mandatory" in item.attributes["Quality assurance requirements for validation"]
     assert item.notes == "Must be WHO prequalified"
 
@@ -401,30 +403,27 @@ def test_parse_table_rows_drops_ordinal_and_all_empty_columns() -> None:
 
     result = parse_table_rows(rows)
 
-    # "No" is a bare row ordinal (redundant with the table's own numbering) and "Additional
-    # documents required" is empty on every row - neither earns a column.
-    assert "No" not in result.attribute_columns
-    assert "Additional documents required" not in result.attribute_columns
-    assert result.attribute_columns == [
-        "Article priority / Priorité d'article",
-        "Quality assurance requirements for validation",
-    ]
+    # "No" is a bare row ordinal (redundant with the table's own numbering), "Additional
+    # documents required" is empty on every row, and "Article priority" is mapped onto the
+    # priority field rather than kept as a raw column - none of the three earns an attribute.
+    assert result.attribute_columns == ["Quality assurance requirements for validation"]
 
 
 def test_unrecognized_priority_wording_is_kept_raw_instead_of_forced() -> None:
     rows = [
         PUI_HEADER,
-        [1, "A1", "Item one", 10, None, None, None, None, None, "Prioritaire-Priority",
+        [1, "A1", "Item one", 10, None, None, None, None, None, "Confidential - do not disclose",
          "QA note", None, None],
     ]
 
     result = parse_table_rows(rows)
     item = result.items[0]
 
-    # "Prioritaire-Priority" has no equivalent on our critical/high/medium/low scale, so the
-    # priority field stays at its default and the partner's own wording is preserved verbatim.
+    # This wording has no equivalent on our critical/high/medium/low scale (nor in the
+    # procurement-tier vocabulary), so the priority field stays at its default and the partner's
+    # own wording is preserved verbatim instead of being force-fitted or dropped.
     assert item.priority == "medium"
-    assert item.attributes["Article priority / Priorité d'article"] == "Prioritaire-Priority"
+    assert item.attributes["Article priority / Priorité d'article"] == "Confidential - do not disclose"
 
 
 def test_accent_folding_matches_headers_written_without_accents() -> None:
@@ -433,3 +432,53 @@ def test_accent_folding_matches_headers_written_without_accents() -> None:
     assert match_column_role("Qte") == "quantity"
     assert match_column_role("Qté") == "quantity"
     assert match_column_role("Unite") == "unit"
+
+
+def test_detect_priority_from_column_value_maps_procurement_tiers() -> None:
+    from app.parsing.text_heuristics import detect_priority_from_column_value
+
+    assert detect_priority_from_column_value("Prioritaire-Priority") == "high"
+    assert detect_priority_from_column_value("Standard") == "medium"
+    assert detect_priority_from_column_value("Optionnel-Optional") == "low"
+    assert detect_priority_from_column_value("Alternative Standard") == "low"
+    # A column that already spells out our own vocabulary still works.
+    assert detect_priority_from_column_value("Critical") == "critical"
+    assert detect_priority_from_column_value("something unrecognized") is None
+
+
+def test_procurement_priority_is_mapped_not_kept_raw() -> None:
+    rows = [
+        ["Product", "Quantity enquiry", "Article priority"],
+        ["Item one", 10, "Prioritaire-Priority"],
+    ]
+
+    result = parse_table_rows(rows)
+    item = result.items[0]
+
+    assert item.priority == "high"
+    # Once mapped, the raw value isn't duplicated into attributes.
+    assert "Article priority" not in item.attributes
+
+
+def test_parse_table_rows_computes_total_from_packs_times_units_per_pack() -> None:
+    rows = [
+        ["Product", "Packs Requested", "Units Per Pack"],
+        ["Item one", 15, 100],
+    ]
+    # Header keywords alone won't map "Packs Requested"/"Units Per Pack" (that mapping normally
+    # comes from LLM classification - see test_llm_table_classifier.py); this test exercises the
+    # deterministic multiplication logic in parse_table_rows() directly via an injected layout.
+    from app.parsing.table_parser import HeaderLayout
+
+    layout = HeaderLayout(
+        row_index=0,
+        roles={0: "name", 1: "quantity_packs", 2: "units_per_pack"},
+        labels={0: "Product", 1: "Packs Requested", 2: "Units Per Pack"},
+    )
+
+    result = parse_table_rows(rows, layout=layout)
+    item = result.items[0]
+
+    assert item.quantity == 1500
+    assert item.attributes["Packs requested"] == "15"
+    assert item.attributes["Units per pack"] == "100"
