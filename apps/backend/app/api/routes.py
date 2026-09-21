@@ -29,8 +29,12 @@ SUPPORTED_IMPORT_CONTENT_TYPES = {
     "application/vnd.ms-excel": "xls",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "text/csv": "csv",
+    # Browsers are inconsistent about CSV's content type - "application/csv" and "text/plain"
+    # both show up in practice. Left out of this dict deliberately: an unrecognized content type
+    # skips the mismatch check entirely (see create_import below) rather than being rejected.
 }
-SUPPORTED_IMPORT_EXTENSIONS = {"pdf", "xlsx", "xls", "docx"}
+SUPPORTED_IMPORT_EXTENSIONS = {"pdf", "xlsx", "xls", "docx", "csv"}
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
 

@@ -20,7 +20,7 @@ type IngestionScreenProps = {
 };
 
 function isValidFile(file: File) {
-  return ['.pdf', '.xlsx', '.xls', '.docx'].some(extension =>
+  return ['.pdf', '.xlsx', '.xls', '.docx', '.csv'].some(extension =>
     file.name.toLowerCase().endsWith(extension),
   );
 }
@@ -112,7 +112,7 @@ export function IngestionScreen({ onContinue, error: workflowError }: IngestionS
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf,.xlsx,.xls,.docx"
+              accept=".pdf,.xlsx,.xls,.docx,.csv"
               className="hidden"
               onChange={handleFileInput}
             />
@@ -155,7 +155,7 @@ export function IngestionScreen({ onContinue, error: workflowError }: IngestionS
                     <div className="w-7 h-7 rounded-md bg-green-100 flex items-center justify-center">
                       <FileSpreadsheet size={14} className="text-green-600" />
                     </div>
-                    Excel (.xlsx, .xls)
+                    Excel/CSV (.xlsx, .xls, .csv)
                   </div>
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <div className="w-7 h-7 rounded-md bg-red-100 flex items-center justify-center">

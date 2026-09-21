@@ -91,7 +91,7 @@ export function HomeScreen({ onCreateRequest, onViewDashboard }: HomeScreenProps
           </div>
           <p className="text-white/70 text-sm leading-relaxed" style={{ maxWidth: 380 }}>
             Upload a partner request file and start the AI-assisted matching workflow. Supports
-            PDF, Excel (.xlsx, .xls), and Word (.docx) formats.
+            PDF, Excel (.xlsx, .xls), Word (.docx), and CSV formats.
           </p>
           <div
             className="mt-6 inline-flex items-center gap-2 bg-white/15 hover:bg-white/25 transition-colors px-4 py-2.5 rounded-lg text-white text-sm"

@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 Priority = Literal["critical", "high", "medium", "low"]
 ItemStatus = Literal["verified", "needs_review", "low_confidence", "missing"]
-ImportFileType = Literal["pdf", "xlsx", "xls", "docx"]
+ImportFileType = Literal["pdf", "xlsx", "xls", "docx", "csv"]
 RiskLevel = Literal["critical", "high", "medium"]
 
 

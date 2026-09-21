@@ -482,3 +482,48 @@ def test_parse_table_rows_computes_total_from_packs_times_units_per_pack() -> No
     assert item.quantity == 1500
     assert item.attributes["Packs requested"] == "15"
     assert item.attributes["Units per pack"] == "100"
+
+
+def test_parse_csv_comma_delimited() -> None:
+    from app.parsing.csv_parser import parse_csv
+
+    content = (
+        "Item,Quantity,Unit,Notes\n"
+        "Amoxicillin 500mg Capsules,2000,caps,Blister pack preferred\n"
+        "ORS Sachets,,sachets,Illegible\n"
+    ).encode("utf-8")
+
+    document = parse_csv(content)
+
+    assert document.rows_detected == 2
+    assert document.items[0].name == "Amoxicillin 500mg Capsules"
+    assert document.items[0].quantity == 2000
+    assert document.items[0].status == "verified"
+    assert document.items[1].quantity is None
+    assert document.items[1].status == "missing"
+
+
+def test_parse_csv_semicolon_delimited_with_accents() -> None:
+    from app.parsing.csv_parser import parse_csv
+
+    # European export style: semicolon delimiter, cp1252 encoding (comma is the decimal
+    # separator in these locales, so semicolon is the common CSV delimiter instead).
+    content = (
+        "Désignation;Quantité;Unité\n"
+        "Amoxicilline 500mg comprimés;2000;comprimés\n"
+    ).encode("cp1252")
+
+    document = parse_csv(content)
+
+    assert document.rows_detected == 1
+    assert document.items[0].name == "Amoxicilline 500mg comprimés"
+    assert document.items[0].quantity == 2000
+
+
+def test_parse_csv_empty_file_warns() -> None:
+    from app.parsing.csv_parser import parse_csv
+
+    document = parse_csv(b"")
+
+    assert document.rows_detected == 0
+    assert any("no rows" in warning for warning in document.warnings)

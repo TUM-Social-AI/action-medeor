@@ -5,7 +5,7 @@ export type LoadingType = 'extracting' | 'matching';
 export type Priority = 'critical' | 'high' | 'medium' | 'low';
 export type ReviewPriority = 'critical' | 'high' | 'medium';
 export type ItemStatus = 'verified' | 'needs_review' | 'low_confidence' | 'missing';
-export type ImportFileType = 'pdf' | 'xlsx' | 'xls' | 'docx';
+export type ImportFileType = 'pdf' | 'xlsx' | 'xls' | 'docx' | 'csv';
 export type RiskLevel = 'critical' | 'high' | 'medium';
 
 export const DEFAULT_REQUEST_ID = 'SD-2024-0611';

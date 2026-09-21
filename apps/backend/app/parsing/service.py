@@ -1,5 +1,6 @@
 """Entry point for the parsing package: dispatch an uploaded file to the right parser."""
 
+from app.parsing.csv_parser import parse_csv
 from app.parsing.docx_parser import parse_docx
 from app.parsing.excel_parser import parse_excel
 from app.parsing.pdf_parser import parse_pdf
@@ -20,6 +21,8 @@ def parse_upload(*, filename: str, content: bytes) -> ParsedDocument:
             return parse_pdf(content)
         if extension == "docx":
             return parse_docx(content)
+        if extension == "csv":
+            return parse_csv(content)
     except ParsingError:
         raise
     except Exception as exc:  # noqa: BLE001 - convert any parser-library failure into ParsingError

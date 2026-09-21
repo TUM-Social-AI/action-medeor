@@ -191,6 +191,29 @@ async def test_create_import_parses_docx_free_text(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_import_parses_csv() -> None:
+    csv_bytes = (
+        "Item,Quantity,Unit,Notes\n"
+        "Amoxicillin 500mg Capsules,2000,caps,Blister pack preferred\n"
+        "Paracetamol 500mg Tablets,5000,tabs,Generic acceptable\n"
+    ).encode("utf-8")
+
+    response = await request(
+        "POST",
+        "/api/imports",
+        files={"file": ("partner_request.csv", csv_bytes, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requestId"].startswith("IMP-")
+    assert body["counts"]["total"] == 2
+    assert body["items"][0]["name"] == "Amoxicillin 500mg Capsules"
+    assert body["items"][0]["quantity"] == 2000
+    assert body["items"][0]["status"] == "verified"
+
+
+@pytest.mark.asyncio
 async def test_create_import_rejects_unparsable_workbook() -> None:
     response = await request(
         "POST",
