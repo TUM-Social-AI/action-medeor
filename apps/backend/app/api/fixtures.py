@@ -29,7 +29,7 @@ SOURCE_FILE = "Sudan_EmergencyRequest_MSF_June2024.xlsx"
 HOME_RESPONSE = HomeResponse(
     userName="Leon",
     organization="action medeor",
-    currentDate="June 13, 2024",
+    currentDate="September 23, 2026",
     stats=[
         HomeStat(
             key="requests_processed",

@@ -74,7 +74,7 @@ export function HomeScreen({ onCreateRequest, onViewDashboard }: HomeScreenProps
         <h1 className="text-gray-900">Welcome back, {data?.userName ?? 'Leon'}</h1>
         <p className="text-gray-500 text-sm mt-0.5">
           {data?.organization ?? 'action medeor'} - Procurement Operations -{' '}
-          {data?.currentDate ?? 'June 13, 2024'}
+          {data?.currentDate ?? 'September 23, 2026'}
         </p>
       </div>
 
