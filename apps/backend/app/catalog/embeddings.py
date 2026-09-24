@@ -7,6 +7,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,23 @@ class EmbeddingModelSpec:
     name: str
     version: str
     dimensions: int
+
+
+class CatalogEmbeddingProvider(Protocol):
+    """Provider contract shared by benchmarks, catalog jobs, and query inference."""
+
+    @property
+    def model_id(self) -> str: ...
+
+    async def spec(self) -> EmbeddingModelSpec: ...
+
+    async def embed_documents(
+        self, texts: Sequence[str]
+    ) -> Sequence[Sequence[float]]: ...
+
+    async def embed_queries(
+        self, texts: Sequence[str]
+    ) -> Sequence[Sequence[float]]: ...
 
 
 class SentenceTransformerEmbeddingProvider:
@@ -118,7 +136,7 @@ class CatalogEmbeddingJobService:
         self._session = session
 
     async def register_and_activate(
-        self, provider: SentenceTransformerEmbeddingProvider
+        self, provider: CatalogEmbeddingProvider
     ) -> tuple[EmbeddingModelSpec, int]:
         spec = await provider.spec()
         await self._session.execute(text("UPDATE embedding_models SET active = FALSE"))
@@ -190,7 +208,7 @@ class CatalogEmbeddingJobService:
 
     async def process_pending(
         self,
-        provider: SentenceTransformerEmbeddingProvider,
+        provider: CatalogEmbeddingProvider,
         *,
         batch_size: int = 32,
     ) -> dict[str, int]:

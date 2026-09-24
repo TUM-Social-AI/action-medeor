@@ -1118,9 +1118,10 @@ The gates are non-optional:
 The executable commands and decision-record checklist are in
 [`../../../../benchmarks/embeddings/README.md`](../../../../benchmarks/embeddings/README.md). Product
 indexing is implemented by [`../catalog/embeddings.py`](../catalog/embeddings.py) and
-[`../catalog/embedding_worker.py`](../catalog/embedding_worker.py). The worker's model ID is
-`sentence-transformers:<model-name>@<revision>`; stored and query vectors from another identity or
-dimension must never be compared.
+[`../catalog/embedding_worker.py`](../catalog/embedding_worker.py). Sentence Transformer identities
+use `sentence-transformers:<model-name>@<revision>`; Azure OpenAI identities include the immutable
+model version and dimensions. Stored and query vectors from another identity or dimension must never
+be compared.
 
 The standard web image contains no Sentence Transformers dependency. Production design must either
 add a model-enabled runtime, call an internal embedding service, or supply `query_embedding` and the

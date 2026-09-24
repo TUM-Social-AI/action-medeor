@@ -1,6 +1,10 @@
 from app.core.config import LOCAL_CORS_ORIGINS, Settings
 
 
+def test_empty_embedding_dimensions_are_unset() -> None:
+    assert Settings(embedding_dimensions="").embedding_dimensions is None
+
+
 def test_development_includes_local_cors_origins() -> None:
     settings = Settings(app_env="development", cors_origins="https://example.test")
 

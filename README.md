@@ -205,8 +205,8 @@ do not describe semantic matching as validated until all of these gates pass:
    [`benchmarks/embeddings/Dockerfile`](benchmarks/embeddings/Dockerfile).
 2. Run a small cloud smoke test, for example with `--limit-queries 25`, to verify file mounting,
    model download and report output.
-3. Run all three free-first models against the full automatically labelled French set generated from
-   the same `Artikeldaten.csv` and `Artikeluebersetzungen.csv` pair.
+3. Run both configured Foundry embedding deployments against the full automatically labelled French
+   set generated from the same `Artikeldaten.csv` and `Artikeluebersetzungen.csv` pair.
 4. Add manually reviewed, normalized real inquiry examples with an agreed correct article number and
    run the comparison again.
 5. Compare Recall@1/3/10, MRR, latency, throughput, vector size and actual Azure compute cost.
@@ -224,13 +224,11 @@ worker live in
 [`apps/backend/app/catalog/embeddings.py`](apps/backend/app/catalog/embeddings.py) and
 [`apps/backend/app/catalog/embedding_worker.py`](apps/backend/app/catalog/embedding_worker.py).
 
-After approval, initialize the catalogue vectors in a cloud worker with database access:
+After approval, configure the selected provider through the embedding environment variables and
+initialize the catalogue vectors in a cloud worker with database access:
 
 ```bash
-python -m app.catalog.embedding_worker \
-  --model <approved-hugging-face-model> \
-  --revision <immutable-model-revision> \
-  --batch-size 32
+python -m app.catalog.embedding_worker
 ```
 
 The worker registers the model, queues all missing current eligible product versions and writes
@@ -493,8 +491,14 @@ Open `http://localhost:8000`. The production runtime accepts these environment v
 | `DATABASE_URL` | Yes | Async SQLAlchemy PostgreSQL URL. Use the externally managed production database. |
 | `APP_ENV` | Recommended | Set to `production` to disable automatic local-development CORS behavior. |
 | `CORS_ORIGINS` | No | Comma-separated cross-origin frontend URLs. Same-origin production needs none. |
-| `EMBEDDING_MODEL_NAME` | No | Approved Sentence Transformers model. Leave empty in the standard web image until benchmarking and the query-inference runtime are complete. |
-| `EMBEDDING_MODEL_REVISION` | No | Pinned immutable upstream revision for reproducible query embeddings. Do not use `main` in production. |
+| `EMBEDDING_PROVIDER` | No | `sentence-transformers`, `azure-openai` or `azure-cohere`; leave blank to disable vector retrieval. |
+| `EMBEDDING_MODEL_NAME` | With provider | Approved model name. |
+| `EMBEDDING_MODEL_VERSION` | For Foundry | Immutable deployed model version. |
+| `EMBEDDING_MODEL_REVISION` | For Sentence Transformers | Pinned immutable upstream revision. Do not use `main` in production. |
+| `EMBEDDING_DEPLOYMENT` | For Foundry | Foundry deployment name used for inference. |
+| `EMBEDDING_DIMENSIONS` | For Foundry | Exact configured vector dimensions. |
+| `AZURE_FOUNDRY_ENDPOINT` | For Foundry | Foundry resource endpoint; no embedding route suffix. |
+| `AZURE_FOUNDRY_API_KEY` | For Foundry key auth | Secret supplied at runtime; never commit it. Prefer managed identity in production. |
 
 `VITE_API_BASE_URL` is a frontend build-time setting for separately hosted local development. The
 combined production build deliberately leaves it unset so browser requests use same-origin
@@ -502,22 +506,21 @@ combined production build deliberately leaves it unset so browser requests use s
 
 ## Embedding model evaluation
 
-The benchmark under [`benchmarks/embeddings`](benchmarks/embeddings/README.md) compares open,
-multilingual models first. It evaluates French ERP descriptions against the offerable catalogue and
-can include manually reviewed normalized inquiry labels. It reports Recall@1/3/10, mean reciprocal
-rank, runtime, throughput, vector dimensions, and storage. Model downloads and inference require
-cloud CPU/GPU time, but there is no per-request model-provider fee for the default open models.
+The benchmark under [`benchmarks/embeddings`](benchmarks/embeddings/README.md) compares Azure OpenAI
+embedding deployments in Foundry. It evaluates French ERP descriptions against the offerable
+catalogue and can include manually reviewed normalized inquiry labels. It reports Recall@1/3/10,
+mean reciprocal rank, runtime, throughput, vector dimensions, token usage and storage.
 
-Run the benchmark and the later embedding worker in Azure or another adequately sized cloud runner.
-The development laptop has only about 4 GB RAM and is not suitable for loading BGE-M3 or E5-large.
-The web container deliberately excludes PyTorch and model weights.
+The lightweight benchmark image calls Foundry remotely and deliberately excludes Sentence
+Transformers, PyTorch and local model weights. Optional open-model comparisons require a separate
+model-enabled environment.
 
-After selecting and pinning a model, the cloud worker can initialize all missing product embeddings:
+After selecting and pinning a model, configure the provider as shown in
+[`benchmarks/embeddings/README.md`](benchmarks/embeddings/README.md). The cloud worker can then
+initialize all missing product embeddings:
 
 ```bash
-python -m app.catalog.embedding_worker \
-  --model <approved-hugging-face-model> \
-  --revision <immutable-revision>
+python -m app.catalog.embedding_worker
 ```
 
 Later catalog imports automatically queue only new or text-changed offerable versions. Inventory-only
