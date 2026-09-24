@@ -1,10 +1,10 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 Priority = Literal["critical", "high", "medium", "low"]
 ItemStatus = Literal["verified", "needs_review", "low_confidence", "missing"]
-ImportFileType = Literal["pdf", "xlsx", "xls"]
+ImportFileType = Literal["pdf", "xlsx", "xls", "docx", "csv"]
 RiskLevel = Literal["critical", "high", "medium"]
 
 
@@ -71,6 +71,10 @@ class ExtractedItem(BaseModel):
     quantity: int | None
     unit: str
     notes: str
+    itemNumber: str = ""
+    shelfLife: str = ""
+    # File-specific columns that don't map to a core field, keyed by their source header label.
+    attributes: dict[str, str] = Field(default_factory=dict)
     priority: Priority
     confidence: int | None
     status: ItemStatus
@@ -91,6 +95,34 @@ class ReviewResponse(BaseModel):
     items: list[ExtractedItem]
     sourceReferences: list[SourceReference]
     counts: ReviewCounts
+    # Labels of the extra columns found in this file, in source order - the review table renders
+    # these per import, so a richer request form shows more than a bare name/qty/unit one.
+    attributeColumns: list[str] = Field(default_factory=list)
+    # User-renamed column headers for this request, keyed by column identifier: core fields use
+    # a fixed key ("name", "quantity", "unit", "shelfLife", "itemNumber", "notes", "priority");
+    # extra/attribute columns use their own label (from attributeColumns) as the key. Missing
+    # from this map means "show the default label" - see ColumnLabelUpdate below.
+    columnLabels: dict[str, str] = Field(default_factory=dict)
+    # Header labels detected in the source file that aren't in attributeColumns yet - offered on
+    # the review screen as suggestions for the "Add column" control (see CustomColumnRequest).
+    # Empty for free-text documents, which have no detected header row to offer choices from.
+    availableColumns: list[str] = Field(default_factory=list)
+
+
+class CustomColumnRequest(BaseModel):
+    """A field the user wants extracted, requested from the review screen after the initial
+    extraction (see ReviewItemsScreen's "Add column" control). displayName is required and is
+    what the column will be called; hint is optional guidance (typically the exact source column
+    name when the user picked one of the availableColumns suggestions) - a substring match against
+    a real header resolves for free, otherwise an LLM call looks for the best-matching column."""
+
+    displayName: str
+    hint: str = ""
+
+
+class ColumnLabelUpdate(BaseModel):
+    columnKey: str
+    label: str
 
 
 class ItemUpdate(BaseModel):
@@ -98,6 +130,8 @@ class ItemUpdate(BaseModel):
     quantity: int | None = None
     unit: str | None = None
     notes: str | None = None
+    itemNumber: str | None = None
+    shelfLife: str | None = None
     priority: Priority | None = None
 
 

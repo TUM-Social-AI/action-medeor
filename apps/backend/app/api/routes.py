@@ -1,7 +1,10 @@
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import fixtures
 from app.api.schemas import (
+    ColumnLabelUpdate,
+    CustomColumnRequest,
     ErpMatch,
     ExtractedItem,
     HomeResponse,
@@ -17,6 +20,10 @@ from app.api.schemas import (
     SummaryResponse,
     TrendsResponse,
 )
+from app.db import repository
+from app.db.repository import RawFileUnavailable
+from app.db.session import get_session
+from app.parsing import ParsingError, parse_upload
 
 router = APIRouter(prefix="/api")
 
@@ -24,14 +31,30 @@ SUPPORTED_IMPORT_CONTENT_TYPES = {
     "application/pdf": "pdf",
     "application/vnd.ms-excel": "xls",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "text/csv": "csv",
+    # Browsers are inconsistent about CSV's content type - "application/csv" and "text/plain"
+    # both show up in practice. Left out of this dict deliberately: an unrecognized content type
+    # skips the mismatch check entirely (see create_import below) rather than being rejected.
 }
-SUPPORTED_IMPORT_EXTENSIONS = {"pdf", "xlsx", "xls"}
+SUPPORTED_IMPORT_EXTENSIONS = {"pdf", "xlsx", "xls", "docx", "csv"}
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
 
 
 def require_mock_request(request_id: str) -> None:
     if request_id != fixtures.REQUEST_ID:
         raise HTTPException(status_code=404, detail="Request not found")
+
+
+async def require_known_request(request_id: str, session: AsyncSession) -> None:
+    """Matching/summary/offer are still fixture-backed (separate workstream), but must not 404
+    just because a real upload produced a request_id other than the fixture's - so accept any
+    request_id that actually exists, whether persisted from a real import or the fixture one."""
+    if request_id == fixtures.REQUEST_ID:
+        return
+    if await repository.get_request_by_id(session, request_id) is not None:
+        return
+    raise HTTPException(status_code=404, detail="Request not found")
 
 
 def find_item(item_id: int) -> ExtractedItem:
@@ -59,7 +82,10 @@ async def recent_imports() -> list[RecentImport]:
 
 
 @router.post("/imports")
-async def create_import(file: UploadFile = File(...)) -> ReviewResponse:
+async def create_import(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> ReviewResponse:
     file_name = file.filename or ""
     file_extension = file_name.lower().rsplit(".", maxsplit=1)[-1] if "." in file_name else ""
 
@@ -71,23 +97,48 @@ async def create_import(file: UploadFile = File(...)) -> ReviewResponse:
     if expected_extension is not None and expected_extension != file_extension:
         raise HTTPException(status_code=400, detail="File extension does not match content type")
 
-    size = 0
+    content = bytearray()
     while chunk := await file.read(1024 * 1024):
-        size += len(chunk)
-        if size > MAX_IMPORT_BYTES:
+        content.extend(chunk)
+        if len(content) > MAX_IMPORT_BYTES:
             raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
 
-    return fixtures.review_response()
+    try:
+        parsed = parse_upload(filename=file_name, content=bytes(content))
+    except ParsingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    request = await repository.save_parsed_request(
+        session, parsed=parsed, file_name=file_name, raw_file=bytes(content)
+    )
+    return repository.to_review_response(request)
 
 
 @router.get("/requests/{request_id}/review")
-async def review(request_id: str) -> ReviewResponse:
+async def review(request_id: str, session: AsyncSession = Depends(get_session)) -> ReviewResponse:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is not None:
+        return repository.to_review_response(request)
+
     require_mock_request(request_id)
     return fixtures.review_response()
 
 
 @router.patch("/requests/{request_id}/items/{item_id}")
-async def update_item(request_id: str, item_id: int, payload: ItemUpdate) -> ExtractedItem:
+async def update_item(
+    request_id: str,
+    item_id: int,
+    payload: ItemUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> ExtractedItem:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is not None:
+        if not any(item.id == item_id for item in request.items):
+            raise HTTPException(status_code=404, detail="Item not found")
+        update = payload.model_dump(exclude_unset=True)
+        updated = await repository.update_item_fields(session, item_id, update)
+        return repository.to_extracted_item(updated)
+
     require_mock_request(request_id)
     item = find_item(item_id)
     update = payload.model_dump(exclude_unset=True)
@@ -95,21 +146,101 @@ async def update_item(request_id: str, item_id: int, payload: ItemUpdate) -> Ext
 
 
 @router.post("/requests/{request_id}/items/{item_id}/verify")
-async def verify_item(request_id: str, item_id: int) -> ExtractedItem:
+async def verify_item(
+    request_id: str,
+    item_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> ExtractedItem:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is not None:
+        if not any(item.id == item_id for item in request.items):
+            raise HTTPException(status_code=404, detail="Item not found")
+        updated = await repository.verify_item(session, item_id)
+        return repository.to_extracted_item(updated)
+
     require_mock_request(request_id)
     item = find_item(item_id)
     return item.model_copy(update={"status": "verified"})
 
 
 @router.patch("/requests/{request_id}/partner")
-async def update_partner(request_id: str, payload: PartnerUpdate) -> PartnerDetails:
+async def update_partner(
+    request_id: str,
+    payload: PartnerUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> PartnerDetails:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is not None:
+        updated = await repository.update_partner(session, request_id, payload)
+        return repository.to_partner_details(updated)
+
     require_mock_request(request_id)
     return PartnerDetails(**payload.model_dump(), confirmed=True)
 
 
-@router.post("/requests/{request_id}/matching")
-async def start_matching(request_id: str) -> MatchingResponse:
+@router.patch("/requests/{request_id}/column-labels")
+async def update_column_label(
+    request_id: str,
+    payload: ColumnLabelUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is not None:
+        updated = await repository.update_column_label(
+            session, request_id, payload.columnKey, payload.label
+        )
+        return updated.column_labels or {}
+
+    # The fixture demo request has nothing to persist to - echo the rename back so the frontend
+    # can still apply it to its local state, same as every other fixture-fallback route here.
     require_mock_request(request_id)
+    label = payload.label.strip()
+    return {payload.columnKey: label} if label else {}
+
+
+@router.post("/requests/{request_id}/custom-columns")
+async def add_custom_column(
+    request_id: str,
+    payload: CustomColumnRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ReviewResponse:
+    """Adds one more field to extract, requested from the review screen after the fact - see
+    ReviewItemsScreen's "Add column" control. Re-parses the original file and merges the newly
+    resolved values into the already-persisted items; existing items (including manual edits) are
+    otherwise untouched. See repository.add_custom_column for how re-parsing is kept consistent
+    across repeated additions."""
+    if not payload.displayName.strip():
+        raise HTTPException(status_code=400, detail="Column name is required")
+
+    request = await repository.get_request_by_id(session, request_id)
+    if request is not None:
+        try:
+            updated = await repository.add_custom_column(
+                session, request_id, payload.displayName, payload.hint
+            )
+        except RawFileUnavailable as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="The original file is no longer available for this request - re-upload it to add columns.",
+            ) from exc
+        except ParsingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Request not found")
+        return repository.to_review_response(updated)
+
+    require_mock_request(request_id)
+    raise HTTPException(
+        status_code=422, detail="Columns can't be added to the demo request - upload a file first."
+    )
+
+
+@router.post("/requests/{request_id}/matching")
+async def start_matching(
+    request_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> MatchingResponse:
+    await require_known_request(request_id, session)
     selected = {
         item.id: fixtures.ERP_MATCHES[item.id][0].id
         for item in fixtures.REQUESTED_ITEMS
@@ -128,21 +259,25 @@ async def update_matching(
     request_id: str,
     item_id: int,
     payload: MatchSelection,
+    session: AsyncSession = Depends(get_session),
 ) -> MatchSelectionResponse:
-    require_mock_request(request_id)
+    await require_known_request(request_id, session)
     find_match(item_id, payload.matchId)
     return MatchSelectionResponse(itemId=item_id, matchId=payload.matchId)
 
 
 @router.get("/requests/{request_id}/summary")
-async def summary(request_id: str) -> SummaryResponse:
-    require_mock_request(request_id)
+async def summary(request_id: str, session: AsyncSession = Depends(get_session)) -> SummaryResponse:
+    await require_known_request(request_id, session)
     return fixtures.summary_response()
 
 
 @router.post("/requests/{request_id}/offer")
-async def create_offer(request_id: str) -> OfferResponse:
-    require_mock_request(request_id)
+async def create_offer(
+    request_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> OfferResponse:
+    await require_known_request(request_id, session)
     summary = fixtures.summary_response()
     return OfferResponse(
         requestId=request_id,

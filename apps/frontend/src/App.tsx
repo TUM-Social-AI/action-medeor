@@ -33,7 +33,10 @@ export default function App() {
     setLoadingType('extracting');
 
     try {
-      const [response] = await Promise.all([createImport(file), delay(EXTRACTION_LOADING_DURATION)]);
+      const [response] = await Promise.all([
+        createImport(file),
+        delay(EXTRACTION_LOADING_DURATION),
+      ]);
       setReviewData(response);
       setRequestId(response.requestId);
       setCurrentScreen('review');
@@ -75,7 +78,10 @@ export default function App() {
           )}
           {currentScreen === 'dashboard' && <TrendDashboard />}
           {currentScreen === 'ingestion' && (
-            <IngestionScreen onContinue={file => void handleImport(file)} error={workflowError} />
+            <IngestionScreen
+              onContinue={file => void handleImport(file)}
+              error={workflowError}
+            />
           )}
           {currentScreen === 'review' && (
             <ReviewItemsScreen

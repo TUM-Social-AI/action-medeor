@@ -1,4 +1,5 @@
 import type {
+  CustomColumnRequest,
   ErpMatch,
   ExtractedItem,
   HomeResponse,
@@ -57,6 +58,25 @@ export function updatePartner(requestId: string, payload: PartnerUpdate) {
   });
 }
 
+/** label='' resets that column back to its default (removes the rename). */
+export function updateColumnLabel(requestId: string, columnKey: string, label: string) {
+  return requestJson<Record<string, string>>(`/api/requests/${requestId}/column-labels`, {
+    method: 'PATCH',
+    body: JSON.stringify({ columnKey, label }),
+  });
+}
+
+/** Requests one more field to extract, after the fact - see ReviewItemsScreen's "Add column"
+ * control. Re-parses the original file server-side and returns the full, updated review payload
+ * (new attribute values merged into the existing items, availableColumns/attributeColumns
+ * updated) rather than just the one new column, since every item can gain a value at once. */
+export function addCustomColumn(requestId: string, column: CustomColumnRequest) {
+  return requestJson<ReviewResponse>(`/api/requests/${requestId}/custom-columns`, {
+    method: 'POST',
+    body: JSON.stringify(column),
+  });
+}
+
 export function startMatching(requestId: string) {
   return requestJson<MatchingResponse>(`/api/requests/${requestId}/matching`, {
     method: 'POST',
@@ -90,7 +110,13 @@ export function getTrends() {
 export function getFileType(fileName: string): ImportFileType {
   const extension = fileName.toLowerCase().split('.').pop();
 
-  if (extension === 'pdf' || extension === 'xlsx' || extension === 'xls') {
+  if (
+    extension === 'pdf' ||
+    extension === 'xlsx' ||
+    extension === 'xls' ||
+    extension === 'docx' ||
+    extension === 'csv'
+  ) {
     return extension;
   }
 
