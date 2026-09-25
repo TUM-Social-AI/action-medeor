@@ -345,8 +345,10 @@ the full architecture in the [detailed walkthrough](apps/backend/app/matching/RE
 The backend contains an explainable matching engine for normalized medicine and equipment
 inquiries. It combines exact, lexical, vector, and historical retrieval, applies versioned
 constraints, calculates packaging and availability evidence, and stores match runs and human
-decisions. The request UI now creates a saved draft, extracts an uploaded file, requires each line
-to be verified and classified, then queues matching for all lines. The backend worker runs while
+decisions. The request UI now creates a saved draft and extracts an uploaded file. Extraction
+suggests medicine or equipment from an explicit type column, specific units or item names; the
+LLM extraction path returns a type too. Ambiguous lines need a manual choice. Once every line
+is verified and classified, the UI queues matching for all lines. The backend worker runs while
 the API is running and recovers expired jobs after a restart. Results, progress, and selections
 remain available when the browser is closed or refreshed. The summary uses saved decisions;
 pricing and offer creation are not available in this workflow.

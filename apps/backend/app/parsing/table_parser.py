@@ -205,6 +205,7 @@ def parse_table_rows(
                 page=page,
                 row=row_number,
                 excerpt=excerpt,
+                source_type=values.get("domain", ""),
             )
         )
 

@@ -6,6 +6,8 @@ document, not per line, to keep this bounded and cheap. See app.parsing.llm_clie
 selection/dispatch.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.parsing.llm_client import LlmUnavailable, call_llm
@@ -24,6 +26,7 @@ class _LlmLineItem(BaseModel):
     name: str
     quantity: int | None = None
     unit: str = ""
+    domain: Literal["medicine", "equipment"] | None = None
     notes: str = ""
     priority: Priority = "medium"
     source_excerpt: str = ""
@@ -61,6 +64,11 @@ For each distinct requested item, extract:
   line that has more identifying detail in the text, that detail belongs IN the name, not in notes.
 - quantity: the requested amount as an integer, or null if not stated/illegible
 - unit: the unit of measure (e.g. "caps", "vials", "bags"), translated to English, or "" if unclear
+- domain: "medicine" or "equipment". First use an explicit type/category column or label
+  attached to this item if the source has one. Otherwise infer from the item's specific name
+  and context. A drug formulation is medicine; medical devices and consumable tools are
+  equipment. Use null when the distinction is genuinely unclear; do not infer from generic
+  units such as pieces, boxes or bags alone.
 - notes: qualifiers that are NOT part of the item's identity (packaging preference, brand
   preference, certification requirements, etc.), translated to English
 - priority: "critical" | "high" | "medium" | "low", inferred from urgency language, default "medium"
@@ -130,6 +138,7 @@ def extract_items_with_llm(
                 excerpt=entry.source_excerpt,
                 attributes=attributes,
                 confidence=_combine_confidence(entry.name_confidence, entry.quantity_confidence),
+                llm_domain=entry.domain,
             )
         )
     document.rows_detected = len(document.items)

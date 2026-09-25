@@ -43,6 +43,7 @@ class ParsedLineItem:
     priority: Priority = "medium"
     confidence: int | None = None
     status: ItemStatus = "needs_review"
+    domain: Literal["medicine", "equipment"] | None = None
     page: int = 0
     row: int = 0
     excerpt: str = ""

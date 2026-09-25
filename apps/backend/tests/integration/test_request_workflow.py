@@ -91,14 +91,37 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             assert uploaded.status_code == 200, uploaded.text
             items = uploaded.json()["items"]
             assert len(items) == 2
+            assert [item["domain"] for item in items] == ["equipment", "equipment"]
+            # Legacy review rows without a type receive the same suggestion on reopen.
+            async with async_session() as session:
+                await session.execute(
+                    text("""UPDATE request_items SET domain = NULL, name = 'Unspecified supply',
+                            attributes = '{"Product type":"Equipment"}'::jsonb
+                            WHERE id = :id"""),
+                    {"id": items[0]["id"]},
+                )
+                await session.commit()
+            reopened_review = await client.get(f"/api/requests/{request_id}/review")
+            assert reopened_review.json()["items"][0]["domain"] == "equipment"
+            async with async_session() as session:
+                await session.execute(
+                    text("UPDATE request_items SET name = :name, attributes = '{}'::jsonb WHERE id = :id"),
+                    {"id": items[0]["id"], "name": descriptions[0]},
+                )
+                await session.commit()
+            # Only genuinely ambiguous lines need a manual classification.
+            obscured = await client.patch(
+                f"/api/requests/{request_id}/items/{items[0]['id']}",
+                json={"name": "Unspecified supply", "domain": None},
+            )
+            assert obscured.status_code == 200
             blocked = await client.post(f"/api/requests/{request_id}/matching")
             assert blocked.status_code == 422
-            for item in items:
-                reviewed = await client.patch(
-                    f"/api/requests/{request_id}/items/{item['id']}",
-                    json={"domain": "equipment"},
-                )
-                assert reviewed.status_code == 200, reviewed.text
+            reviewed = await client.patch(
+                f"/api/requests/{request_id}/items/{items[0]['id']}",
+                json={"name": descriptions[0], "domain": "equipment"},
+            )
+            assert reviewed.status_code == 200
             await client.patch(
                 f"/api/requests/{request_id}/items/{items[0]['id']}", json={"quantity": -1}
             )

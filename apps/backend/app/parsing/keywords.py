@@ -240,6 +240,15 @@ def match_column_role(header_text: str) -> str | None:
         return None
     if match_item_number_column(header_text):
         return "item_number"
+    # Check this before generic "item"/"article" name keywords. Avoid a bare substring
+    # "type" so packaging/unit-type headers do not become product classifications.
+    if normalized in {
+        "type", "typ", "category", "categorie", "kategorie", "warengruppe",
+        "product type", "item type", "article type", "artikeltyp",
+        "product category", "item category", "article category", "artikelkategorie",
+        "type de produit", "categorie de produit", "نوع", "نوع المادة",
+    } or "medicine/equipment" in normalized:
+        return "domain"
     for role, keywords in COLUMN_KEYWORDS.items():
         if any(normalize(keyword) in normalized for keyword in keywords):
             return role

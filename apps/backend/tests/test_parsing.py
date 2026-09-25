@@ -527,3 +527,43 @@ def test_parse_csv_empty_file_warns() -> None:
 
     assert document.rows_detected == 0
     assert any("no rows" in warning for warning in document.warnings)
+
+
+def test_product_type_suggestions_use_specific_units_and_names() -> None:
+    from app.parsing.domain_inference import suggest_domain
+
+    assert suggest_domain("Unknown medicine", "tablets") == "medicine"
+    assert suggest_domain("Unknown supply", "pairs") == "equipment"
+    assert suggest_domain("Sterile catheter CH18", "pcs") == "equipment"
+    assert suggest_domain("Paracetamol 500 mg", "pcs") == "medicine"
+    assert suggest_domain("Unspecified supply", "pcs") is None
+    assert suggest_domain("Needles", "vials") is None
+
+
+def test_table_parser_uses_explicit_type_column_before_unit_guess() -> None:
+    rows = [
+        ["Item", "Quantity", "Unit", "Product type"],
+        ["Sterile supply", "10", "pcs", "Medicine"],
+        ["Sterile catheter CH18", "5", "pcs", "Equipment"],
+    ]
+    result = parse_table_rows(rows)
+    assert [item.domain for item in result.items] == ["medicine", "equipment"]
+    assert result.attribute_columns == []
+    assert match_column_role("Unit type") == "unit"
+
+
+def test_llm_extraction_accepts_type_from_source_or_item_name(monkeypatch) -> None:
+    from app.parsing import llm_extractor
+
+    def fake_call(prompt, schema):
+        assert "explicit type/category column" in prompt
+        return schema.model_validate({"items": [
+            {"name": "Generic clinical supply", "quantity": 2, "unit": "pcs",
+             "domain": "equipment", "name_confidence": 90, "quantity_confidence": 90},
+            {"name": "Amoxicillin capsules", "quantity": 20, "unit": "caps",
+             "domain": None, "name_confidence": 90, "quantity_confidence": 90},
+        ]})
+
+    monkeypatch.setattr(llm_extractor, "call_llm", fake_call)
+    result = llm_extractor.extract_items_with_llm("Clinical supply and amoxicillin capsules")
+    assert [item.domain for item in result.items] == ["equipment", "medicine"]

@@ -79,7 +79,7 @@ const STATUS_CFG: Record<
 };
 
 function needsManualReview(item: ExtractedItem) {
-  return item.status === 'low_confidence' || item.status === 'missing';
+  return item.status === 'low_confidence' || item.status === 'missing' || !item.domain;
 }
 
 /** A column header or attribute label that renames itself in place - click to edit, Enter/blur
@@ -408,8 +408,8 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
           <div className="mb-4">
             <h1 className="text-gray-900">Review Extracted Items</h1>
             <p className="text-gray-500 text-sm mt-0.5">
-              Verify that all extracted items are correct. Click any item name or action button to
-              open the source reference and make corrections.
+              Check the extracted items and suggested product types. Specific units and names are
+              classified automatically; edit a type if it is wrong or still unclear.
             </p>
           </div>
 

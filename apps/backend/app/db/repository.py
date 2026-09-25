@@ -17,6 +17,8 @@ from app.api.schemas import (
     SourceReference,
 )
 from app.db.models import ImportRequestRow, RequestItemRow, RequestSourceReferenceRow
+from app.parsing.domain_inference import suggest_domain
+from app.parsing.keywords import match_column_role
 from app.parsing.service import parse_upload
 from app.parsing.types import CustomColumnSpec, ParsedDocument
 
@@ -78,6 +80,7 @@ async def save_parsed_request(
             priority=parsed_item.priority,
             confidence=parsed_item.confidence,
             status=parsed_item.status,
+            domain=parsed_item.domain,
         )
         if parsed_item.excerpt:
             item.source_reference = RequestSourceReferenceRow(
@@ -111,6 +114,30 @@ async def get_request_by_id(session: AsyncSession, request_id: str) -> ImportReq
     )
     result = await session.execute(statement)
     return result.scalar_one_or_none()
+
+
+async def suggest_missing_item_domains(
+    session: AsyncSession, request: ImportRequestRow
+) -> None:
+    """Fill suggestions for review rows uploaded before automatic classification existed."""
+    if request.workflow_status != "review":
+        return
+    changed = False
+    for item in request.items:
+        if item.domain is None:
+            source_type = next(
+                (
+                    value for label, value in (item.attributes or {}).items()
+                    if match_column_role(label) == "domain"
+                ),
+                "",
+            )
+            domain = suggest_domain(item.name, item.unit, source_type=source_type)
+            if domain:
+                item.domain = domain
+                changed = True
+    if changed:
+        await session.commit()
 
 
 async def get_item_by_id(session: AsyncSession, item_id: int) -> RequestItemRow | None:

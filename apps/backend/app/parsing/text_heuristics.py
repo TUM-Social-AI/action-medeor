@@ -2,6 +2,7 @@
 
 import re
 
+from app.parsing.domain_inference import suggest_domain
 from app.parsing.keywords import PRIORITY_TOKENS, PROCUREMENT_PRIORITY_TOKENS, UNIT_TOKENS
 from app.parsing.types import ItemStatus, ParsedLineItem, Priority
 
@@ -103,6 +104,8 @@ def build_item(
     row: int = 0,
     excerpt: str = "",
     confidence: int | None = None,
+    source_type: str = "",
+    llm_domain: str | None = None,
 ) -> ParsedLineItem:
     status, default_confidence = classify_item(name, quantity, unit)
     return ParsedLineItem(
@@ -118,6 +121,11 @@ def build_item(
         priority=priority or detect_priority(f"{name} {notes}") or default_priority or "medium",
         confidence=confidence if confidence is not None else default_confidence,
         status=status,
+        domain=(
+            llm_domain
+            if llm_domain in {"medicine", "equipment"}
+            else suggest_domain(name, unit, source_type=source_type)
+        ),
         page=page,
         row=row,
         excerpt=excerpt.strip(),

@@ -162,6 +162,7 @@ async def upload_request_file(
 async def review(request_id: str, session: AsyncSession = Depends(get_session)) -> ReviewResponse:
     request = await repository.get_request_by_id(session, request_id)
     if request is not None:
+        await repository.suggest_missing_item_domains(session, request)
         return repository.to_review_response(request)
 
     require_mock_request(request_id)
@@ -311,6 +312,7 @@ async def start_matching(
         return state
     if request.workflow_status not in {"review", "matching_failed"}:
         raise HTTPException(status_code=409, detail="Upload a file before matching")
+    await repository.suggest_missing_item_domains(session, request)
     if not request.items or any(item.status != "verified" or not item.domain for item in request.items):
         raise HTTPException(status_code=422, detail="Verify and classify every item before matching")
     for item in request.items:
