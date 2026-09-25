@@ -1,4 +1,4 @@
-export type Screen = 'home' | 'ingestion' | 'review' | 'matching' | 'summary' | 'dashboard';
+export type Screen = 'home' | 'ingestion' | 'review' | 'matching' | 'summary' | 'dashboard' | 'history';
 export type WorkflowStep = 'ingestion' | 'review' | 'matching' | 'summary';
 export type LoadingType = 'extracting' | 'matching';
 
@@ -80,6 +80,7 @@ export type ExtractedItem = {
   priority: Priority;
   confidence: number | null;
   status: ItemStatus;
+  domain?: 'medicine' | 'equipment' | null;
 };
 
 export type ReviewCounts = {
@@ -115,7 +116,7 @@ export type ReviewResponse = {
 };
 
 export type ItemUpdate = Partial<
-  Pick<ExtractedItem, 'name' | 'quantity' | 'unit' | 'notes' | 'itemNumber' | 'shelfLife' | 'priority'>
+  Pick<ExtractedItem, 'name' | 'quantity' | 'unit' | 'notes' | 'itemNumber' | 'shelfLife' | 'priority' | 'domain'>
 >;
 
 export type PartnerUpdate = Pick<PartnerDetails, 'partner' | 'region' | 'requestId' | 'contact'>;

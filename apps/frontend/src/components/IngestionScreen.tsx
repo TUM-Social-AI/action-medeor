@@ -9,14 +9,14 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { getRecentImports } from '../api/client';
-import type { RecentImport } from '../api/types';
+import { listRequests, type SavedRequest } from '../api/workflow';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { WorkflowStepper } from './WorkflowStepper';
 
 type IngestionScreenProps = {
   onContinue: (file: File) => void;
   error?: string | null;
+  onOpenRequest: (request: SavedRequest) => void;
 };
 
 function isValidFile(file: File) {
@@ -25,10 +25,10 @@ function isValidFile(file: File) {
   );
 }
 
-export function IngestionScreen({ onContinue, error: workflowError }: IngestionScreenProps) {
+export function IngestionScreen({ onContinue, error: workflowError, onOpenRequest }: IngestionScreenProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [imports, setImports] = useState<RecentImport[]>([]);
+  const [imports, setImports] = useState<SavedRequest[]>([]);
   const [isLoadingImports, setIsLoadingImports] = useState(true);
   const [importsError, setImportsError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -36,7 +36,7 @@ export function IngestionScreen({ onContinue, error: workflowError }: IngestionS
   useEffect(() => {
     let mounted = true;
 
-    getRecentImports()
+    listRequests()
       .then(response => {
         if (mounted) {
           setImports(response);
@@ -206,49 +206,23 @@ export function IngestionScreen({ onContinue, error: workflowError }: IngestionS
             <div className="flex items-center gap-2 mb-4">
               <Clock size={14} className="text-gray-400" />
               <h3 className="text-gray-900 text-sm" style={{ fontWeight: 600 }}>
-                Recent Imports
+                Recent Requests
               </h3>
             </div>
             {isLoadingImports && <LoadingPanel label="Loading imports" />}
             {importsError && <ErrorPanel message={importsError} />}
             {!isLoadingImports && !importsError && (
               <div className="space-y-2.5">
-                {imports.map(item => (
-                  <div
-                    key={item.id}
-                    className="p-3 bg-gray-50 rounded-lg hover:bg-gray-100 cursor-pointer transition-colors border border-gray-100"
+                {imports.filter(item => item.sourceFile).slice(0, 5).map(item => (
+                  <button
+                    key={item.requestId}
+                    onClick={() => onOpenRequest(item)}
+                    className="block w-full text-left p-3 bg-gray-50 rounded-lg hover:bg-gray-100 border border-gray-100"
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div
-                          className="text-xs text-gray-900 truncate"
-                          style={{ fontWeight: 500, maxWidth: 156 }}
-                          title={item.fileName}
-                        >
-                          {item.fileName}
-                        </div>
-                        <div className="text-xs text-gray-500 mt-0.5">{item.partner}</div>
-                      </div>
-                      <div className="flex-shrink-0">
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-xs ${
-                            item.type === 'pdf'
-                              ? 'bg-red-100 text-red-600'
-                              : item.type === 'docx'
-                                ? 'bg-blue-100 text-blue-700'
-                                : 'bg-green-100 text-green-700'
-                          }`}
-                          style={{ fontWeight: 600 }}
-                        >
-                          {item.type.toUpperCase()}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between mt-1.5">
-                      <span className="text-xs text-gray-400">{item.date}</span>
-                      <span className="text-xs text-gray-500">{item.items} items</span>
-                    </div>
-                  </div>
+                    <div className="text-xs font-medium text-gray-900 truncate" title={item.sourceFile || ''}>{item.sourceFile}</div>
+                    <div className="text-xs text-gray-500 mt-1">{item.partner || item.requestId}</div>
+                    <div className="text-xs text-gray-400 mt-1">{item.itemCount} items · {item.status.replace(/_/g, ' ')}</div>
+                  </button>
                 ))}
               </div>
             )}

@@ -1,421 +1,172 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, ChevronDown, ChevronUp, MapPin } from 'lucide-react';
-import type {
-  MatchCandidateView,
-  MatchingScreenView,
-  MatchingWorkflowApi,
-  RequestedLineView,
-} from '../features/matching/models';
+import { ArrowRight, RefreshCw } from 'lucide-react';
+import {
+  decideRequestMatch,
+  getRequestMatching,
+  startRequestMatching,
+  type SavedMatching,
+} from '../api/workflow';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { WorkflowStepper } from './WorkflowStepper';
 
-type SmartMatchingScreenProps = {
-  requestId: string;
-  initialData?: MatchingScreenView | null;
-  api: MatchingWorkflowApi;
-  onContinue: () => void;
-};
+type Props = { requestId: string; onContinue: () => void };
+type PendingChoice = { itemId: number; candidateId: string } | null;
 
-const PRIORITY_COLOR: Record<string, string> = {
-  critical: 'bg-red-100 text-red-700',
-  high: 'bg-orange-100 text-orange-700',
-  medium: 'bg-yellow-100 text-yellow-700',
-};
-
-const VISIBLE_COUNT = 3;
-
-export function SmartMatchingScreen({ requestId, initialData, api, onContinue }: SmartMatchingScreenProps) {
-  const [data, setData] = useState<MatchingScreenView | null>(initialData ?? null);
-  const [selectedMatches, setSelectedMatches] = useState<Record<string, string>>(
-    initialData?.selectedCandidateIdsByLine ?? {},
-  );
-  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+export function SmartMatchingScreen({ requestId, onContinue }: Props) {
+  const [data, setData] = useState<SavedMatching | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(!initialData);
+  const [pendingChoice, setPendingChoice] = useState<PendingChoice>(null);
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (initialData) {
-      setData(initialData);
-      setSelectedMatches(initialData.selectedCandidateIdsByLine);
-      setIsLoading(false);
-      return;
-    }
+    let active = true;
+    const refresh = () => getRequestMatching(requestId)
+      .then(value => { if (active) { setData(value); setError(null); } })
+      .catch(caught => { if (active) setError(String(caught)); });
+    void refresh();
+    const timer = window.setInterval(() => {
+      if (active) void refresh();
+    }, 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [requestId]);
 
-    let mounted = true;
-    setIsLoading(true);
-    api.start(requestId)
-      .then(response => {
-        if (mounted) {
-          setData(response);
-          setSelectedMatches(response.selectedCandidateIdsByLine);
-          setError(null);
-        }
-      })
-      .catch(caught => {
-        if (mounted) {
-          setError(caught instanceof Error ? caught.message : 'Unable to reach backend');
-        }
-      })
-      .finally(() => {
-        if (mounted) {
-          setIsLoading(false);
-        }
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, [api, initialData, requestId]);
-
-  const selectMatch = async (lineId: string, candidateId: string) => {
-    const previousSelection = selectedMatches[lineId];
-    setSelectedMatches(prev => ({ ...prev, [lineId]: candidateId }));
-
+  const choose = async (itemId: number, candidateId?: string, overrideReason?: string) => {
+    setSaving(true);
     try {
-      await api.selectCandidate(requestId, lineId, candidateId);
+      setData(await decideRequestMatch(requestId, itemId, {
+        candidateId,
+        noMatch: !candidateId,
+        overrideReason,
+      }));
+      setPendingChoice(null);
+      setReason('');
       setError(null);
     } catch (caught) {
-      setSelectedMatches(prev => {
-        const next = { ...prev };
-        if (previousSelection) next[lineId] = previousSelection;
-        else delete next[lineId];
-        return next;
-      });
-      setError(caught instanceof Error ? caught.message : 'Unable to update selected match');
+      setError(caught instanceof Error ? caught.message : 'Could not save the decision');
+    } finally {
+      setSaving(false);
     }
   };
 
-  const toggleExpand = (itemId: string) =>
-    setExpandedItems(prev => {
-      const next = new Set(prev);
-      if (next.has(itemId)) {
-        next.delete(itemId);
-      } else {
-        next.add(itemId);
-      }
-      return next;
-    });
+  const retry = async () => {
+    try {
+      setData(await startRequestMatching(requestId));
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not retry matching');
+    }
+  };
 
-  if (isLoading) {
-    return (
-      <div className="p-6">
-        <LoadingPanel label="Loading ERP match candidates" />
-      </div>
-    );
-  }
-
-  if (!data) {
-    return (
-      <div className="p-6">
-        <ErrorPanel message={error ?? 'Matching data is unavailable'} />
-      </div>
-    );
-  }
+  if (!data) return <div className="p-6"><LoadingPanel label="Loading saved matching results" /></div>;
 
   return (
     <div className="p-6">
       <div className="bg-white rounded-xl border border-gray-200 px-6 py-4 mb-5">
         <WorkflowStepper currentStep="matching" />
       </div>
-
+      <h1 className="text-gray-900 mb-1">Smart Matching</h1>
+      <p className="text-sm text-gray-500 mb-4">
+        {data.completed} of {data.total} items matched. Results and selections are saved to this request.
+      </p>
       {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
-
-      <div className="mb-5">
-        <h1 className="text-gray-900">Smart Matching</h1>
-        <p className="text-gray-500 text-sm mt-0.5">
-          Review and adjust ERP product matches for each requested item. Best-fit options are
-          pre-selected. Scroll through all items and click Continue at the bottom.
-        </p>
-      </div>
-
-      <div className="space-y-4">
-        {data.requestedLines.map(item => (
-          <MatchingItem
-            key={item.id}
-            item={item}
-            matches={data.candidatesByLine[item.id] ?? []}
-            selectedId={selectedMatches[item.id]}
-            lineError={data.errorsByLine[item.id]}
-            isExpanded={expandedItems.has(item.id)}
-            onToggleExpand={() => toggleExpand(item.id)}
-            onSelect={candidateId => void selectMatch(item.id, candidateId)}
-          />
+      {data.status === 'matching_failed' && (
+        <button onClick={() => void retry()} className="mb-4 flex items-center gap-2 px-4 py-2 bg-amber-100 text-amber-800 rounded-lg">
+          <RefreshCw size={14} /> Retry failed items
+        </button>
+      )}
+      <div className="space-y-5">
+        {data.lines.map(line => (
+          <section key={line.itemId} className="bg-white rounded-xl border border-gray-200 p-5">
+            <div className="flex justify-between gap-4 mb-3">
+              <div>
+                <h2 className="font-semibold text-gray-900">{line.name}</h2>
+                <p className="text-xs text-gray-500">{line.domain} · {line.quantity ?? 'Unknown quantity'} {line.unit}</p>
+              </div>
+              <span className="text-xs text-gray-500">{line.status}</span>
+            </div>
+            {line.error && <p className="text-sm text-red-700 mb-3">{line.error}</p>}
+            {(line.status === 'pending' || line.status === 'running') && <LoadingPanel label={line.status === 'running' ? 'Matching this item' : 'Waiting for matching worker'} />}
+            {line.status === 'completed' && (
+              <>
+                <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+                  {line.candidates.map(candidate => (
+                    <button
+                      key={candidate.candidate_id}
+                      disabled={saving}
+                      onClick={() => {
+                        if (candidate.rank === 1) void choose(line.itemId, candidate.candidate_id);
+                        else { setPendingChoice({ itemId: line.itemId, candidateId: candidate.candidate_id }); setReason(''); }
+                      }}
+                      className={`text-left rounded-lg border-2 p-4 hover:border-[#1B4E8A] ${
+                        line.selectedCandidateId === candidate.candidate_id ? 'border-[#1B4E8A] bg-blue-50' : 'border-gray-200'
+                      }`}
+                    >
+                      <div className="text-xs text-gray-500 mb-1">#{candidate.rank} · {candidate.item_number}</div>
+                      <div className="font-semibold text-sm text-gray-900 mb-2">{candidate.descriptions[0]}</div>
+                      <div className="text-xs text-gray-600">Availability: {candidate.availability_status.replace(/_/g, ' ')}</div>
+                      <div className="text-xs text-blue-700 mt-2 space-y-0.5">
+                        {candidate.retrieval_evidence.map((evidence, index) => (
+                          <div key={`${evidence.retriever}-${index}`}>
+                            {evidence.retriever} rank {evidence.rank}
+                            {typeof evidence.score === 'number' ? ` · retrieval score ${evidence.score.toFixed(3)}` : ''}
+                            {typeof evidence.details.model_id === 'string' ? ` · ${evidence.details.model_id}` : ''}
+                          </div>
+                        ))}
+                      </div>
+                      {candidate.constraints.map(value => (
+                        <p key={value.code} className={`text-xs mt-1 ${value.outcome === 'pass' ? 'text-gray-500' : 'text-amber-700'}`}>{value.outcome}: {value.message}</p>
+                      ))}
+                      {candidate.warnings.map(warning => (
+                        <p key={warning} className="text-xs text-amber-700 mt-1">{warning}</p>
+                      ))}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  disabled={saving}
+                  onClick={() => void choose(line.itemId)}
+                  className={`mt-3 text-sm px-3 py-2 rounded-lg border ${line.decisionType === 'no_match' ? 'border-[#1B4E8A] bg-blue-50' : 'border-gray-300'}`}
+                >
+                  No match
+                </button>
+                {line.decisionType && <span className="ml-3 text-xs text-green-700">Decision saved</span>}
+              </>
+            )}
+          </section>
         ))}
       </div>
-
       <div className="mt-8 flex justify-end">
         <button
+          disabled={data.status !== 'complete'}
           onClick={onContinue}
-          className="flex items-center gap-2 px-8 py-3 bg-[#1B4E8A] text-white rounded-xl hover:bg-[#163d6d] transition-colors shadow-md"
-          style={{ fontWeight: 700 }}
+          className="flex items-center gap-2 px-6 py-3 rounded-lg bg-[#1B4E8A] text-white disabled:bg-gray-300"
         >
-          Continue to Order Summary
-          <ArrowRight size={16} />
+          Continue to Summary <ArrowRight size={16} />
         </button>
       </div>
-    </div>
-  );
-}
-
-function MatchingItem({
-  item,
-  matches,
-  selectedId,
-  lineError,
-  isExpanded,
-  onToggleExpand,
-  onSelect,
-}: {
-  item: RequestedLineView;
-  matches: MatchCandidateView[];
-  selectedId?: string;
-  lineError?: string;
-  isExpanded: boolean;
-  onToggleExpand: () => void;
-  onSelect: (matchId: string) => void;
-}) {
-  const hasMore = matches.length > VISIBLE_COUNT;
-  const topMatches = matches.slice(0, VISIBLE_COUNT);
-  const visibleMatches = isExpanded ? matches : topMatches;
-  const selectedIndex = matches.findIndex(match => match.id === selectedId);
-  const extraSelectedMatch = !isExpanded && selectedIndex >= VISIBLE_COUNT ? matches[selectedIndex] : null;
-
-  return (
-    <div className="bg-white rounded-xl border-2 border-gray-200 overflow-hidden">
-      <div className="px-5 py-3.5 bg-gray-50 border-b border-gray-200 flex items-center gap-3">
-        <MapPin size={15} className="text-gray-400 flex-shrink-0" />
-        <div className="flex-1 flex items-center gap-3 flex-wrap">
-          <span className="text-sm text-gray-900" style={{ fontWeight: 700 }}>
-            {item.name}
-          </span>
-          <span className="text-sm text-gray-400">
-            Qty: {item.quantity?.toLocaleString() ?? 'Not specified'} {item.unit}
-          </span>
-          <span className="text-gray-300">-</span>
-          <span className="text-sm text-gray-500">
-            Priority:{' '}
-            <span
-              className={`text-xs px-1.5 py-0.5 rounded-full ${PRIORITY_COLOR[item.priority ?? 'medium']}`}
-              style={{ fontWeight: 600 }}
-            >
-              {item.priority ?? 'not set'}
-            </span>
-          </span>
-        </div>
-        <span className="flex-shrink-0 px-2.5 py-1 bg-blue-100 text-blue-700 rounded-full text-xs" style={{ fontWeight: 600 }}>
-          VERIFIED REQUEST
-        </span>
-      </div>
-
-      <div className="p-5">
-        {lineError && <div className="mb-3"><ErrorPanel message={lineError} /></div>}
-        <div
-          className="grid gap-3"
-          style={{ gridTemplateColumns: `repeat(${Math.min(visibleMatches.length, VISIBLE_COUNT)}, 1fr)` }}
-        >
-          {visibleMatches.map(match => (
-            <MatchCard
-              key={match.id}
-              match={match}
-              isBestFit={matches.indexOf(match) === 0}
-              isSelected={selectedId === match.id}
-              onSelect={() => onSelect(match.id)}
+      {pendingChoice && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-5">
+          <div className="bg-white rounded-xl p-6 w-full max-w-md">
+            <h2 className="font-semibold mb-2">Why choose this alternative?</h2>
+            <textarea
+              value={reason}
+              onChange={event => setReason(event.target.value)}
+              className="w-full border rounded-lg p-3 text-sm"
+              rows={3}
+              autoFocus
             />
-          ))}
-        </div>
-
-        {extraSelectedMatch && (
-          <div className="mt-4">
-            <div className="flex items-center gap-2 mb-2.5">
-              <div className="flex-1 h-px bg-gray-200" />
-              <span className="text-xs text-gray-400 px-1 whitespace-nowrap">Your current selection</span>
-              <div className="flex-1 h-px bg-gray-200" />
-            </div>
-            <div
-              onClick={() => onSelect(extraSelectedMatch.id)}
-              className="border-2 border-[#1B4E8A] rounded-xl p-3.5 bg-blue-50/40 flex items-center gap-5 cursor-pointer hover:bg-blue-50/60 transition-colors"
-            >
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <div className="w-5 h-5 rounded-full border-2 border-[#1B4E8A] bg-[#1B4E8A] flex items-center justify-center">
-                  <div className="w-2 h-2 rounded-full bg-white" />
-                </div>
-                <span className="text-xl text-gray-900" style={{ fontWeight: 800, lineHeight: 1 }}>
-                  #{extraSelectedMatch.rank}
-                </span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-gray-900 mb-1.5" style={{ fontWeight: 700 }}>
-                  {extraSelectedMatch.name}
-                </div>
-                <MatchDetails match={extraSelectedMatch} compact />
-              </div>
-              <span className="flex-shrink-0 px-2.5 py-1 bg-[#1B4E8A] text-white rounded-full text-xs" style={{ fontWeight: 700 }}>
-                SELECTED
-              </span>
+            <div className="flex justify-end gap-3 mt-4">
+              <button onClick={() => setPendingChoice(null)}>Cancel</button>
+              <button
+                disabled={!reason.trim() || saving}
+                onClick={() => void choose(pendingChoice.itemId, pendingChoice.candidateId, reason.trim())}
+                className="px-4 py-2 rounded-lg bg-[#1B4E8A] text-white disabled:bg-gray-300"
+              >Save decision</button>
             </div>
           </div>
-        )}
-
-        {hasMore && (
-          <div className="mt-3">
-            <button
-              onClick={onToggleExpand}
-              className="flex items-center gap-1 text-sm text-[#1B4E8A] hover:underline"
-              style={{ fontWeight: 500 }}
-            >
-              {isExpanded ? (
-                <>
-                  <ChevronUp size={14} /> Show fewer options
-                </>
-              ) : (
-                <>
-                  <ChevronDown size={14} /> See {matches.length - VISIBLE_COUNT} more option
-                  {matches.length - VISIBLE_COUNT > 1 ? 's' : ''}
-                </>
-              )}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function MatchCard({
-  match,
-  isBestFit,
-  isSelected,
-  onSelect,
-}: {
-  match: MatchCandidateView;
-  isBestFit: boolean;
-  isSelected: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      onClick={onSelect}
-      className={`text-left border-2 rounded-xl p-4 cursor-pointer transition-all select-none ${
-        isSelected ? 'border-[#1B4E8A] bg-blue-50/40 shadow-sm' : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
-      }`}
-    >
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div
-            className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
-              isSelected ? 'border-[#1B4E8A] bg-[#1B4E8A]' : 'border-gray-300'
-            }`}
-          >
-            {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
-          </div>
-          <span className="text-2xl leading-none text-gray-900" style={{ fontWeight: 800 }}>
-            #{match.rank}
-          </span>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          {isBestFit && (
-            <span className="px-1.5 py-0.5 bg-teal-100 text-teal-700 rounded text-xs" style={{ fontWeight: 700 }}>
-              BEST FIT
-            </span>
-          )}
-          <ReviewBadge status={match.reviewStatus} />
-          <AvailabilityBadge status={match.availabilityStatus} />
-        </div>
-      </div>
-      <div className="text-sm text-gray-900 mb-3 leading-snug" style={{ fontWeight: 700 }}>
-        {match.name}
-      </div>
-      <MatchDetails match={match} />
-      {(match.constraintMessages[0] || match.warnings[0]) && (
-        <p className="mt-3 text-xs text-amber-700 leading-snug">
-          {match.constraintMessages[0] ?? match.warnings[0]}
-        </p>
       )}
-    </button>
-  );
-}
-
-function MatchDetails({ match, compact }: { match: MatchCandidateView; compact?: boolean }) {
-  const rows = [
-    { label: 'SKU', value: match.itemNumber, mono: true },
-    { label: 'MFR', value: match.manufacturer },
-    {
-      label: 'AVAIL.',
-      value: match.availabilityDetail ?? availabilityLabel(match.availabilityStatus),
-      highlight: match.availabilityStatus === 'on_hand_sufficient' ? 'green' : 'red',
-    },
-  ].filter(row => row.value);
-
-  if (compact) {
-    return (
-      <div className="flex flex-wrap gap-4">
-        {rows.map(row => (
-          <div key={row.label} className="flex items-center gap-1.5">
-            <span className="text-gray-400" style={{ fontSize: 11, fontWeight: 600 }}>
-              {row.label}
-            </span>
-            <span
-              className={`text-xs ${
-                row.highlight === 'red'
-                  ? 'text-red-600'
-                  : row.highlight === 'green'
-                    ? 'text-green-700'
-                    : 'text-gray-700'
-              } ${row.mono ? 'font-mono' : ''}`}
-              style={{ fontWeight: row.highlight ? 700 : 500 }}
-            >
-              {row.value}
-            </span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-1.5">
-      {rows.map(row => (
-        <div key={row.label} className="flex items-start gap-2">
-          <span className="text-gray-400 flex-shrink-0" style={{ fontSize: 11, fontWeight: 600, width: 36, paddingTop: 1 }}>
-            {row.label}
-          </span>
-          <span
-            className={`text-xs break-all ${
-              row.highlight === 'red'
-                ? 'text-red-600'
-                : row.highlight === 'green'
-                  ? 'text-green-700'
-                  : 'text-gray-700'
-            } ${row.mono ? 'font-mono' : ''}`}
-            style={{ fontWeight: row.highlight ? 700 : 500 }}
-          >
-            {row.value}
-          </span>
-        </div>
-      ))}
     </div>
   );
-}
-
-function ReviewBadge({ status }: { status: MatchCandidateView['reviewStatus'] }) {
-  if (status === 'unknown') return null;
-  const style = status === 'pass' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-xs ${style}`} style={{ fontWeight: 700 }}>
-      {status.toUpperCase()}
-    </span>
-  );
-}
-
-function AvailabilityBadge({ status }: { status: MatchCandidateView['availabilityStatus'] }) {
-  if (status === 'on_hand_sufficient' || status === 'unknown') return null;
-  return (
-    <span className="px-1.5 py-0.5 bg-red-100 text-red-600 rounded text-xs" style={{ fontWeight: 700 }}>
-      {availabilityLabel(status).toUpperCase()}
-    </span>
-  );
-}
-
-function availabilityLabel(status: MatchCandidateView['availabilityStatus']) {
-  return status.replace(/_/g, ' ');
 }

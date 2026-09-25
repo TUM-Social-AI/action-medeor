@@ -58,29 +58,32 @@ class PostgresCatalogRepository:
         result = await self._session.execute(
             text(
                 """
-                WITH versions AS (
+                WITH snapshot AS (
+                    SELECT import_sequence FROM catalog_imports
+                    WHERE CAST(combined_source_snapshot_id AS TEXT) = :snapshot_id
+                ), versions AS (
                     SELECT v.*,
                            ROW_NUMBER() OVER (
                                PARTITION BY v.item_number ORDER BY v.version_sequence DESC
                            ) AS row_number
                     FROM catalog_item_versions v
-                    WHERE (
-                        CAST(:snapshot_id AS TEXT) IS NULL
-                        OR CAST(v.source_snapshot_id AS TEXT) = :snapshot_id
-                    )
+                    LEFT JOIN catalog_imports vi ON vi.combined_source_snapshot_id = v.source_snapshot_id
+                    WHERE CAST(:snapshot_id AS TEXT) IS NULL
+                       OR vi.import_sequence <= (SELECT import_sequence FROM snapshot)
+                       OR ((SELECT import_sequence FROM snapshot) IS NULL
+                           AND CAST(v.source_snapshot_id AS TEXT) = :snapshot_id)
                 ), inventory AS (
                     SELECT i.*,
                            ROW_NUMBER() OVER (
                                PARTITION BY i.item_number ORDER BY i.inventory_sequence DESC
                            ) AS row_number
                     FROM inventory_snapshots i
-                    WHERE (
-                        CAST(:snapshot_id AS TEXT) IS NULL
-                        OR CAST(i.source_snapshot_id AS TEXT) = :snapshot_id
-                    )
+                    WHERE CAST(:snapshot_id AS TEXT) IS NULL
+                       OR CAST(i.source_snapshot_id AS TEXT) = :snapshot_id
                 )
-                SELECT c.item_number, c.domain,
-                       (c.active AND c.matching_eligible AND NOT c.source_missing) AS active,
+                SELECT c.item_number, COALESCE(v.domain, c.domain) AS domain,
+                       (c.active AND COALESCE(v.matching_eligible, c.matching_eligible) AND
+                        (CAST(:snapshot_id AS TEXT) IS NOT NULL OR NOT c.source_missing)) AS active,
                        c.quality_blocked,
                        v.descriptions, v.attributes, v.manufacturer, v.brand,
                        v.family_id, v.package, v.replenishment_method, v.t1,
@@ -92,7 +95,8 @@ class PostgresCatalogRepository:
                 JOIN versions v ON v.item_number = c.item_number AND v.row_number = 1
                 JOIN source_snapshots s ON s.id = v.source_snapshot_id
                 LEFT JOIN inventory i ON i.item_number = c.item_number AND i.row_number = 1
-                WHERE c.domain = :domain
+                WHERE COALESCE(v.domain, c.domain) = :domain
+                  AND (CAST(:snapshot_id AS TEXT) IS NULL OR i.id IS NOT NULL)
                 ORDER BY c.item_number
                 """
             ),
@@ -167,16 +171,20 @@ class PgVectorRepository:
         result = await self._session.execute(
             text(
                 """
-                WITH latest_versions AS (
-                    SELECT v.id, v.item_number,
+                WITH snapshot AS (
+                    SELECT import_sequence FROM catalog_imports
+                    WHERE CAST(combined_source_snapshot_id AS TEXT) = :snapshot_id
+                ), latest_versions AS (
+                    SELECT v.id, v.item_number, v.domain, v.matching_eligible,
                            ROW_NUMBER() OVER (
                                PARTITION BY v.item_number ORDER BY v.version_sequence DESC
                            ) AS row_number
                     FROM catalog_item_versions v
-                    WHERE (
-                        CAST(:snapshot_id AS TEXT) IS NULL
-                        OR CAST(v.source_snapshot_id AS TEXT) = :snapshot_id
-                    )
+                    LEFT JOIN catalog_imports vi ON vi.combined_source_snapshot_id = v.source_snapshot_id
+                    WHERE CAST(:snapshot_id AS TEXT) IS NULL
+                       OR vi.import_sequence <= (SELECT import_sequence FROM snapshot)
+                       OR ((SELECT import_sequence FROM snapshot) IS NULL
+                           AND CAST(v.source_snapshot_id AS TEXT) = :snapshot_id)
                 )
                 SELECT lv.item_number,
                        1 - (pe.embedding <=> CAST(:embedding AS vector)) AS similarity
@@ -184,10 +192,16 @@ class PgVectorRepository:
                 JOIN latest_versions lv ON lv.id = pe.catalog_item_version_id
                                          AND lv.row_number = 1
                 JOIN catalog_items c ON c.item_number = lv.item_number
-                WHERE pe.model_id = :model_id AND c.domain = :domain
+                WHERE pe.model_id = :model_id
+                  AND COALESCE(lv.domain, c.domain) = :domain
                   AND c.active = TRUE
-                  AND c.matching_eligible = TRUE
-                  AND c.source_missing = FALSE
+                  AND COALESCE(lv.matching_eligible, c.matching_eligible) = TRUE
+                  AND (CAST(:snapshot_id AS TEXT) IS NOT NULL OR c.source_missing = FALSE)
+                  AND (CAST(:snapshot_id AS TEXT) IS NULL OR EXISTS (
+                      SELECT 1 FROM inventory_snapshots si
+                      WHERE si.item_number = lv.item_number
+                        AND CAST(si.source_snapshot_id AS TEXT) = :snapshot_id
+                  ))
                 ORDER BY pe.embedding <=> CAST(:embedding AS vector), lv.item_number
                 LIMIT :limit
                 """

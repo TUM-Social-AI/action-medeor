@@ -342,12 +342,33 @@ the full architecture in the [detailed walkthrough](apps/backend/app/matching/RE
 
 ## Product Matching
 
-The backend now contains an explainable matching foundation for normalized medicine and medical-
-equipment inquiries. It combines exact, lexical, vector, and historical retrieval, applies
-conservative versioned constraints, calculates packaging and availability evidence, and stores both
-matching runs and subsequent human decisions. Source extraction from Excel, Outlook, SharePoint, or
-ERP systems remains outside the matching package. Frontend contracts and a real adapter are prepared,
-but the visible application still selects the fixture workflow until extraction integration is ready.
+The backend contains an explainable matching engine for normalized medicine and equipment
+inquiries. It combines exact, lexical, vector, and historical retrieval, applies versioned
+constraints, calculates packaging and availability evidence, and stores match runs and human
+decisions. The request UI now creates a saved draft, extracts an uploaded file, requires each line
+to be verified and classified, then queues matching for all lines. The backend worker runs while
+the API is running and recovers expired jobs after a restart. Results, progress, and selections
+remain available when the browser is closed or refreshed. The summary uses saved decisions;
+pricing and offer creation are not available in this workflow.
+
+Apply the current migrations with `uv run alembic upgrade head` before using this workflow.
+Import a catalog first through `POST /api/v1/catalog-imports` or the catalog import job. The
+catalog snapshot is fixed when request matching starts. If `EMBEDDING_PROVIDER` is configured,
+the matching worker generates query embeddings and includes vector retrieval; with the setting
+empty, exact and lexical retrieval still run.
+
+```text
+POST /api/requests                        create draft
+POST /api/requests/{id}/file              upload and extract
+GET  /api/requests                        list saved requests
+GET  /api/requests/{id}/review            reopen extraction and review
+POST /api/requests/{id}/matching          queue or retry matching
+GET  /api/requests/{id}/matching          progress, candidates, decisions
+POST /api/requests/{id}/items/{item}/decision
+GET  /api/requests/{id}/summary
+```
+
+The standalone matching API remains available:
 
 ```text
 POST /api/v1/match-runs

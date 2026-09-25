@@ -45,19 +45,24 @@ async def save_parsed_request(
     parsed: ParsedDocument,
     file_name: str,
     raw_file: bytes | None = None,
+    request_id: str | None = None,
 ) -> ImportRequestRow:
-    request_id = generate_request_id()
-    request = ImportRequestRow(
-        request_id=request_id,
-        source_file_name=file_name,
-        rows_detected=parsed.rows_detected,
-        request_date=dt.date.today().isoformat(),
-        used_llm_fallback=parsed.used_llm_fallback,
-        parser_warnings=parsed.warnings,
-        attribute_columns=parsed.attribute_columns,
-        available_columns=parsed.available_columns,
-        raw_file=raw_file,
-    )
+    request = await get_request_by_id(session, request_id) if request_id else None
+    if request_id and (request is None or request.workflow_status != "draft"):
+        raise ValueError("Only an existing draft request can receive a file")
+    if request is None:
+        request_id = generate_request_id()
+        request = ImportRequestRow(request_id=request_id, source_file_name="")
+    request.source_file_name = file_name
+    request.rows_detected = parsed.rows_detected
+    request.request_date = dt.date.today().isoformat()
+    request.used_llm_fallback = parsed.used_llm_fallback
+    request.parser_warnings = parsed.warnings
+    request.attribute_columns = parsed.attribute_columns
+    request.available_columns = parsed.available_columns
+    request.raw_file = raw_file
+    request.workflow_status = "review"
+
 
     for position, parsed_item in enumerate(parsed.items):
         item = RequestItemRow(
@@ -261,6 +266,7 @@ def to_extracted_item(row: RequestItemRow) -> ExtractedItem:
         priority=row.priority,
         confidence=row.confidence,
         status=row.status,
+        domain=row.domain,
     )
 
 
@@ -314,3 +320,21 @@ def review_counts(items: list[ExtractedItem]) -> ReviewCounts:
         lowConfidence=sum(1 for item in items if item.status == "low_confidence"),
         missing=sum(1 for item in items if item.status == "missing"),
     )
+
+
+async def create_draft_request(session: AsyncSession) -> ImportRequestRow:
+    request = ImportRequestRow(request_id=generate_request_id(), source_file_name="")
+    session.add(request)
+    await session.commit()
+    saved = await get_request_by_id(session, request.request_id)
+    assert saved is not None
+    return saved
+
+
+async def list_requests(session: AsyncSession) -> list[ImportRequestRow]:
+    result = await session.execute(
+        select(ImportRequestRow)
+        .options(selectinload(ImportRequestRow.items))
+        .order_by(ImportRequestRow.created_at.desc(), ImportRequestRow.id.desc())
+    )
+    return list(result.scalars().all())

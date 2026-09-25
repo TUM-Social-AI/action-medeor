@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 
-from sqlalchemy import JSON, ForeignKey, LargeBinary, func
+from sqlalchemy import JSON, ForeignKey, LargeBinary, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -50,6 +51,8 @@ class ImportRequestRow(Base):
     # (None) for rows that predate this column or the fixture demo request.
     raw_file: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
 
+    workflow_status: Mapped[str] = mapped_column(default="draft")
+    catalog_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
 
     items: Mapped[list["RequestItemRow"]] = relationship(
@@ -84,6 +87,10 @@ class RequestItemRow(Base):
     priority: Mapped[str] = mapped_column(default="medium")
     confidence: Mapped[int | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="needs_review")
+    domain: Mapped[str | None] = mapped_column(default=None)
+    match_status: Mapped[str] = mapped_column(default="pending")
+    match_error: Mapped[str | None] = mapped_column(default=None)
+    current_match_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
 
     request: Mapped[ImportRequestRow] = relationship(back_populates="items")
     source_reference: Mapped["RequestSourceReferenceRow | None"] = relationship(

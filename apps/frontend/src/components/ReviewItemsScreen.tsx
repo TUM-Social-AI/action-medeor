@@ -279,7 +279,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   const showShelfLife = items.some(item => item.shelfLife);
   const showNotes = items.some(item => item.notes);
   const columnCount =
-    6 +
+    7 +
     (attributeColumns.length > 0 ? 1 : 0) +
     [showItemNumber, showUnit, showShelfLife, showNotes].filter(Boolean).length;
 
@@ -287,7 +287,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   const needsReview = items.filter(item => item.status === 'needs_review').length;
   const lowConfidence = items.filter(item => item.status === 'low_confidence').length;
   const missing = items.filter(item => item.status === 'missing').length;
-  const allVerified = items.length > 0 && verified === items.length;
+  const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain);
   const blockedItems = items.filter(needsManualReview);
 
   const openEdit = (item: ExtractedItem) => {
@@ -300,6 +300,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       itemNumber: item.itemNumber,
       shelfLife: item.shelfLife,
       priority: item.priority,
+      domain: item.domain,
     });
   };
 
@@ -308,6 +309,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       return;
     }
 
+    if (!editValues.domain) {
+      setError('Choose Medicine or Equipment before verifying this item.');
+      return;
+    }
     try {
       const updated = await updateItem(requestId, editingItem.id, {
         name: editValues.name,
@@ -317,6 +322,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
         itemNumber: editValues.itemNumber,
         shelfLife: editValues.shelfLife,
         priority: editValues.priority,
+        domain: editValues.domain,
       });
       setItems(prev => prev.map(item => (item.id === updated.id ? updated : item)));
       setEditingItem(null);
@@ -327,6 +333,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   };
 
   const markVerified = async (id: number) => {
+    const item = items.find(value => value.id === id);
+    if (item && !item.domain) {
+      openEdit(item);
+      return;
+    }
     try {
       const updated = await verifyItem(requestId, id);
       setItems(prev => prev.map(item => (item.id === id ? updated : item)));
@@ -483,6 +494,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     { key: null, label: '#' },
                     ...(showItemNumber ? [{ key: 'itemNumber', label: 'Item #' }] : []),
                     { key: 'name', label: 'Item Name' },
+                    { key: null, label: 'Type' },
                     { key: 'quantity', label: 'Qty' },
                     ...(showUnit ? [{ key: 'unit', label: 'Unit' }] : []),
                     ...(showShelfLife ? [{ key: 'shelfLife', label: 'Shelf Life' }] : []),
@@ -561,6 +573,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                         >
                           {missingName ? '- Missing -' : item.name}
                         </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`text-xs ${item.domain ? 'text-gray-700' : 'text-amber-700'}`}>
+                          {item.domain ?? 'Choose in Edit'}
+                        </span>
                       </td>
                       <td className="px-4 py-3">
                         {item.quantity !== null ? (
@@ -721,9 +738,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                 <span className="text-amber-600">
                   {needsReview} item(s) still flagged for review. Click Verify or Edit to confirm them.
                 </span>
+              ) : items.some(item => !item.domain) ? (
+                <span className="text-amber-700">Choose Medicine or Equipment for every item before matching.</span>
               ) : (
                 <span className="text-green-700" style={{ fontWeight: 500 }}>
-                  All items verified. Ready to proceed.
+                  All items verified and classified. Ready to proceed.
                 </span>
               )}
             </div>
@@ -943,6 +962,23 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     value={editValues.notes ?? ''}
                     onChange={event => setEditValues(values => ({ ...values, notes: event.target.value }))}
                   />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                    Product type (required)
+                  </label>
+                  <select
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white"
+                    value={editValues.domain ?? ''}
+                    onChange={event => setEditValues(values => ({
+                      ...values,
+                      domain: event.target.value as ExtractedItem['domain'],
+                    }))}
+                  >
+                    <option value="">Choose type</option>
+                    <option value="medicine">Medicine</option>
+                    <option value="equipment">Equipment</option>
+                  </select>
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>

@@ -1,7 +1,15 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import fixtures
+from app.api.request_workflow import (
+    latest_snapshot_id,
+    matching_state,
+    request_state,
+    to_inquiry_line,
+)
 from app.api.schemas import (
     ColumnLabelUpdate,
     CustomColumnRequest,
@@ -16,6 +24,9 @@ from app.api.schemas import (
     PartnerDetails,
     PartnerUpdate,
     RecentImport,
+    RequestDecision,
+    RequestMatchingState,
+    RequestState,
     ReviewResponse,
     SummaryResponse,
     TrendsResponse,
@@ -23,6 +34,8 @@ from app.api.schemas import (
 from app.db import repository
 from app.db.repository import RawFileUnavailable
 from app.db.session import get_session
+from app.matching.api import get_matching_service
+from app.matching.contracts import DecisionType, MatchDecisionRequestV1
 from app.parsing import ParsingError, parse_upload
 
 router = APIRouter(prefix="/api")
@@ -44,17 +57,6 @@ MAX_IMPORT_BYTES = 20 * 1024 * 1024
 def require_mock_request(request_id: str) -> None:
     if request_id != fixtures.REQUEST_ID:
         raise HTTPException(status_code=404, detail="Request not found")
-
-
-async def require_known_request(request_id: str, session: AsyncSession) -> None:
-    """Matching/summary/offer are still fixture-backed (separate workstream), but must not 404
-    just because a real upload produced a request_id other than the fixture's - so accept any
-    request_id that actually exists, whether persisted from a real import or the fixture one."""
-    if request_id == fixtures.REQUEST_ID:
-        return
-    if await repository.get_request_by_id(session, request_id) is not None:
-        return
-    raise HTTPException(status_code=404, detail="Request not found")
 
 
 def find_item(item_id: int) -> ExtractedItem:
@@ -86,6 +88,14 @@ async def create_import(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
+    file_name, content, parsed = await _parse_request_file(file)
+    request = await repository.save_parsed_request(
+        session, parsed=parsed, file_name=file_name, raw_file=content
+    )
+    return repository.to_review_response(request)
+
+
+async def _parse_request_file(file: UploadFile):
     file_name = file.filename or ""
     file_extension = file_name.lower().rsplit(".", maxsplit=1)[-1] if "." in file_name else ""
 
@@ -108,10 +118,44 @@ async def create_import(
     except ParsingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    request = await repository.save_parsed_request(
-        session, parsed=parsed, file_name=file_name, raw_file=bytes(content)
+    return file_name, bytes(content), parsed
+
+
+@router.post("/requests", status_code=201)
+async def create_request(session: AsyncSession = Depends(get_session)) -> RequestState:
+    request = await repository.create_draft_request(session)
+    return request_state(request)
+
+
+@router.get("/requests")
+async def list_requests(session: AsyncSession = Depends(get_session)) -> list[RequestState]:
+    return [request_state(request) for request in await repository.list_requests(session)]
+
+
+@router.get("/requests/{request_id}")
+async def get_request(request_id: str, session: AsyncSession = Depends(get_session)) -> RequestState:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return request_state(request)
+
+
+@router.post("/requests/{request_id}/file")
+async def upload_request_file(
+    request_id: str,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> ReviewResponse:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if request.workflow_status != "draft":
+        raise HTTPException(status_code=409, detail="This request already has an uploaded file")
+    file_name, content, parsed = await _parse_request_file(file)
+    saved = await repository.save_parsed_request(
+        session, parsed=parsed, file_name=file_name, raw_file=content, request_id=request_id
     )
-    return repository.to_review_response(request)
+    return repository.to_review_response(saved)
 
 
 @router.get("/requests/{request_id}/review")
@@ -135,6 +179,8 @@ async def update_item(
     if request is not None:
         if not any(item.id == item_id for item in request.items):
             raise HTTPException(status_code=404, detail="Item not found")
+        if request.workflow_status != "review":
+            raise HTTPException(status_code=409, detail="Review is locked after matching starts")
         update = payload.model_dump(exclude_unset=True)
         updated = await repository.update_item_fields(session, item_id, update)
         return repository.to_extracted_item(updated)
@@ -155,6 +201,8 @@ async def verify_item(
     if request is not None:
         if not any(item.id == item_id for item in request.items):
             raise HTTPException(status_code=404, detail="Item not found")
+        if request.workflow_status != "review":
+            raise HTTPException(status_code=409, detail="Review is locked after matching starts")
         updated = await repository.verify_item(session, item_id)
         return repository.to_extracted_item(updated)
 
@@ -171,6 +219,8 @@ async def update_partner(
 ) -> PartnerDetails:
     request = await repository.get_request_by_id(session, request_id)
     if request is not None:
+        if request.workflow_status != "review":
+            raise HTTPException(status_code=409, detail="Partner details are locked after matching starts")
         updated = await repository.update_partner(session, request_id, payload)
         return repository.to_partner_details(updated)
 
@@ -214,6 +264,8 @@ async def add_custom_column(
 
     request = await repository.get_request_by_id(session, request_id)
     if request is not None:
+        if request.workflow_status != "review":
+            raise HTTPException(status_code=409, detail="Review is locked after matching starts")
         try:
             updated = await repository.add_custom_column(
                 session, request_id, payload.displayName, payload.hint
@@ -235,23 +287,120 @@ async def add_custom_column(
     )
 
 
-@router.post("/requests/{request_id}/matching")
+@router.post("/requests/{request_id}/matching", status_code=202)
 async def start_matching(
     request_id: str,
+    response: Response,
     session: AsyncSession = Depends(get_session),
-) -> MatchingResponse:
-    await require_known_request(request_id, session)
-    selected = {
-        item.id: fixtures.ERP_MATCHES[item.id][0].id
-        for item in fixtures.REQUESTED_ITEMS
-        if fixtures.ERP_MATCHES.get(item.id)
-    }
-    return MatchingResponse(
-        requestId=request_id,
-        requestedItems=fixtures.REQUESTED_ITEMS,
-        matches=fixtures.ERP_MATCHES,
-        selectedMatches=selected,
+) -> RequestMatchingState | MatchingResponse:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        require_mock_request(request_id)
+        response.status_code = 200
+        selected = {
+            item.id: fixtures.ERP_MATCHES[item.id][0].id
+            for item in fixtures.REQUESTED_ITEMS if fixtures.ERP_MATCHES.get(item.id)
+        }
+        return MatchingResponse(
+            requestId=request_id, requestedItems=fixtures.REQUESTED_ITEMS,
+            matches=fixtures.ERP_MATCHES, selectedMatches=selected,
+        )
+    if request.workflow_status in {"matching_queued", "matching", "match_review", "complete"}:
+        state = await matching_state(session, request_id)
+        assert state is not None
+        return state
+    if request.workflow_status not in {"review", "matching_failed"}:
+        raise HTTPException(status_code=409, detail="Upload a file before matching")
+    if not request.items or any(item.status != "verified" or not item.domain for item in request.items):
+        raise HTTPException(status_code=422, detail="Verify and classify every item before matching")
+    for item in request.items:
+        try:
+            to_inquiry_line(request, item)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Item {item.id}: {exc}") from exc
+    if request.catalog_snapshot_id is None:
+        request.catalog_snapshot_id = await latest_snapshot_id(session)
+    if request.catalog_snapshot_id is None:
+        raise HTTPException(status_code=409, detail="Import a catalog before matching")
+    for item in request.items:
+        if item.match_status == "failed":
+            item.match_status = "pending"
+            item.match_error = None
+    request.workflow_status = "matching_queued"
+    await session.execute(
+        text("""INSERT INTO request_matching_jobs (request_id, status) VALUES (:id, 'queued')
+                ON CONFLICT (request_id) DO UPDATE SET status = 'queued',
+                lease_until = NULL, updated_at = CURRENT_TIMESTAMP"""),
+        {"id": request_id},
     )
+    await session.commit()
+    state = await matching_state(session, request_id)
+    assert state is not None
+    return state
+
+
+@router.get("/requests/{request_id}/matching")
+async def get_matching(
+    request_id: str, session: AsyncSession = Depends(get_session)
+) -> RequestMatchingState:
+    state = await matching_state(session, request_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return state
+
+
+@router.post("/requests/{request_id}/items/{item_id}/decision")
+async def decide_match(
+    request_id: str,
+    item_id: int,
+    payload: RequestDecision,
+    session: AsyncSession = Depends(get_session),
+) -> RequestMatchingState:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if request.workflow_status not in {"match_review", "complete"}:
+        raise HTTPException(status_code=409, detail="Matching is not complete")
+    item = next((item for item in request.items if item.id == item_id), None)
+    if item is None or item.current_match_run_id is None:
+        raise HTTPException(status_code=404, detail="Matched item not found")
+    service = get_matching_service(session)
+    run = await service.get_run(item.current_match_run_id)
+    if run is None:
+        raise HTTPException(status_code=409, detail="Match run is unavailable")
+    candidate = next((candidate for candidate in run.candidates if candidate.candidate_id == payload.candidateId), None)
+    if not payload.noMatch and candidate is None:
+        raise HTTPException(status_code=422, detail="Choose a candidate or No match")
+    if payload.noMatch and payload.candidateId is not None:
+        raise HTTPException(status_code=422, detail="No match cannot include a candidate")
+    if candidate and candidate.rank != 1 and not (payload.overrideReason or "").strip():
+        raise HTTPException(status_code=422, detail="Reason required for an alternative")
+    decision = MatchDecisionRequestV1(
+        match_run_id=item.current_match_run_id,
+        inquiry_line_id=str(item.id),
+        decision_type=(
+            DecisionType.NO_MATCH if payload.noMatch else
+            DecisionType.ACCEPT_SUGGESTION if candidate and candidate.rank == 1 else
+            DecisionType.SELECT_ALTERNATIVE
+        ),
+        candidate_id=candidate.candidate_id if candidate else None,
+        selected_item_number=candidate.item_number if candidate else None,
+        override_reason=payload.overrideReason.strip() if payload.overrideReason else None,
+    )
+    await service.save_decision(decision)
+    undecided = await session.scalar(
+        text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id
+                AND ri.current_match_run_id IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM match_decisions md
+                                WHERE md.match_run_id = ri.current_match_run_id)"""),
+        {"id": request_id},
+    )
+    if undecided == 0:
+        request.workflow_status = "complete"
+        await session.commit()
+    state = await matching_state(session, request_id)
+    assert state is not None
+    return state
 
 
 @router.patch("/requests/{request_id}/matching/{item_id}")
@@ -261,15 +410,52 @@ async def update_matching(
     payload: MatchSelection,
     session: AsyncSession = Depends(get_session),
 ) -> MatchSelectionResponse:
-    await require_known_request(request_id, session)
+    if await repository.get_request_by_id(session, request_id) is not None:
+        raise HTTPException(status_code=409, detail="Use the saved decision API for this request")
+    require_mock_request(request_id)
     find_match(item_id, payload.matchId)
     return MatchSelectionResponse(itemId=item_id, matchId=payload.matchId)
 
 
 @router.get("/requests/{request_id}/summary")
-async def summary(request_id: str, session: AsyncSession = Depends(get_session)) -> SummaryResponse:
-    await require_known_request(request_id, session)
-    return fixtures.summary_response()
+async def summary(request_id: str, session: AsyncSession = Depends(get_session)) -> dict | SummaryResponse:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        require_mock_request(request_id)
+        return fixtures.summary_response()
+    if request.workflow_status != "complete":
+        raise HTTPException(status_code=409, detail="Decide every matched item before summary")
+    state = await matching_state(session, request_id)
+    assert state is not None
+    items = []
+    for line in state.lines:
+        candidate = next(
+            (candidate for candidate in line.candidates
+             if candidate["candidate_id"] == str(line.selectedCandidateId)),
+            None,
+        )
+        items.append({
+            "itemId": line.itemId,
+            "requested": line.name,
+            "quantity": line.quantity,
+            "unit": line.unit,
+            "domain": line.domain,
+            "decision": line.decisionType,
+            "itemNumber": candidate["item_number"] if candidate else None,
+            "product": candidate["descriptions"][0] if candidate else None,
+            "availability": candidate["availability_status"] if candidate else None,
+            "warnings": candidate["warnings"] if candidate else [],
+            "retrievalMethods": [evidence["retriever"] for evidence in candidate["retrieval_evidence"]]
+            if candidate else [],
+        })
+    return {
+        "requestId": request_id,
+        "sourceFile": request.source_file_name,
+        "partner": request.partner,
+        "items": items,
+        "matchedCount": sum(item["itemNumber"] is not None for item in items),
+        "unmatchedCount": sum(item["itemNumber"] is None for item in items),
+    }
 
 
 @router.post("/requests/{request_id}/offer")
@@ -277,7 +463,9 @@ async def create_offer(
     request_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> OfferResponse:
-    await require_known_request(request_id, session)
+    if await repository.get_request_by_id(session, request_id) is not None:
+        raise HTTPException(status_code=409, detail="Offer generation is not available for real requests")
+    require_mock_request(request_id)
     summary = fixtures.summary_response()
     return OfferResponse(
         requestId=request_id,

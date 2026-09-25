@@ -1,4 +1,5 @@
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -78,6 +79,7 @@ class ExtractedItem(BaseModel):
     priority: Priority
     confidence: int | None
     status: ItemStatus
+    domain: Literal["medicine", "equipment"] | None = None
 
 
 class ReviewCounts(BaseModel):
@@ -133,6 +135,7 @@ class ItemUpdate(BaseModel):
     itemNumber: str | None = None
     shelfLife: str | None = None
     priority: Priority | None = None
+    domain: Literal["medicine", "equipment"] | None = None
 
 
 class PartnerUpdate(BaseModel):
@@ -166,6 +169,46 @@ class MatchingResponse(BaseModel):
     requestedItems: list[RequestedItem]
     matches: dict[int, list[ErpMatch]]
     selectedMatches: dict[int, str]
+
+
+
+
+class RequestState(BaseModel):
+    requestId: str
+    status: str
+    sourceFile: str | None = None
+    partner: str = ""
+    itemCount: int = 0
+    createdAt: str
+
+
+class MatchingLineState(BaseModel):
+    itemId: int
+    name: str
+    quantity: int | None
+    unit: str
+    priority: Priority
+    domain: Literal["medicine", "equipment"]
+    status: str
+    error: str | None = None
+    runId: UUID | None = None
+    candidates: list[dict] = Field(default_factory=list)
+    selectedCandidateId: UUID | None = None
+    decisionType: str | None = None
+
+
+class RequestMatchingState(BaseModel):
+    requestId: str
+    status: str
+    completed: int
+    total: int
+    lines: list[MatchingLineState]
+
+
+class RequestDecision(BaseModel):
+    candidateId: UUID | None = None
+    noMatch: bool = False
+    overrideReason: str | None = None
 
 
 class MatchSelection(BaseModel):
