@@ -360,13 +360,25 @@ the full architecture in the [detailed walkthrough](apps/backend/app/matching/RE
 The backend contains an explainable matching engine for normalized medicine and equipment
 inquiries. It combines exact, lexical, vector, and historical retrieval, applies versioned
 constraints, calculates packaging and availability evidence, and stores match runs and human
-decisions. The request UI now creates a saved draft and extracts an uploaded file. Extraction
+decisions. New Request opens the import screen without saving a row; submitting a file
+creates the saved request and extracts its contents. Empty drafts from older clients are hidden
+from request history. Extraction
 suggests medicine or equipment from an explicit type column, specific units or item names; the
 LLM extraction path returns a type too. Ambiguous lines need a manual choice. Once every line
 is verified and classified, the UI queues matching for all lines. The backend worker runs while
 the API is running and recovers expired jobs after a restart. Results, progress, and selections
-remain available when the browser is closed or refreshed. The summary uses saved decisions;
-pricing and offer creation are not available in this workflow.
+remain available when the browser is closed or refreshed. Completed lines can be selected
+while the worker processes other lines. The worker saves a default
+selection when the top article has the exact requested article number, or its text similarity is
+at least 0.78 with compatible numbers and product form. The UI shows the numeric ranking
+score calculated from the matching criteria before candidates are sorted. It preserves
+the lexicographic priority order and is normalized to 0–100 within each requested item:
+the best available candidate scores 100. It is not a calibrated confidence percentage. Name similarity and retrieval evidence remain available
+in candidate details. Other items wait for a person. Alternative
+selections do not require a reason; saved decisions are retained for later offline evaluation and
+do not update live ranking. Opening the summary explicitly finalizes the request. Finalized requests
+open at the summary from history; returning to matching clears that final state while retaining the
+decisions. Pricing and offer creation are not available in this workflow.
 
 Apply the current migrations with `uv run alembic upgrade head` before using this workflow.
 Import a catalog first through `POST /api/v1/catalog-imports` or the catalog import job. The
@@ -381,7 +393,10 @@ GET  /api/requests                        list saved requests
 GET  /api/requests/{id}/review            reopen extraction and review
 POST /api/requests/{id}/matching          queue or retry matching
 GET  /api/requests/{id}/matching          progress, candidates, decisions
+POST /api/requests/{id}/matching/auto-select  apply saved defaults to older runs
 POST /api/requests/{id}/items/{item}/decision
+POST /api/requests/{id}/finalize          save final summary state
+POST /api/requests/{id}/reopen-matching   return to matching with saved decisions
 GET  /api/requests/{id}/summary
 ```
 
@@ -644,7 +659,7 @@ The code foundation and production rollout are separate milestones. Complete the
 | 6. Embedding activation | Azure owner runs the worker against staging and chooses a model-capable query-inference boundary | All eligible current versions have compatible vectors; known multilingual matches pass; no failed jobs remain unexplained |
 | 7. SharePoint metadata sync | Integration owner deploys a least-privilege read-only Graph job using stable drive-item IDs and live URLs | New/changed/deleted files appear correctly; `needs_extraction=true` returns the intended queue |
 | 8. Extraction handoff | Extraction owner reads the queue and publishes normalized offers/inquiry lines without changing matching internals | Same external ID links source file and structured record; malformed payloads fail visibly |
-| 9. Real frontend workflow | Frontend owner replaces the fixture adapter with the real extraction/matching APIs | Validated lines create match runs, explanations render correctly and decisions persist with required override reasons |
+| 9. Real frontend workflow | Frontend owner replaces the fixture adapter with the real extraction/matching APIs | Validated lines create match runs, explanations render correctly and decisions persist, with optional override reasons |
 | 10. Production readiness | Team adds authentication/authorization, monitoring, alerts, backup-restore test, operating ownership and rollback procedure | End-to-end acceptance with real examples passes and every scheduled/manual process has an owner and failure response |
 
 Matching V1 must not be called semantically validated at phase 3 merely because products were

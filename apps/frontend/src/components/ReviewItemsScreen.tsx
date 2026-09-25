@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import {
   addCustomColumn,
+  confirmPartner,
   getReview,
   updateColumnLabel,
   updateItem,
@@ -348,7 +349,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   };
 
   const startEditPartner = () => {
-    if (partnerDetails) {
+    if (partnerDetails && !partnerDetails.confirmed) {
       setPartnerDraft({ ...partnerDetails });
       setEditingPartner(true);
     }
@@ -376,6 +377,16 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to save partner details');
+    }
+  };
+
+  const confirmPartnerDetails = async () => {
+    try {
+      const updated = await confirmPartner(requestId);
+      setPartnerDetails(details => details && { ...details, ...updated });
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to confirm partner details');
     }
   };
 
@@ -793,7 +804,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
               </h3>
               <div className="flex items-center gap-1.5">
                 {partnerDetails.confirmed && !editingPartner && <CheckCircle2 size={14} className="text-green-500" />}
-                {!editingPartner && (
+                {!editingPartner && !partnerDetails.confirmed && (
                   <button
                     onClick={startEditPartner}
                     className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
@@ -807,7 +818,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
 
             {editingPartner && partnerDraft ? (
               <div className="space-y-2.5">
-                {(['partner', 'region', 'requestId', 'contact'] as const).map(key => (
+                {(['partner', 'region', 'contact'] as const).map(key => (
                   <div key={key}>
                     <div className="text-xs text-gray-400 mb-0.5">{partnerLabel(key)}</div>
                     <input
@@ -817,6 +828,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     />
                   </div>
                 ))}
+                <div className="text-xs text-gray-500">System request ID: <span className="font-mono text-gray-700">{partnerDetails.requestId}</span></div>
                 <div className="flex gap-2 pt-1">
                   <button
                     onClick={() => setEditingPartner(false)}
@@ -830,7 +842,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     className="flex-1 py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
                     style={{ fontWeight: 600 }}
                   >
-                    Save & Confirm
+                    Save
                   </button>
                 </div>
               </div>
@@ -853,7 +865,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                 </div>
                 {!partnerDetails.confirmed ? (
                   <button
-                    onClick={() => setPartnerDetails(details => details && { ...details, confirmed: true })}
+                    onClick={() => void confirmPartnerDetails()}
                     className="w-full py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
                     style={{ fontWeight: 600 }}
                   >

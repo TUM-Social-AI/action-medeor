@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { LoadingType, ReviewResponse, Screen } from './api/types';
+import { createImport } from './api/client';
 import {
-  createRequest,
+  finalizeRequest,
   getRequest,
+  reopenRequestMatching,
   startRequestMatching,
   uploadRequestFile,
   type SavedRequest,
@@ -19,7 +21,7 @@ import { TrendDashboard } from './components/TrendDashboard';
 function screenFor(request: SavedRequest): Screen {
   if (request.status === 'draft') return 'ingestion';
   if (request.status === 'review') return 'review';
-  if (request.status === 'complete') return 'summary';
+  if (request.status === 'finalized') return 'summary';
   return 'matching';
 }
 
@@ -53,7 +55,7 @@ export default function App() {
         const request = await getRequest(id);
         setRequestId(id);
         const requestedStep = params.get('step') as Screen | null;
-        const allowed = request.status === 'complete' && requestedStep === 'summary';
+        const allowed = ['complete', 'finalized'].includes(request.status) && requestedStep === 'summary';
         setCurrentScreen(allowed ? 'summary' : screenFor(request));
       } catch (caught) {
         setWorkflowError(caught instanceof Error ? caught.message : 'Request unavailable');
@@ -70,25 +72,22 @@ export default function App() {
     navigate(screenFor(request), request.requestId);
   };
 
-  const createNewRequest = async () => {
-    try {
-      const request = await createRequest();
-      setRequestId(request.requestId);
-      setReviewData(null);
-      navigate('ingestion', request.requestId);
-    } catch (caught) {
-      setWorkflowError(caught instanceof Error ? caught.message : 'Could not create request');
-    }
+  const createNewRequest = () => {
+    setRequestId(null);
+    setReviewData(null);
+    navigate('ingestion', null);
   };
 
   const handleImport = async (file: File) => {
-    if (!requestId) return;
     setWorkflowError(null);
     setLoadingType('extracting');
     try {
-      const response = await uploadRequestFile(requestId, file);
+      const response = requestId
+        ? await uploadRequestFile(requestId, file)
+        : await createImport(file);
+      setRequestId(response.requestId);
       setReviewData(response);
-      navigate('review');
+      navigate('review', response.requestId);
     } catch (caught) {
       setWorkflowError(caught instanceof Error ? caught.message : 'Unable to extract file');
     } finally {
@@ -110,18 +109,32 @@ export default function App() {
     }
   };
 
+  const finalizeAndOpenSummary = async () => {
+    if (!requestId) return;
+    await finalizeRequest(requestId);
+    navigate('summary');
+  };
+
+  const returnToMatching = async () => {
+    if (!requestId) return;
+    await reopenRequestMatching(requestId);
+    navigate('matching');
+  };
+
   const handleNavigate = (screen: Screen) => {
     if (screen === 'ingestion') {
-      if (currentScreen !== 'ingestion') void createNewRequest();
+      if (currentScreen !== 'ingestion') createNewRequest();
       return;
     }
     if (['review', 'matching', 'summary'].includes(screen)) {
       if (!requestId) return;
-      void getRequest(requestId).then(request => {
+      void getRequest(requestId).then(async request => {
         const matchingAvailable = !['draft', 'review'].includes(request.status);
         if (screen === 'review' && request.status !== 'review') navigate(screenFor(request));
         else if (screen === 'matching' && !matchingAvailable) navigate(screenFor(request));
-        else if (screen === 'summary' && request.status !== 'complete') navigate(screenFor(request));
+        else if (screen === 'matching' && request.status === 'finalized') await returnToMatching();
+        else if (screen === 'summary' && request.status === 'complete') await finalizeAndOpenSummary();
+        else if (screen === 'summary' && request.status !== 'finalized') navigate(screenFor(request));
         else navigate(screen);
       }).catch(caught => setWorkflowError(caught instanceof Error ? caught.message : 'Request unavailable'));
       return;
@@ -133,8 +146,10 @@ export default function App() {
     {loadingType ? <ProcessingScreen type={loadingType} /> : <>
       {(currentScreen === 'home' || currentScreen === 'history') && <HomeScreen
         history={currentScreen === 'history'}
-        onCreateRequest={() => void createNewRequest()}
+        onCreateRequest={createNewRequest}
         onOpenRequest={openRequest}
+        onViewDashboard={() => navigate('dashboard')}
+        onViewHistory={() => navigate('history')}
         error={workflowError}
       />}
       {currentScreen === 'dashboard' && <TrendDashboard />}
@@ -146,10 +161,10 @@ export default function App() {
         onContinue={() => void handleStartMatching()}
       />}
       {currentScreen === 'matching' && requestId && <SmartMatchingScreen
-        key={requestId} requestId={requestId} onContinue={() => navigate('summary')}
+        key={requestId} requestId={requestId} onContinue={finalizeAndOpenSummary}
       />}
       {currentScreen === 'summary' && requestId && <OrderSummaryScreen
-        key={requestId} requestId={requestId} onBack={() => navigate('matching')}
+        key={requestId} requestId={requestId} onBack={returnToMatching}
       />}
     </>}
   </Layout>;

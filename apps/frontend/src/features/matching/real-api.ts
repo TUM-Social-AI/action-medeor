@@ -81,10 +81,6 @@ export function createRealMatchingWorkflowApi({
       }
 
       const isFirstSuggestion = candidate.rank === 1;
-      if (!isFirstSuggestion && !overrideReason?.trim()) {
-        throw new Error('Please provide a reason when selecting an alternative candidate.');
-      }
-
       const decision = await matchingApi.createDecision({
         contract_version: '1',
         match_run_id: run.match_run_id,

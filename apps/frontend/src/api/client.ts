@@ -58,6 +58,12 @@ export function updatePartner(requestId: string, payload: PartnerUpdate) {
   });
 }
 
+export function confirmPartner(requestId: string) {
+  return requestJson<PartnerDetails>(`/api/requests/${requestId}/partner/confirm`, {
+    method: 'POST',
+  });
+}
+
 /** label='' resets that column back to its default (removes the rename). */
 export function updateColumnLabel(requestId: string, columnKey: string, label: string) {
   return requestJson<Record<string, string>>(`/api/requests/${requestId}/column-labels`, {

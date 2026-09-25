@@ -2,13 +2,15 @@ import { requestJson } from './http';
 import type { MatchCandidateV1, ProductDomain } from './matching/contracts';
 import type { Priority, ReviewResponse } from './types';
 
-export type RequestStatus = 'draft' | 'review' | 'matching_queued' | 'matching' | 'matching_failed' | 'match_review' | 'complete';
+export type RequestStatus = 'draft' | 'review' | 'matching_queued' | 'matching' | 'matching_failed' | 'match_review' | 'complete' | 'finalized';
 export type SavedRequest = {
   requestId: string;
   status: RequestStatus;
   sourceFile: string | null;
   partner: string;
+  region: string;
   itemCount: number;
+  matchRate: number | null;
   createdAt: string;
 };
 export type SavedMatchLine = {
@@ -34,8 +36,13 @@ export type SavedMatching = {
 };
 export type SavedSummary = {
   requestId: string;
+  status: RequestStatus;
   sourceFile: string;
   partner: string;
+  partnerConfirmed: boolean;
+  region: string;
+  contact: string;
+  requestDate: string | null;
   items: Array<{
     itemId: number;
     requested: string;
@@ -46,6 +53,7 @@ export type SavedSummary = {
     itemNumber: string | null;
     product: string | null;
     availability: string | null;
+    rankingScore: number | null;
     warnings: string[];
     retrievalMethods: string[];
   }>;
@@ -65,6 +73,8 @@ export const startRequestMatching = (id: string) =>
   requestJson<SavedMatching>(`/api/requests/${id}/matching`, { method: 'POST' });
 export const getRequestMatching = (id: string) =>
   requestJson<SavedMatching>(`/api/requests/${id}/matching`);
+export const autoSelectRequestMatches = (id: string) =>
+  requestJson<SavedMatching>(`/api/requests/${id}/matching/auto-select`, { method: 'POST' });
 export const decideRequestMatch = (
   id: string,
   itemId: number,
@@ -75,3 +85,8 @@ export const decideRequestMatch = (
 });
 export const getRequestSummary = (id: string) =>
   requestJson<SavedSummary>(`/api/requests/${id}/summary`);
+
+export const finalizeRequest = (id: string) =>
+  requestJson<SavedRequest>(`/api/requests/${id}/finalize`, { method: 'POST' });
+export const reopenRequestMatching = (id: string) =>
+  requestJson<SavedRequest>(`/api/requests/${id}/reopen-matching`, { method: 'POST' });

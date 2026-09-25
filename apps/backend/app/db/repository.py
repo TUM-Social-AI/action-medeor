@@ -3,7 +3,7 @@
 import datetime as dt
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -181,6 +181,15 @@ async def update_partner(
     request.partner = payload.partner
     request.region = payload.region
     request.contact = payload.contact
+    await session.commit()
+    await session.refresh(request)
+    return request
+
+
+async def confirm_partner(session: AsyncSession, request_id: str) -> ImportRequestRow | None:
+    request = await get_request_by_id(session, request_id)
+    if request is None:
+        return None
     request.confirmed = True
     await session.commit()
     await session.refresh(request)
@@ -358,10 +367,28 @@ async def create_draft_request(session: AsyncSession) -> ImportRequestRow:
     return saved
 
 
+async def request_match_rates(session: AsyncSession) -> dict[str, int]:
+    """Count selected articles for completed requests using each line's latest decision."""
+    result = await session.execute(
+        text("""SELECT ri.request_id, COUNT(md.candidate_id) AS matched
+                FROM request_items ri
+                JOIN import_requests r ON r.request_id = ri.request_id
+                LEFT JOIN LATERAL (
+                    SELECT candidate_id FROM match_decisions
+                    WHERE match_run_id = ri.current_match_run_id
+                    ORDER BY created_at DESC, id DESC LIMIT 1
+                ) md ON TRUE
+                WHERE r.workflow_status IN ('complete', 'finalized')
+                GROUP BY ri.request_id""")
+    )
+    return {row.request_id: int(row.matched) for row in result}
+
+
 async def list_requests(session: AsyncSession) -> list[ImportRequestRow]:
     result = await session.execute(
         select(ImportRequestRow)
         .options(selectinload(ImportRequestRow.items))
+        .where(ImportRequestRow.source_file_name != "")
         .order_by(ImportRequestRow.created_at.desc(), ImportRequestRow.id.desc())
     )
     return list(result.scalars().all())

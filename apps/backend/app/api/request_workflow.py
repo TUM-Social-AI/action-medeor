@@ -19,15 +19,19 @@ from app.matching.contracts import (
     SourceReferenceV1,
     SourceType,
 )
+from app.matching.ranking.features import description_similarity
+from app.matching.ranking.ranker import calculate_ranking_scores
 
 
-def request_state(request: ImportRequestRow) -> RequestState:
+def request_state(request: ImportRequestRow, match_rate: float | None = None) -> RequestState:
     return RequestState(
         requestId=request.request_id,
         status=request.workflow_status,
         sourceFile=request.source_file_name or None,
         partner=request.partner,
+        region=request.region,
         itemCount=len(request.items),
+        matchRate=match_rate,
         createdAt=request.created_at.isoformat() if request.created_at else "",
     )
 
@@ -96,6 +100,30 @@ async def matching_state(session: AsyncSession, request_id: str) -> RequestMatch
             if payload:
                 run = MatchRunResponseV1.model_validate(payload)
                 candidates = [candidate.model_dump(mode="json") for candidate in run.candidates]
+                # Runs saved before ranking scores existed retain their original order.
+                # Reconstruct the same sort key from their saved matching evidence.
+                scores = calculate_ranking_scores([
+                    (
+                        candidate.item_number,
+                        candidate.review_status,
+                        candidate.availability_status,
+                        candidate.score_components,
+                    )
+                    for candidate in run.candidates
+                ])
+                for candidate in candidates:
+                    candidate["score_components"].setdefault(
+                        "name_similarity",
+                        description_similarity(item.name, tuple(candidate["descriptions"])),
+                    )
+                    # Preserve the exact normalized score used by new runs, which
+                    # includes candidates beyond the returned top-k. Older runs
+                    # need their score reconstructed from their saved candidates.
+                    if candidate["score_components"].get("ranking_score_normalized") != 1.0:
+                        candidate["score_components"]["ranking_score"] = scores[
+                            candidate["item_number"]
+                        ]
+                        candidate["score_components"]["ranking_score_normalized"] = 1.0
             decision = (
                 await session.execute(
                     text("""SELECT candidate_id, decision_type FROM match_decisions

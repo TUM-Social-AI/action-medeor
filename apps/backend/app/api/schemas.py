@@ -178,7 +178,9 @@ class RequestState(BaseModel):
     status: str
     sourceFile: str | None = None
     partner: str = ""
+    region: str = ""
     itemCount: int = 0
+    matchRate: float | None = None
     createdAt: str
 
 

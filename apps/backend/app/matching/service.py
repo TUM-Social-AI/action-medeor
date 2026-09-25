@@ -26,6 +26,7 @@ from app.matching.ports import (
     MatchRunRepository,
     VectorRepository,
 )
+from app.matching.ranking.features import description_similarity
 from app.matching.ranking.ranker import rank_candidates
 from app.matching.representation import represent_inquiry
 from app.matching.retrieval.exact import ExactRetriever
@@ -164,7 +165,12 @@ class MatchingService:
                     review_status=state.review_status,
                     availability_status=availability[state.item.item_number],
                     retrieval_evidence=tuple(hit.as_evidence() for hit in state.evidence),
-                    score_components=state.score_components,
+                    score_components={
+                        **state.score_components,
+                        "name_similarity": description_similarity(
+                            request.inquiry_line.raw_description, state.item.descriptions
+                        ),
+                    },
                     constraints=tuple(state.constraints),
                     packaging=state.packaging,
                     warnings=tuple(dict.fromkeys(state.warnings)),

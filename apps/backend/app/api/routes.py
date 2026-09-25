@@ -35,6 +35,7 @@ from app.db import repository
 from app.db.repository import RawFileUnavailable
 from app.db.session import get_session
 from app.matching.api import get_matching_service
+from app.matching.auto_select import auto_select_item
 from app.matching.contracts import DecisionType, MatchDecisionRequestV1
 from app.parsing import ParsingError, parse_upload
 
@@ -129,7 +130,16 @@ async def create_request(session: AsyncSession = Depends(get_session)) -> Reques
 
 @router.get("/requests")
 async def list_requests(session: AsyncSession = Depends(get_session)) -> list[RequestState]:
-    return [request_state(request) for request in await repository.list_requests(session)]
+    requests = await repository.list_requests(session)
+    matched = await repository.request_match_rates(session)
+    return [
+        request_state(
+            request,
+            match_rate=round(100 * matched[request.request_id] / len(request.items), 1)
+            if request.request_id in matched and request.items else None,
+        )
+        for request in requests
+    ]
 
 
 @router.get("/requests/{request_id}")
@@ -220,13 +230,31 @@ async def update_partner(
 ) -> PartnerDetails:
     request = await repository.get_request_by_id(session, request_id)
     if request is not None:
-        if request.workflow_status != "review":
-            raise HTTPException(status_code=409, detail="Partner details are locked after matching starts")
+        if request.workflow_status == "draft":
+            raise HTTPException(status_code=409, detail="Upload a file before editing partner details")
+        if request.confirmed:
+            raise HTTPException(status_code=409, detail="Partner details are already confirmed")
         updated = await repository.update_partner(session, request_id, payload)
         return repository.to_partner_details(updated)
 
     require_mock_request(request_id)
     return PartnerDetails(**payload.model_dump(), confirmed=True)
+
+
+@router.post("/requests/{request_id}/partner/confirm")
+async def confirm_partner(
+    request_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> PartnerDetails:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is not None:
+        if request.workflow_status == "draft":
+            raise HTTPException(status_code=409, detail="Upload a file before confirming partner details")
+        updated = await repository.confirm_partner(session, request_id)
+        return repository.to_partner_details(updated)
+
+    require_mock_request(request_id)
+    return fixtures.review_response().partner.model_copy(update={"confirmed": True})
 
 
 @router.patch("/requests/{request_id}/column-labels")
@@ -306,7 +334,7 @@ async def start_matching(
             requestId=request_id, requestedItems=fixtures.REQUESTED_ITEMS,
             matches=fixtures.ERP_MATCHES, selectedMatches=selected,
         )
-    if request.workflow_status in {"matching_queued", "matching", "match_review", "complete"}:
+    if request.workflow_status in {"matching_queued", "matching", "match_review", "complete", "finalized"}:
         state = await matching_state(session, request_id)
         assert state is not None
         return state
@@ -351,6 +379,68 @@ async def get_matching(
     return state
 
 
+@router.post("/requests/{request_id}/matching/auto-select")
+async def auto_select_matching(
+    request_id: str, session: AsyncSession = Depends(get_session)
+) -> RequestMatchingState:
+    """Apply the current conservative default to existing, undecided match runs."""
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if request.workflow_status in {"match_review", "complete"}:
+        for item in request.items:
+            await auto_select_item(session, item)
+        undecided = await session.scalar(
+            text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id
+                    AND (ri.current_match_run_id IS NULL OR NOT EXISTS
+                         (SELECT 1 FROM match_decisions md
+                          WHERE md.match_run_id = ri.current_match_run_id))"""),
+            {"id": request_id},
+        )
+        if undecided == 0 and request.items:
+            request.workflow_status = "complete"
+            await session.commit()
+    state = await matching_state(session, request_id)
+    assert state is not None
+    return state
+
+
+@router.post("/requests/{request_id}/finalize")
+async def finalize_request(
+    request_id: str, session: AsyncSession = Depends(get_session)
+) -> RequestState:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if request.workflow_status not in {"complete", "finalized"}:
+        raise HTTPException(status_code=409, detail="Decide every matched item before finalizing")
+    undecided = await session.scalar(
+        text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id
+                AND (ri.match_status != 'completed' OR ri.current_match_run_id IS NULL
+                     OR NOT EXISTS (SELECT 1 FROM match_decisions md
+                                    WHERE md.match_run_id = ri.current_match_run_id))"""),
+        {"id": request_id},
+    )
+    if not request.items or undecided:
+        raise HTTPException(status_code=409, detail="Decide every matched item before finalizing")
+    request.workflow_status = "finalized"
+    await session.commit()
+    return request_state(request)
+
+
+@router.post("/requests/{request_id}/reopen-matching")
+async def reopen_matching(
+    request_id: str, session: AsyncSession = Depends(get_session)
+) -> RequestState:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if request.workflow_status == "finalized":
+        request.workflow_status = "complete"
+        await session.commit()
+    return request_state(request)
+
+
 @router.post("/requests/{request_id}/items/{item_id}/decision")
 async def decide_match(
     request_id: str,
@@ -361,11 +451,18 @@ async def decide_match(
     request = await repository.get_request_by_id(session, request_id)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
-    if request.workflow_status not in {"match_review", "complete"}:
-        raise HTTPException(status_code=409, detail="Matching is not complete")
+    if request.workflow_status not in {
+        "matching_queued", "matching", "matching_failed", "match_review", "complete", "finalized"
+    }:
+        raise HTTPException(status_code=409, detail="Matching has not started")
     item = next((item for item in request.items if item.id == item_id), None)
-    if item is None or item.current_match_run_id is None:
-        raise HTTPException(status_code=404, detail="Matched item not found")
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if item.match_status != "completed" or item.current_match_run_id is None:
+        raise HTTPException(status_code=409, detail="This item has not finished matching")
+    await session.execute(
+        text("SELECT id FROM request_items WHERE id = :id FOR UPDATE"), {"id": item_id}
+    )
     service = get_matching_service(session)
     run = await service.get_run(item.current_match_run_id)
     if run is None:
@@ -375,8 +472,6 @@ async def decide_match(
         raise HTTPException(status_code=422, detail="Choose a candidate or No match")
     if payload.noMatch and payload.candidateId is not None:
         raise HTTPException(status_code=422, detail="No match cannot include a candidate")
-    if candidate and candidate.rank != 1 and not (payload.overrideReason or "").strip():
-        raise HTTPException(status_code=422, detail="Reason required for an alternative")
     decision = MatchDecisionRequestV1(
         match_run_id=item.current_match_run_id,
         inquiry_line_id=str(item.id),
@@ -392,12 +487,12 @@ async def decide_match(
     await service.save_decision(decision)
     undecided = await session.scalar(
         text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id
-                AND ri.current_match_run_id IS NOT NULL
-                AND NOT EXISTS (SELECT 1 FROM match_decisions md
-                                WHERE md.match_run_id = ri.current_match_run_id)"""),
+                AND (ri.match_status != 'completed' OR ri.current_match_run_id IS NULL
+                     OR NOT EXISTS (SELECT 1 FROM match_decisions md
+                                    WHERE md.match_run_id = ri.current_match_run_id))"""),
         {"id": request_id},
     )
-    if undecided == 0:
+    if undecided == 0 and request.workflow_status != "finalized":
         request.workflow_status = "complete"
         await session.commit()
     state = await matching_state(session, request_id)
@@ -425,7 +520,7 @@ async def summary(request_id: str, session: AsyncSession = Depends(get_session))
     if request is None:
         require_mock_request(request_id)
         return fixtures.summary_response()
-    if request.workflow_status != "complete":
+    if request.workflow_status not in {"complete", "finalized"}:
         raise HTTPException(status_code=409, detail="Decide every matched item before summary")
     state = await matching_state(session, request_id)
     assert state is not None
@@ -446,14 +541,20 @@ async def summary(request_id: str, session: AsyncSession = Depends(get_session))
             "itemNumber": candidate["item_number"] if candidate else None,
             "product": candidate["descriptions"][0] if candidate else None,
             "availability": candidate["availability_status"] if candidate else None,
+            "rankingScore": candidate["score_components"].get("ranking_score") if candidate else None,
             "warnings": candidate["warnings"] if candidate else [],
             "retrievalMethods": [evidence["retriever"] for evidence in candidate["retrieval_evidence"]]
             if candidate else [],
         })
     return {
         "requestId": request_id,
+        "status": request.workflow_status,
         "sourceFile": request.source_file_name,
         "partner": request.partner,
+        "partnerConfirmed": request.confirmed,
+        "region": request.region,
+        "contact": request.contact,
+        "requestDate": request.request_date,
         "items": items,
         "matchedCount": sum(item["itemNumber"] is not None for item in items),
         "unmatchedCount": sum(item["itemNumber"] is None for item in items),

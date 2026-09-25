@@ -13,6 +13,7 @@ from app.api.request_workflow import to_inquiry_line
 from app.db.repository import get_request_by_id
 from app.db.session import async_session
 from app.matching.api import get_matching_service
+from app.matching.auto_select import auto_select_item
 from app.matching.contracts import MatchRequestV1
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ async def process_request(request_id: str) -> None:
                 item.match_status = "completed"
                 item.match_error = None
                 await session.commit()
+                await auto_select_item(session, item)
         except Exception as exc:
             logger.exception("Matching item %s failed", item_id)
             async with async_session() as session:
@@ -109,8 +111,19 @@ async def process_request(request_id: str) -> None:
         request = await get_request_by_id(session, request_id)
         if request is None:
             return
+        # A restarted worker can inherit a completed run that was linked just
+        # before the previous process stopped, so reconcile its default here.
+        for item in request.items:
+            await auto_select_item(session, item)
         failed = any(item.match_status == "failed" for item in request.items)
-        status = "matching_failed" if failed else "match_review"
+        undecided = await session.scalar(
+            text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id
+                    AND (ri.current_match_run_id IS NULL OR NOT EXISTS
+                        (SELECT 1 FROM match_decisions md
+                         WHERE md.match_run_id = ri.current_match_run_id))"""),
+            {"id": request_id},
+        )
+        status = "matching_failed" if failed else "complete" if undecided == 0 else "match_review"
         request.workflow_status = status
         await session.execute(
             text("""UPDATE request_matching_jobs SET status = :status, lease_until = NULL,
