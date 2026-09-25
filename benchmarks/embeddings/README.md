@@ -52,16 +52,23 @@ Use only inquiries whose correct catalogue article has been confirmed by a respo
 
 ## Models compared first
 
-The default free-first comparison is:
+The default benchmark image is lightweight and targets Azure OpenAI deployments in Foundry. It does
+not install Sentence Transformers, PyTorch or local model weights. The default Foundry comparison is:
+
+1. `text-embedding-3-small`
+2. `text-embedding-3-large`
+
+The earlier open-model candidates remain available in the code as an optional comparison, but require
+a separate environment with the `sentence-transformers` package installed:
 
 1. `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
 2. `BAAI/bge-m3`
 3. `intfloat/multilingual-e5-large-instruct`
 
-“Free” means there is no per-vector provider fee because the weights run in our own job. Azure
-CPU/GPU, temporary storage, model downloads and engineering time still cost money. MiniLM is the
-low-cost baseline; BGE-M3 and E5-large are larger quality candidates. The runner applies required E5
-query/passages prefixes and the medical procurement instruction consistently.
+For those optional models, “free” means there is no per-vector provider fee because the weights run
+in our own job. Azure CPU/GPU, temporary storage, downloads and engineering time still cost money.
+The runner applies required E5 query/passages prefixes and the medical procurement instruction
+consistently.
 
 ## Where to run it
 
@@ -101,9 +108,65 @@ The gate passes only if the command exits successfully, the report names 25 quer
 non-zero dimension and timing, and failures can be inspected. A successful smoke test says nothing
 about medical quality.
 
+### Azure OpenAI deployments in Foundry
+
+The benchmark can also call one Azure OpenAI embedding deployment at a time. Deploy the model in
+Foundry first, record its immutable model version and dimensions, and keep the endpoint and API key
+out of Git:
+
+```bash
+export AZURE_FOUNDRY_ENDPOINT="https://<resource>.services.ai.azure.com"
+export AZURE_FOUNDRY_API_KEY="<secret>"
+
+python benchmarks/embeddings/run.py \
+  --articles /secure-input/Artikeldaten.csv \
+  --translations /secure-input/Artikeluebersetzungen.csv \
+  --provider azure-openai \
+  --models text-embedding-3-small \
+  --deployments allocura-embedding-small-eval \
+  --model-version <immutable-model-version> \
+  --dimensions <deployment-dimensions> \
+  --limit-queries 25 \
+  --batch-size 8 \
+  --price-per-million-tokens <current-input-price> \
+  --output /secure-output/foundry-small-smoke-report.json
+```
+
+Pass model, deployment and dimension lists in the same order to compare several deployments in one
+report, for example `--models text-embedding-3-small text-embedding-3-large --deployments small-eval
+large-eval --dimensions 1536 3072`. Use the actual configured dimensions shown by each deployment.
+The Foundry provider and these two models are the defaults; you can omit `--provider` and `--models`
+when supplying both default deployment names and dimensions. The provider batches requests, validates
+and normalizes returned vectors, retries throttling and transient server errors, and records reported
+input-token usage. Never pass the API key as a command-line argument because shell history and process
+listings can expose it.
+
+`Cohere-embed-v3-multilingual` is available through the separate `azure-cohere` provider. It uses
+Foundry's model inference endpoint and distinct `document` and `query` input roles:
+
+```bash
+python benchmarks/embeddings/run.py \
+  --articles /secure-input/Artikeldaten.csv \
+  --translations /secure-input/Artikeluebersetzungen.csv \
+  --provider azure-cohere \
+  --models Cohere-embed-v3-multilingual \
+  --deployments Cohere-embed-v3-multilingual \
+  --model-version 1 \
+  --dimensions 1024 \
+  --limit-queries 25 \
+  --batch-size 32 \
+  --price-per-million-tokens 0.10 \
+  --output /secure-output/foundry-cohere-smoke-report.json
+```
+
+Use the exact deployment name and model version shown by Foundry. Cohere v3 multilingual produces
+1,024-dimensional vectors.
+
 ### Gate 2: full automatic comparison
 
-Run all default models on all automatically derived French queries:
+Run the selected Foundry deployments on all automatically derived French queries. The Foundry command
+in the previous section accepts aligned model, deployment and dimension lists. If you intentionally
+created the separate local-model environment, its original automatic comparison is:
 
 ```bash
 python benchmarks/embeddings/run.py \
@@ -171,14 +234,19 @@ retention, no-training terms, request volume and projected cost are documented w
 ## Activate product embeddings only after approval
 
 Run the same separately built image with its entry point overridden and a secure `DATABASE_URL` for
-the migrated staging database:
+the migrated staging database. Configure `sentence-transformers`, `azure-openai` or `azure-cohere`
+through
+environment variables, then start the worker:
 
 ```bash
-python -m app.catalog.embedding_worker \
-  --model <approved-model> \
-  --revision <immutable-revision> \
-  --batch-size 32
+python -m app.catalog.embedding_worker
 ```
+
+For Foundry, set `EMBEDDING_PROVIDER` to `azure-openai` or `azure-cohere`, plus `EMBEDDING_MODEL_NAME`,
+`EMBEDDING_MODEL_VERSION`, `EMBEDDING_DEPLOYMENT`, `EMBEDDING_DIMENSIONS`,
+`AZURE_FOUNDRY_ENDPOINT` and `AZURE_FOUNDRY_API_KEY`. For a local open model, set
+`EMBEDDING_PROVIDER=sentence-transformers`, `EMBEDDING_MODEL_NAME` and the immutable
+`EMBEDDING_MODEL_REVISION`.
 
 The worker:
 

@@ -316,8 +316,6 @@ class MatchDecisionRequestV1(ContractModel):
         }
         if needs_item and not self.selected_item_number:
             raise ValueError("selected_item_number is required for a product selection")
-        if self.decision_type is DecisionType.SELECT_ALTERNATIVE and not self.override_reason:
-            raise ValueError("override_reason is required when selecting an alternative")
         return self
 
 

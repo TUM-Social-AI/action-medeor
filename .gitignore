@@ -24,3 +24,8 @@ __pycache__/
 
 # Docker/runtime
 postgres-data/
+
+# Private embedding benchmark outputs
+benchmarks/embeddings/reports/
+
+data/

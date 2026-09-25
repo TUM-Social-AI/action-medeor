@@ -345,6 +345,8 @@ class CatalogImportService:
                 {
                     "id": version_id,
                     "item_number": item.item_number,
+                    "domain": item.domain,
+                    "matching_eligible": item.matching_eligible,
                     "source_snapshot_id": combined_source_id,
                     "descriptions": _json(item.descriptions),
                     "attributes": _json(attributes),
@@ -362,12 +364,13 @@ class CatalogImportService:
                 text(
                     """
                     INSERT INTO catalog_item_versions (
-                        id, item_number, source_snapshot_id, descriptions, attributes,
-                        family_id, replenishment_method, t1, canonical_text,
+                        id, item_number, domain, matching_eligible, source_snapshot_id,
+                        descriptions, attributes, family_id, replenishment_method, t1, canonical_text,
                         content_hash, record_hash, valid_from
                     ) VALUES (
-                        :id, :item_number, :source_snapshot_id, CAST(:descriptions AS jsonb),
-                        CAST(:attributes AS jsonb), :family_id, :replenishment_method, :t1,
+                        :id, :item_number, :domain, :matching_eligible, :source_snapshot_id,
+                        CAST(:descriptions AS jsonb), CAST(:attributes AS jsonb),
+                        :family_id, :replenishment_method, :t1,
                         :canonical_text, :content_hash, :record_hash, :valid_from
                     )
                     """

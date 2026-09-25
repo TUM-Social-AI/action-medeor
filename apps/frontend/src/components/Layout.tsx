@@ -23,6 +23,7 @@ type LayoutProps = {
 
 const SCREEN_LABELS: Record<Screen, string> = {
   home: 'Home',
+  history: 'Request History',
   dashboard: 'Trend Dashboard',
   ingestion: 'Import Request',
   review: 'Review Items',
@@ -102,7 +103,7 @@ export function Layout({ children, currentScreen, onNavigate }: LayoutProps) {
           />
 
           <NavGroup label="Management" />
-          <NavItem icon={<Clock size={15} />} label="Request History" active={false} onClick={() => {}} />
+          <NavItem icon={<Clock size={15} />} label="Request History" active={currentScreen === 'history'} onClick={() => onNavigate('history')} />
           <NavItem icon={<Settings size={15} />} label="Settings" active={false} onClick={() => {}} />
           <NavItem icon={<HelpCircle size={15} />} label="Help & Support" active={false} onClick={() => {}} />
         </nav>

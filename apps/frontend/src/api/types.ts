@@ -1,11 +1,11 @@
-export type Screen = 'home' | 'ingestion' | 'review' | 'matching' | 'summary' | 'dashboard';
+export type Screen = 'home' | 'ingestion' | 'review' | 'matching' | 'summary' | 'dashboard' | 'history';
 export type WorkflowStep = 'ingestion' | 'review' | 'matching' | 'summary';
 export type LoadingType = 'extracting' | 'matching';
 
 export type Priority = 'critical' | 'high' | 'medium' | 'low';
 export type ReviewPriority = 'critical' | 'high' | 'medium';
 export type ItemStatus = 'verified' | 'needs_review' | 'low_confidence' | 'missing';
-export type ImportFileType = 'pdf' | 'xlsx' | 'xls';
+export type ImportFileType = 'pdf' | 'xlsx' | 'xls' | 'docx' | 'csv';
 export type RiskLevel = 'critical' | 'high' | 'medium';
 
 export const DEFAULT_REQUEST_ID = 'SD-2024-0611';
@@ -73,9 +73,14 @@ export type ExtractedItem = {
   quantity: number | null;
   unit: string;
   notes: string;
+  itemNumber: string;
+  shelfLife: string;
+  /** File-specific columns that don't map to a core field, keyed by their source header label. */
+  attributes: Record<string, string>;
   priority: Priority;
   confidence: number | null;
   status: ItemStatus;
+  domain?: 'medicine' | 'equipment' | null;
 };
 
 export type ReviewCounts = {
@@ -93,11 +98,37 @@ export type ReviewResponse = {
   items: ExtractedItem[];
   sourceReferences: SourceReference[];
   counts: ReviewCounts;
+  /** Extra column labels discovered in this file, in source order. */
+  attributeColumns: string[];
+  /**
+   * User-renamed column headers for this request, keyed by column identifier: core fields use a
+   * fixed key ('name', 'quantity', 'unit', 'shelfLife', 'itemNumber', 'notes', 'priority');
+   * attribute columns use their own label (from attributeColumns) as the key. A column missing
+   * from this map just shows its default label.
+   */
+  columnLabels: Record<string, string>;
+  /**
+   * Header labels detected in the source file that aren't in attributeColumns yet - suggestions
+   * for the "Add column" control on the review screen. Empty for free-text documents (no
+   * detected header row to offer choices from).
+   */
+  availableColumns: string[];
 };
 
-export type ItemUpdate = Partial<Pick<ExtractedItem, 'name' | 'quantity' | 'unit' | 'notes' | 'priority'>>;
+export type ItemUpdate = Partial<
+  Pick<ExtractedItem, 'name' | 'quantity' | 'unit' | 'notes' | 'itemNumber' | 'shelfLife' | 'priority' | 'domain'>
+>;
 
 export type PartnerUpdate = Pick<PartnerDetails, 'partner' | 'region' | 'requestId' | 'contact'>;
+
+/** A field the user wants extracted, requested after the initial extraction from the review
+ * screen's "Add column" control - either picked from availableColumns or typed freely. displayName
+ * is what the column will be called; hint is optional guidance (typically the exact source column
+ * name when picked from availableColumns) - leave blank to let extraction find it semantically. */
+export type CustomColumnRequest = {
+  displayName: string;
+  hint: string;
+};
 
 export type RequestedItem = {
   id: number;

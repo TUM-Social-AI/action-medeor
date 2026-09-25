@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI
@@ -9,13 +11,25 @@ from app.catalog.api import router as catalog_router
 from app.core.config import get_settings
 from app.db.session import engine
 from app.frontend import mount_frontend
+from app.jobs.match_requests import run_forever
 from app.matching.api import router as matching_router
 from app.offers.api import file_router as offer_files_router
 from app.offers.api import router as offers_router
 
 settings = get_settings()
 
-app = FastAPI(title=settings.service_name)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    worker = asyncio.create_task(run_forever(), name="request-matching-worker")
+    try:
+        yield
+    finally:
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
+
+
+app = FastAPI(title=settings.service_name, lifespan=lifespan)
 app.include_router(matching_router)
 app.include_router(catalog_router)
 app.include_router(offers_router)

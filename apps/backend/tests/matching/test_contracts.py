@@ -28,15 +28,15 @@ def test_embedding_must_be_finite() -> None:
         )
 
 
-def test_alternative_selection_requires_reason() -> None:
-    with pytest.raises(ValidationError, match="override_reason"):
-        MatchDecisionRequestV1(
-            match_run_id=uuid4(),
-            inquiry_line_id="line-1",
-            decision_type=DecisionType.SELECT_ALTERNATIVE,
-            selected_item_number="410001001",
-            offered_quantity=Decimal("50"),
-        )
+def test_alternative_selection_can_omit_reason() -> None:
+    decision = MatchDecisionRequestV1(
+        match_run_id=uuid4(),
+        inquiry_line_id="line-1",
+        decision_type=DecisionType.SELECT_ALTERNATIVE,
+        selected_item_number="410001001",
+        offered_quantity=Decimal("50"),
+    )
+    assert decision.override_reason is None
 
 
 def test_source_timestamp_must_include_a_timezone() -> None:

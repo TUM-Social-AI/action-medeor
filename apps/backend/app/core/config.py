@@ -1,5 +1,7 @@
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOCAL_CORS_ORIGINS = [
@@ -17,10 +19,52 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://allocura:allocura@localhost:5432/allocura"
     )
     cors_origins: str = ""
+    embedding_provider: str = ""
     embedding_model_name: str = ""
+    embedding_model_version: str = ""
     embedding_model_revision: str = "main"
+    embedding_deployment: str = ""
+    embedding_dimensions: int | None = None
+    embedding_batch_size: int = 32
+    azure_foundry_endpoint: str = ""
+    azure_foundry_api_key: str = ""
+
+    # Fallback extractor for documents whose layout isn't a clean, heuristically-parseable table
+    # (free-form PDF pages, Word documents). Left unset in most environments; extraction
+    # degrades to a lower-confidence naive parse. Same prompt/schema across every provider - see
+    # app/parsing/llm_client.py for the dispatch and app/parsing/llm_extractor.py for the prompt.
+    # - "gemini" is a free-tier option for testing this pipeline before committing to a paid key.
+    # - "openai" is generic: it talks to OpenAI itself by default, or to anything else that speaks
+    #   the same wire protocol (OpenRouter, Groq, Together, a self-hosted vLLM/Ollama endpoint...)
+    #   when openai_base_url is set - the easiest way to try models from other companies without
+    #   adding a provider per company.
+    # - "azure_openai" calls a Foundry chat deployment through its v1 API. It can share the
+    #   endpoint and API key configured for embeddings, while using a separate deployment.
+    llm_provider: Literal["anthropic", "gemini", "openai", "azure_openai"] = "anthropic"
+    anthropic_api_key: str | None = None
+    anthropic_extraction_model: str = "claude-haiku-4-5"
+    gemini_api_key: str | None = None
+    gemini_extraction_model: str = "gemini-2.5-flash"
+
+    openai_api_key: str | None = None
+    openai_extraction_model: str = "gpt-4o-mini"
+    # Leave unset to call OpenAI itself; set to try another OpenAI-wire-compatible provider, e.g.
+    # https://openrouter.ai/api/v1 (in which case openai_extraction_model becomes that provider's
+    # model id, e.g. "anthropic/claude-3.5-sonnet" or "meta-llama/llama-3.3-70b").
+    openai_base_url: str | None = None
+
+    azure_openai_api_key: str | None = None
+    # Optional override if extraction uses a different Foundry resource from embeddings.
+    azure_openai_endpoint: str | None = None
+    # The chat deployment name in Foundry, which can differ from the underlying model name.
+    azure_openai_deployment: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @field_validator("embedding_dimensions", mode="before")
+    @classmethod
+    def empty_embedding_dimensions_are_unset(cls, value: object) -> object:
+        return None if value == "" else value
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -555,6 +555,13 @@ Excluded products are removed. The rest are sorted lexicographically:
 5. better comparable availability;
 6. article number as the stable final tie-breaker.
 
+The ranker also encodes these inputs as a numeric `ranking_score` before sorting. It uses
+mixed-radix levels for the distinct values present in that request, so a later factor cannot
+outweigh an earlier one. Article number breaks the final tie. Before sorting, the key is
+normalized to 0–100 across the evaluated candidate pool; the best candidate scores 100.
+The lowest evaluated candidate may be outside the returned top-k. This relative score is only
+comparable within the same requested item and is not a confidence probability.
+
 Lexicographic means a later factor cannot compensate for an earlier one. Therefore 500 pieces of CH12
 do not outrank a fully matching CH18 product with 80 pieces merely because stock is higher.
 
@@ -1118,9 +1125,10 @@ The gates are non-optional:
 The executable commands and decision-record checklist are in
 [`../../../../benchmarks/embeddings/README.md`](../../../../benchmarks/embeddings/README.md). Product
 indexing is implemented by [`../catalog/embeddings.py`](../catalog/embeddings.py) and
-[`../catalog/embedding_worker.py`](../catalog/embedding_worker.py). The worker's model ID is
-`sentence-transformers:<model-name>@<revision>`; stored and query vectors from another identity or
-dimension must never be compared.
+[`../catalog/embedding_worker.py`](../catalog/embedding_worker.py). Sentence Transformer identities
+use `sentence-transformers:<model-name>@<revision>`; Azure OpenAI identities include the immutable
+model version and dimensions. Stored and query vectors from another identity or dimension must never
+be compared.
 
 The standard web image contains no Sentence Transformers dependency. Production design must either
 add a model-enabled runtime, call an internal embedding service, or supply `query_embedding` and the

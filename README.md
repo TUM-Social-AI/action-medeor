@@ -70,6 +70,46 @@ DATABASE_URL=postgresql+asyncpg://allocura:allocura@localhost:5432/allocura
 The frontend runs at `http://localhost:3000`, and the backend runs at `http://localhost:8000`.
 FastAPI docs are available at `http://localhost:8000/docs`.
 
+### Restore a database dump locally
+
+From the repository root (overwrites local `allocura`; password: `allocura`):
+
+```bash
+docker compose stop backend
+docker compose up -d db
+docker compose exec -T db dropdb -U allocura --force --if-exists allocura
+docker compose exec -T db createdb -U allocura -T template0 allocura
+pg_restore -h localhost -U allocura -d allocura --no-owner --no-acl --exit-on-error /path/to/allocura-azure.dump
+```
+
+The dump includes embeddings. Set `DATABASE_URL=postgresql+asyncpg://allocura:allocura@localhost:5432/allocura`
+for the local backend.
+
+## Local Foundry extraction
+
+For a backend started directly with uvicorn, use `apps/backend/.env.example` as a
+template for the ignored `apps/backend/.env` file. Add these settings if they are missing:
+
+```dotenv
+LLM_PROVIDER=azure_openai
+AZURE_OPENAI_DEPLOYMENT=<exact chat deployment name in Foundry>
+```
+
+The backend reuses `AZURE_FOUNDRY_ENDPOINT` and `AZURE_FOUNDRY_API_KEY` from the embedding
+configuration. `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_API_KEY` are optional overrides if
+extraction uses another resource. The deployment name may differ from the model name
+`gpt-6-luna`; no extraction model version or vector dimensions are needed.
+
+Restart the backend after editing its `.env`, then upload a Word document in the app and review
+the extracted items. Word documents use the configured LLM; spreadsheets are primarily parsed
+with column rules. An upload can still produce items through basic parsing if an LLM call fails,
+so an app upload alone does not prove that Foundry responded. The `import_requests` table stores
+`used_llm_fallback` and `parser_warnings` for that check.
+
+The example file is never loaded automatically. Docker Compose reads a separate root `.env`
+if one exists, or uses exported environment variables and its defaults. The production Azure
+Container App receives its settings as runtime environment variables and secret references.
+
 ## Start here: complete Matching V1 operating example
 
 This section is the shortest complete path from an empty database to a testable matching system.
@@ -108,6 +148,35 @@ The schema is defined by the migrations under
 [`apps/backend/migrations/versions`](apps/backend/migrations/versions).
 
 ### 3. Upload `Artikeldaten.csv` and `Artikeluebersetzungen.csv` together
+
+For a local test using the files already in `data/`, run the catalog upload job from
+`apps/backend` while the API is running:
+
+```bash
+uv run python -m app.jobs.import_catalog --limit 25
+```
+
+`--limit` selects the first 25 nonempty article rows and includes every translation for those
+articles. The job writes temporary CSVs and deletes them after the API request. Override the input
+paths with `--articles` and `--translations`, and the server with `--api-url` (default:
+`http://localhost:8000`). Omit `--limit` to upload both complete, unchanged files, as a scheduled
+job should do:
+
+```bash
+uv run python -m app.jobs.import_catalog
+```
+
+After a successful upload, the job runs `python -m app.catalog.embedding_worker`. Configure the
+embedding provider and `DATABASE_URL` in `apps/backend/.env` before running it; the worker must use
+the same database as the API. If the worker fails, the command exits with an error, but the catalog
+import has already succeeded and can be retried safely. For a lexical-only test without a configured
+model, pass `--skip-embeddings`.
+
+Run a limited import against a fresh test database. The catalog API treats every upload as a complete
+snapshot: omitted articles in a later upload are marked missing, or a large drop is rejected. The API
+already compares article identity and text versions, refreshes inventory quantities, and queues
+embeddings only for new or text-changed eligible versions with an active model. The worker also
+backfills missing embeddings on its first run.
 
 The easiest manual method is `http://localhost:8000/docs`: open
 `POST /api/v1/catalog-imports`, choose **Try it out**, select both files in their matching form fields
@@ -205,8 +274,8 @@ do not describe semantic matching as validated until all of these gates pass:
    [`benchmarks/embeddings/Dockerfile`](benchmarks/embeddings/Dockerfile).
 2. Run a small cloud smoke test, for example with `--limit-queries 25`, to verify file mounting,
    model download and report output.
-3. Run all three free-first models against the full automatically labelled French set generated from
-   the same `Artikeldaten.csv` and `Artikeluebersetzungen.csv` pair.
+3. Run both configured Foundry embedding deployments against the full automatically labelled French
+   set generated from the same `Artikeldaten.csv` and `Artikeluebersetzungen.csv` pair.
 4. Add manually reviewed, normalized real inquiry examples with an agreed correct article number and
    run the comparison again.
 5. Compare Recall@1/3/10, MRR, latency, throughput, vector size and actual Azure compute cost.
@@ -224,13 +293,11 @@ worker live in
 [`apps/backend/app/catalog/embeddings.py`](apps/backend/app/catalog/embeddings.py) and
 [`apps/backend/app/catalog/embedding_worker.py`](apps/backend/app/catalog/embedding_worker.py).
 
-After approval, initialize the catalogue vectors in a cloud worker with database access:
+After approval, configure the selected provider through the embedding environment variables and
+initialize the catalogue vectors in a cloud worker with database access:
 
 ```bash
-python -m app.catalog.embedding_worker \
-  --model <approved-hugging-face-model> \
-  --revision <immutable-model-revision> \
-  --batch-size 32
+python -m app.catalog.embedding_worker
 ```
 
 The worker registers the model, queues all missing current eligible product versions and writes
@@ -290,12 +357,50 @@ the full architecture in the [detailed walkthrough](apps/backend/app/matching/RE
 
 ## Product Matching
 
-The backend now contains an explainable matching foundation for normalized medicine and medical-
-equipment inquiries. It combines exact, lexical, vector, and historical retrieval, applies
-conservative versioned constraints, calculates packaging and availability evidence, and stores both
-matching runs and subsequent human decisions. Source extraction from Excel, Outlook, SharePoint, or
-ERP systems remains outside the matching package. Frontend contracts and a real adapter are prepared,
-but the visible application still selects the fixture workflow until extraction integration is ready.
+The backend contains an explainable matching engine for normalized medicine and equipment
+inquiries. It combines exact, lexical, vector, and historical retrieval, applies versioned
+constraints, calculates packaging and availability evidence, and stores match runs and human
+decisions. New Request opens the import screen without saving a row; submitting a file
+creates the saved request and extracts its contents. Empty drafts from older clients are hidden
+from request history. Extraction
+suggests medicine or equipment from an explicit type column, specific units or item names; the
+LLM extraction path returns a type too. Ambiguous lines need a manual choice. Once every line
+is verified and classified, the UI queues matching for all lines. The backend worker runs while
+the API is running and recovers expired jobs after a restart. Results, progress, and selections
+remain available when the browser is closed or refreshed. Completed lines can be selected
+while the worker processes other lines. The worker saves a default
+selection when the top article has the exact requested article number, or its text similarity is
+at least 0.78 with compatible numbers and product form. The UI shows the numeric ranking
+score calculated from the matching criteria before candidates are sorted. It preserves
+the lexicographic priority order and is normalized to 0–100 within each requested item:
+the best available candidate scores 100. It is not a calibrated confidence percentage. Name similarity and retrieval evidence remain available
+in candidate details. Other items wait for a person. Alternative
+selections do not require a reason; saved decisions are retained for later offline evaluation and
+do not update live ranking. Opening the summary explicitly finalizes the request. Finalized requests
+open at the summary from history; returning to matching clears that final state while retaining the
+decisions. Pricing and offer creation are not available in this workflow.
+
+Apply the current migrations with `uv run alembic upgrade head` before using this workflow.
+Import a catalog first through `POST /api/v1/catalog-imports` or the catalog import job. The
+catalog snapshot is fixed when request matching starts. If `EMBEDDING_PROVIDER` is configured,
+the matching worker generates query embeddings and includes vector retrieval; with the setting
+empty, exact and lexical retrieval still run.
+
+```text
+POST /api/requests                        create draft
+POST /api/requests/{id}/file              upload and extract
+GET  /api/requests                        list saved requests
+GET  /api/requests/{id}/review            reopen extraction and review
+POST /api/requests/{id}/matching          queue or retry matching
+GET  /api/requests/{id}/matching          progress, candidates, decisions
+POST /api/requests/{id}/matching/auto-select  apply saved defaults to older runs
+POST /api/requests/{id}/items/{item}/decision
+POST /api/requests/{id}/finalize          save final summary state
+POST /api/requests/{id}/reopen-matching   return to matching with saved decisions
+GET  /api/requests/{id}/summary
+```
+
+The standalone matching API remains available:
 
 ```text
 POST /api/v1/match-runs
@@ -422,11 +527,10 @@ available for the [overview](apps/backend/app/matching/README_DE.md) and
 
 ## Environment
 
-Copy `.env.example` to `.env` for Docker Compose overrides.
-
-```bash
-cp .env.example .env
-```
+For a local backend, keep `apps/backend/.env` beside `apps/backend/.env.example`.
+If no local backend `.env` exists yet, create it from the example and fill in the private
+database URL, Foundry endpoint, and API key. Docker Compose uses its own defaults or a
+separate root `.env` for overrides; Azure Container Apps uses runtime settings and secrets.
 
 The first database target is PostgreSQL with pgvector so local Docker and deployment use the same
 shape. The backend keeps the database behind `DATABASE_URL`, so it can be swapped later.
@@ -493,8 +597,14 @@ Open `http://localhost:8000`. The production runtime accepts these environment v
 | `DATABASE_URL` | Yes | Async SQLAlchemy PostgreSQL URL. Use the externally managed production database. |
 | `APP_ENV` | Recommended | Set to `production` to disable automatic local-development CORS behavior. |
 | `CORS_ORIGINS` | No | Comma-separated cross-origin frontend URLs. Same-origin production needs none. |
-| `EMBEDDING_MODEL_NAME` | No | Approved Sentence Transformers model. Leave empty in the standard web image until benchmarking and the query-inference runtime are complete. |
-| `EMBEDDING_MODEL_REVISION` | No | Pinned immutable upstream revision for reproducible query embeddings. Do not use `main` in production. |
+| `EMBEDDING_PROVIDER` | No | `sentence-transformers`, `azure-openai` or `azure-cohere`; leave blank to disable vector retrieval. |
+| `EMBEDDING_MODEL_NAME` | With provider | Approved model name. |
+| `EMBEDDING_MODEL_VERSION` | For Foundry | Immutable deployed model version. |
+| `EMBEDDING_MODEL_REVISION` | For Sentence Transformers | Pinned immutable upstream revision. Do not use `main` in production. |
+| `EMBEDDING_DEPLOYMENT` | For Foundry | Foundry deployment name used for inference. |
+| `EMBEDDING_DIMENSIONS` | For Foundry | Exact configured vector dimensions. |
+| `AZURE_FOUNDRY_ENDPOINT` | For Foundry | Foundry resource endpoint; no embedding route suffix. |
+| `AZURE_FOUNDRY_API_KEY` | For Foundry key auth | Secret supplied at runtime; never commit it. Prefer managed identity in production. |
 
 `VITE_API_BASE_URL` is a frontend build-time setting for separately hosted local development. The
 combined production build deliberately leaves it unset so browser requests use same-origin
@@ -502,22 +612,21 @@ combined production build deliberately leaves it unset so browser requests use s
 
 ## Embedding model evaluation
 
-The benchmark under [`benchmarks/embeddings`](benchmarks/embeddings/README.md) compares open,
-multilingual models first. It evaluates French ERP descriptions against the offerable catalogue and
-can include manually reviewed normalized inquiry labels. It reports Recall@1/3/10, mean reciprocal
-rank, runtime, throughput, vector dimensions, and storage. Model downloads and inference require
-cloud CPU/GPU time, but there is no per-request model-provider fee for the default open models.
+The benchmark under [`benchmarks/embeddings`](benchmarks/embeddings/README.md) compares Azure OpenAI
+embedding deployments in Foundry. It evaluates French ERP descriptions against the offerable
+catalogue and can include manually reviewed normalized inquiry labels. It reports Recall@1/3/10,
+mean reciprocal rank, runtime, throughput, vector dimensions, token usage and storage.
 
-Run the benchmark and the later embedding worker in Azure or another adequately sized cloud runner.
-The development laptop has only about 4 GB RAM and is not suitable for loading BGE-M3 or E5-large.
-The web container deliberately excludes PyTorch and model weights.
+The lightweight benchmark image calls Foundry remotely and deliberately excludes Sentence
+Transformers, PyTorch and local model weights. Optional open-model comparisons require a separate
+model-enabled environment.
 
-After selecting and pinning a model, the cloud worker can initialize all missing product embeddings:
+After selecting and pinning a model, configure the provider as shown in
+[`benchmarks/embeddings/README.md`](benchmarks/embeddings/README.md). The cloud worker can then
+initialize all missing product embeddings:
 
 ```bash
-python -m app.catalog.embedding_worker \
-  --model <approved-hugging-face-model> \
-  --revision <immutable-revision>
+python -m app.catalog.embedding_worker
 ```
 
 Later catalog imports automatically queue only new or text-changed offerable versions. Inventory-only
@@ -550,7 +659,7 @@ The code foundation and production rollout are separate milestones. Complete the
 | 6. Embedding activation | Azure owner runs the worker against staging and chooses a model-capable query-inference boundary | All eligible current versions have compatible vectors; known multilingual matches pass; no failed jobs remain unexplained |
 | 7. SharePoint metadata sync | Integration owner deploys a least-privilege read-only Graph job using stable drive-item IDs and live URLs | New/changed/deleted files appear correctly; `needs_extraction=true` returns the intended queue |
 | 8. Extraction handoff | Extraction owner reads the queue and publishes normalized offers/inquiry lines without changing matching internals | Same external ID links source file and structured record; malformed payloads fail visibly |
-| 9. Real frontend workflow | Frontend owner replaces the fixture adapter with the real extraction/matching APIs | Validated lines create match runs, explanations render correctly and decisions persist with required override reasons |
+| 9. Real frontend workflow | Frontend owner replaces the fixture adapter with the real extraction/matching APIs | Validated lines create match runs, explanations render correctly and decisions persist, with optional override reasons |
 | 10. Production readiness | Team adds authentication/authorization, monitoring, alerts, backup-restore test, operating ownership and rollback procedure | End-to-end acceptance with real examples passes and every scheduled/manual process has an owner and failure response |
 
 Matching V1 must not be called semantically validated at phase 3 merely because products were

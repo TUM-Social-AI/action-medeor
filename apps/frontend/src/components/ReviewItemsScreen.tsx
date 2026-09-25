@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -9,10 +9,22 @@ import {
   FileText,
   HelpCircle,
   Info,
+  ChevronDown,
+  ChevronRight,
+  ListPlus,
   Pencil,
+  Plus,
   X,
 } from 'lucide-react';
-import { getReview, updateItem, updatePartner, verifyItem } from '../api/client';
+import {
+  addCustomColumn,
+  confirmPartner,
+  getReview,
+  updateColumnLabel,
+  updateItem,
+  updatePartner,
+  verifyItem,
+} from '../api/client';
 import type {
   ExtractedItem,
   ItemStatus,
@@ -68,7 +80,62 @@ const STATUS_CFG: Record<
 };
 
 function needsManualReview(item: ExtractedItem) {
-  return item.status === 'low_confidence' || item.status === 'missing';
+  return item.status === 'low_confidence' || item.status === 'missing' || !item.domain;
+}
+
+/** A column header or attribute label that renames itself in place - click to edit, Enter/blur
+ * saves, Escape cancels. Used for both <th> core-column headers and <dt> attribute labels, since
+ * both are just "this column's display name" from the rename endpoint's point of view. */
+function EditableLabel({ value, onSave }: { value: string; onSave: (next: string) => void }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => setDraft(value), [value]);
+
+  if (isEditing) {
+    const commit = () => {
+      setIsEditing(false);
+      const trimmed = draft.trim();
+      if (trimmed && trimmed !== value) {
+        onSave(trimmed);
+      } else {
+        setDraft(value);
+      }
+    };
+
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onFocus={event => event.target.select()}
+        onChange={event => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            event.currentTarget.blur();
+          } else if (event.key === 'Escape') {
+            setDraft(value);
+            setIsEditing(false);
+          }
+        }}
+        onClick={event => event.stopPropagation()}
+        className="border border-[#1B4E8A] rounded px-1 py-0.5 outline-none bg-white"
+        style={{ font: 'inherit', letterSpacing: 'inherit', textTransform: 'inherit', width: '9rem' }}
+      />
+    );
+  }
+
+  return (
+    <button
+      onClick={() => setIsEditing(true)}
+      className="group inline-flex items-center gap-1 hover:text-[#1B4E8A] transition-colors"
+      title="Click to rename this column"
+      type="button"
+    >
+      <span>{value}</span>
+      <Pencil size={10} className="opacity-0 group-hover:opacity-60 transition-opacity flex-shrink-0" />
+    </button>
+  );
 }
 
 export function ReviewItemsScreen({ requestId, initialData, onContinue }: ReviewItemsScreenProps) {
@@ -84,12 +151,79 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(!initialData);
+  const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
+  const [columnLabels, setColumnLabels] = useState<Record<string, string>>(
+    initialData?.columnLabels ?? {},
+  );
+  const [availableColumns, setAvailableColumns] = useState<string[]>(
+    initialData?.availableColumns ?? [],
+  );
+  const [newColumnName, setNewColumnName] = useState('');
+  const [isAddingColumn, setIsAddingColumn] = useState(false);
+
+  // key is a core-field key ('name', 'quantity', ...) or an attribute column's own label - see
+  // ReviewResponse.columnLabels. Optimistic: applies locally first so the header doesn't flicker
+  // back to its old text while the request is in flight, then reconciles with the server's copy.
+  const renameColumn = (key: string, label: string) => {
+    setColumnLabels(previous => ({ ...previous, [key]: label }));
+    updateColumnLabel(requestId, key, label)
+      .then(setColumnLabels)
+      .catch(caught => {
+        setError(caught instanceof Error ? caught.message : 'Unable to rename column');
+      });
+  };
+
+  const columnLabel = (key: string, fallback: string) => columnLabels[key] ?? fallback;
+
+  const existingColumnLabels = useMemo(
+    () => new Set((data?.attributeColumns ?? []).map(label => label.toLowerCase())),
+    [data],
+  );
+
+  // Passes the same string as both displayName and hint: it's either picked verbatim from
+  // availableColumns (an exact detected header, so the deterministic hint match resolves it for
+  // free) or typed freely by the user, in which case it still guides the LLM fallback match the
+  // same way a hint would - see CustomColumnRequest / app.parsing.custom_columns.
+  const submitNewColumn = async () => {
+    const trimmed = newColumnName.trim();
+    if (!trimmed || existingColumnLabels.has(trimmed.toLowerCase())) {
+      return;
+    }
+
+    setIsAddingColumn(true);
+    try {
+      const response = await addCustomColumn(requestId, { displayName: trimmed, hint: trimmed });
+      setData(response);
+      setItems(response.items);
+      setColumnLabels(response.columnLabels ?? {});
+      setAvailableColumns(response.availableColumns ?? []);
+      setNewColumnName('');
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to add column');
+    } finally {
+      setIsAddingColumn(false);
+    }
+  };
+
+  const toggleExpanded = (itemId: number) =>
+    setExpandedItems(previous => {
+      const next = new Set(previous);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      return next;
+    });
 
   useEffect(() => {
     if (initialData) {
       setData(initialData);
       setItems(initialData.items);
       setPartnerDetails(initialData.partner);
+      setColumnLabels(initialData.columnLabels ?? {});
+      setAvailableColumns(initialData.availableColumns ?? []);
       setIsLoading(false);
       return;
     }
@@ -102,6 +236,8 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
           setData(response);
           setItems(response.items);
           setPartnerDetails(response.partner);
+          setColumnLabels(response.columnLabels ?? {});
+          setAvailableColumns(response.availableColumns ?? []);
           setError(null);
         }
       })
@@ -129,11 +265,30 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
     [data],
   );
 
+  // Columns vary per uploaded file - a bare name/qty/unit sheet contributes none, while a full
+  // RFQ form contributes several. Fall back to whatever the items carry if the server didn't
+  // send an explicit ordering.
+  const attributeColumns =
+    data?.attributeColumns && data.attributeColumns.length > 0
+      ? data.attributeColumns
+      : Array.from(new Set(items.flatMap(item => Object.keys(item.attributes ?? {}))));
+
+  // Optional core columns only earn their width when the file populated them - the same
+  // adaptive rule the extra columns follow, so a sparse request form stays readable.
+  const showItemNumber = items.some(item => item.itemNumber);
+  const showUnit = items.some(item => item.unit);
+  const showShelfLife = items.some(item => item.shelfLife);
+  const showNotes = items.some(item => item.notes);
+  const columnCount =
+    7 +
+    (attributeColumns.length > 0 ? 1 : 0) +
+    [showItemNumber, showUnit, showShelfLife, showNotes].filter(Boolean).length;
+
   const verified = items.filter(item => item.status === 'verified').length;
   const needsReview = items.filter(item => item.status === 'needs_review').length;
   const lowConfidence = items.filter(item => item.status === 'low_confidence').length;
   const missing = items.filter(item => item.status === 'missing').length;
-  const allVerified = items.length > 0 && verified === items.length;
+  const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain);
   const blockedItems = items.filter(needsManualReview);
 
   const openEdit = (item: ExtractedItem) => {
@@ -143,7 +298,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       quantity: item.quantity,
       unit: item.unit,
       notes: item.notes,
+      itemNumber: item.itemNumber,
+      shelfLife: item.shelfLife,
       priority: item.priority,
+      domain: item.domain,
     });
   };
 
@@ -152,13 +310,20 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       return;
     }
 
+    if (!editValues.domain) {
+      setError('Choose Medicine or Equipment before verifying this item.');
+      return;
+    }
     try {
       const updated = await updateItem(requestId, editingItem.id, {
         name: editValues.name,
         quantity: editValues.quantity,
         unit: editValues.unit,
         notes: editValues.notes,
+        itemNumber: editValues.itemNumber,
+        shelfLife: editValues.shelfLife,
         priority: editValues.priority,
+        domain: editValues.domain,
       });
       setItems(prev => prev.map(item => (item.id === updated.id ? updated : item)));
       setEditingItem(null);
@@ -169,6 +334,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   };
 
   const markVerified = async (id: number) => {
+    const item = items.find(value => value.id === id);
+    if (item && !item.domain) {
+      openEdit(item);
+      return;
+    }
     try {
       const updated = await verifyItem(requestId, id);
       setItems(prev => prev.map(item => (item.id === id ? updated : item)));
@@ -179,7 +349,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   };
 
   const startEditPartner = () => {
-    if (partnerDetails) {
+    if (partnerDetails && !partnerDetails.confirmed) {
       setPartnerDraft({ ...partnerDetails });
       setEditingPartner(true);
     }
@@ -207,6 +377,16 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to save partner details');
+    }
+  };
+
+  const confirmPartnerDetails = async () => {
+    try {
+      const updated = await confirmPartner(requestId);
+      setPartnerDetails(details => details && { ...details, ...updated });
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to confirm partner details');
     }
   };
 
@@ -239,8 +419,8 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
           <div className="mb-4">
             <h1 className="text-gray-900">Review Extracted Items</h1>
             <p className="text-gray-500 text-sm mt-0.5">
-              Verify that all extracted items are correct. Click any item name or action button to
-              open the source reference and make corrections.
+              Check the extracted items and suggested product types. Specific units and names are
+              classified automatically; edit a type if it is wrong or still unclear.
             </p>
           </div>
 
@@ -270,17 +450,84 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             </div>
           )}
 
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-3 flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5 text-gray-500 flex-shrink-0">
+              <ListPlus size={14} />
+              <span className="text-xs" style={{ fontWeight: 600 }}>
+                Add column
+              </span>
+            </div>
+            <input
+              type="text"
+              list="available-columns-suggestions"
+              placeholder={
+                availableColumns.length > 0
+                  ? 'Pick a detected column or type your own...'
+                  : 'Type a column name (e.g. Batch Number)...'
+              }
+              value={newColumnName}
+              onChange={event => setNewColumnName(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  void submitNewColumn();
+                }
+              }}
+              disabled={isAddingColumn}
+              className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] disabled:bg-gray-50"
+            />
+            <datalist id="available-columns-suggestions">
+              {availableColumns.map(column => (
+                <option key={column} value={column} />
+              ))}
+            </datalist>
+            <button
+              onClick={() => void submitNewColumn()}
+              disabled={!newColumnName.trim() || isAddingColumn}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs flex-shrink-0 transition-colors ${
+                newColumnName.trim() && !isAddingColumn
+                  ? 'bg-[#1B4E8A] text-white hover:bg-[#163d6d]'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              }`}
+              style={{ fontWeight: 600 }}
+            >
+              <Plus size={12} /> {isAddingColumn ? 'Adding...' : 'Add'}
+            </button>
+          </div>
+
+          {/* overflow-x-auto, not overflow-hidden: the column set adapts to the uploaded file,
+              so the table can exceed the container and must scroll rather than clip Actions. */}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50/80">
-                  {['#', 'Item Name', 'Qty', 'Unit', 'Notes', 'Priority', 'Confidence', 'Status', 'Actions'].map(header => (
+                  {[
+                    ...(attributeColumns.length > 0 ? [{ key: null, label: '' }] : []),
+                    { key: null, label: '#' },
+                    ...(showItemNumber ? [{ key: 'itemNumber', label: 'Item #' }] : []),
+                    { key: 'name', label: 'Item Name' },
+                    { key: null, label: 'Type' },
+                    { key: 'quantity', label: 'Qty' },
+                    ...(showUnit ? [{ key: 'unit', label: 'Unit' }] : []),
+                    ...(showShelfLife ? [{ key: 'shelfLife', label: 'Shelf Life' }] : []),
+                    ...(showNotes ? [{ key: 'notes', label: 'Notes' }] : []),
+                    { key: 'priority', label: 'Priority' },
+                    { key: null, label: 'Confidence' },
+                    { key: null, label: 'Status' },
+                    { key: null, label: 'Actions' },
+                  ].map((header, headerIndex) => (
                     <th
-                      key={header}
+                      key={`${header.label}-${headerIndex}`}
                       className="text-left px-4 py-3 text-xs text-gray-500"
                       style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}
                     >
-                      {header}
+                      {header.key ? (
+                        <EditableLabel
+                          value={columnLabel(header.key, header.label)}
+                          onSave={next => renameColumn(header.key!, next)}
+                        />
+                      ) : (
+                        header.label
+                      )}
                     </th>
                   ))}
                 </tr>
@@ -290,9 +537,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                   const status = STATUS_CFG[item.status];
                   const priority = PRIORITY_CFG[item.priority];
                   const blocked = needsManualReview(item);
+                  const isExpanded = expandedItems.has(item.id);
                   const missingName = item.status === 'missing' || !item.name;
 
-                  return (
+                  const mainRow = (
                     <tr
                       key={item.id}
                       className={`border-b border-gray-100 transition-colors ${
@@ -304,7 +552,28 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                       }`}
                       style={blocked ? { boxShadow: 'inset 3px 0 0 #F59E0B' } : undefined}
                     >
+                      {attributeColumns.length > 0 && (
+                        <td className="pl-4 pr-0 py-3">
+                          <button
+                            onClick={() => toggleExpanded(item.id)}
+                            aria-expanded={isExpanded}
+                            aria-label={isExpanded ? 'Hide extra fields' : 'Show extra fields'}
+                            className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                          >
+                            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          </button>
+                        </td>
+                      )}
                       <td className="px-4 py-3 text-xs text-gray-400">{index + 1}</td>
+                      {showItemNumber && (
+                        <td className="px-4 py-3">
+                          {item.itemNumber ? (
+                            <span className="text-xs text-gray-500 font-mono">{item.itemNumber}</span>
+                          ) : (
+                            <span className="text-xs text-gray-300 italic">-</span>
+                          )}
+                        </td>
+                      )}
                       <td className="px-4 py-3">
                         <button
                           onClick={() => openEdit(item)}
@@ -317,6 +586,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                         </button>
                       </td>
                       <td className="px-4 py-3">
+                        <span className={`text-xs ${item.domain ? 'text-gray-700' : 'text-amber-700'}`}>
+                          {item.domain ?? 'Choose in Edit'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
                         {item.quantity !== null ? (
                           <span className="text-sm text-gray-900" style={{ fontWeight: 500 }}>
                             {item.quantity.toLocaleString()}
@@ -325,18 +599,31 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                           <span className="text-sm text-gray-400 italic">-</span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
-                        {item.unit ? (
-                          <span className="text-sm text-gray-500">{item.unit}</span>
-                        ) : (
-                          <span className="text-sm text-gray-400 italic">-</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 max-w-xs">
-                        <span className={`text-xs ${item.notes ? 'text-gray-500' : 'text-gray-300 italic'}`}>
-                          {item.notes || '-'}
-                        </span>
-                      </td>
+                      {showUnit && (
+                        <td className="px-4 py-3">
+                          {item.unit ? (
+                            <span className="text-sm text-gray-500">{item.unit}</span>
+                          ) : (
+                            <span className="text-sm text-gray-400 italic">-</span>
+                          )}
+                        </td>
+                      )}
+                      {showShelfLife && (
+                        <td className="px-4 py-3">
+                          {item.shelfLife ? (
+                            <span className="text-xs text-gray-500">{item.shelfLife}</span>
+                          ) : (
+                            <span className="text-xs text-gray-300 italic">-</span>
+                          )}
+                        </td>
+                      )}
+                      {showNotes && (
+                        <td className="px-4 py-3 max-w-xs">
+                          <span className={`text-xs ${item.notes ? 'text-gray-500' : 'text-gray-300 italic'}`}>
+                            {item.notes || '-'}
+                          </span>
+                        </td>
+                      )}
                       <td className="px-4 py-3">
                         <span className={`inline-flex px-2 py-0.5 rounded-full text-xs ${priority.bg} ${priority.color}`} style={{ fontWeight: 600 }}>
                           {priority.label}
@@ -414,6 +701,38 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                       </td>
                     </tr>
                   );
+
+                  const detailRow =
+                    attributeColumns.length > 0 && isExpanded ? (
+                      <tr key={`${item.id}-details`} className="border-b border-gray-100 bg-gray-50/60">
+                        <td colSpan={columnCount} className="px-12 py-3">
+                          <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1.5 max-w-3xl">
+                            {attributeColumns.map(label => (
+                              <Fragment key={label}>
+                                {/* label (not the renamed text) is always the lookup key into
+                                    item.attributes and the rename endpoint's columnKey - only
+                                    what's displayed changes when the user renames it. */}
+                                <dt className="text-xs text-gray-500" style={{ fontWeight: 600 }}>
+                                  <EditableLabel
+                                    value={columnLabel(label, label)}
+                                    onSave={next => renameColumn(label, next)}
+                                  />
+                                </dt>
+                                <dd
+                                  className={`text-xs ${
+                                    item.attributes?.[label] ? 'text-gray-700' : 'text-gray-300 italic'
+                                  }`}
+                                >
+                                  {item.attributes?.[label] || '—'}
+                                </dd>
+                              </Fragment>
+                            ))}
+                          </dl>
+                        </td>
+                      </tr>
+                    ) : null;
+
+                  return detailRow ? [mainRow, detailRow] : mainRow;
                 })}
               </tbody>
             </table>
@@ -430,9 +749,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                 <span className="text-amber-600">
                   {needsReview} item(s) still flagged for review. Click Verify or Edit to confirm them.
                 </span>
+              ) : items.some(item => !item.domain) ? (
+                <span className="text-amber-700">Choose Medicine or Equipment for every item before matching.</span>
               ) : (
                 <span className="text-green-700" style={{ fontWeight: 500 }}>
-                  All items verified. Ready to proceed.
+                  All items verified and classified. Ready to proceed.
                 </span>
               )}
             </div>
@@ -483,7 +804,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
               </h3>
               <div className="flex items-center gap-1.5">
                 {partnerDetails.confirmed && !editingPartner && <CheckCircle2 size={14} className="text-green-500" />}
-                {!editingPartner && (
+                {!editingPartner && !partnerDetails.confirmed && (
                   <button
                     onClick={startEditPartner}
                     className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
@@ -497,7 +818,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
 
             {editingPartner && partnerDraft ? (
               <div className="space-y-2.5">
-                {(['partner', 'region', 'requestId', 'contact'] as const).map(key => (
+                {(['partner', 'region', 'contact'] as const).map(key => (
                   <div key={key}>
                     <div className="text-xs text-gray-400 mb-0.5">{partnerLabel(key)}</div>
                     <input
@@ -507,6 +828,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     />
                   </div>
                 ))}
+                <div className="text-xs text-gray-500">System request ID: <span className="font-mono text-gray-700">{partnerDetails.requestId}</span></div>
                 <div className="flex gap-2 pt-1">
                   <button
                     onClick={() => setEditingPartner(false)}
@@ -520,7 +842,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     className="flex-1 py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
                     style={{ fontWeight: 600 }}
                   >
-                    Save & Confirm
+                    Save
                   </button>
                 </div>
               </div>
@@ -543,7 +865,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                 </div>
                 {!partnerDetails.confirmed ? (
                   <button
-                    onClick={() => setPartnerDetails(details => details && { ...details, confirmed: true })}
+                    onClick={() => void confirmPartnerDetails()}
                     className="w-full py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
                     style={{ fontWeight: 600 }}
                   >
@@ -578,6 +900,33 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             <div className="px-6 py-5">
               <SourceReferencePanel item={editingItem} reference={sourceReferences[editingItem.id]} />
               <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                      Item #
+                    </label>
+                    <input
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] font-mono"
+                      value={editValues.itemNumber ?? ''}
+                      onChange={event =>
+                        setEditValues(values => ({ ...values, itemNumber: event.target.value }))
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                      Shelf Life
+                    </label>
+                    <input
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                      placeholder="e.g. 24 months"
+                      value={editValues.shelfLife ?? ''}
+                      onChange={event =>
+                        setEditValues(values => ({ ...values, shelfLife: event.target.value }))
+                      }
+                    />
+                  </div>
+                </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
                     Item Name
@@ -625,6 +974,23 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     value={editValues.notes ?? ''}
                     onChange={event => setEditValues(values => ({ ...values, notes: event.target.value }))}
                   />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                    Product type (required)
+                  </label>
+                  <select
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white"
+                    value={editValues.domain ?? ''}
+                    onChange={event => setEditValues(values => ({
+                      ...values,
+                      domain: event.target.value as ExtractedItem['domain'],
+                    }))}
+                  >
+                    <option value="">Choose type</option>
+                    <option value="medicine">Medicine</option>
+                    <option value="equipment">Equipment</option>
+                  </select>
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
