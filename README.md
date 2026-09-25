@@ -70,6 +70,21 @@ DATABASE_URL=postgresql+asyncpg://allocura:allocura@localhost:5432/allocura
 The frontend runs at `http://localhost:3000`, and the backend runs at `http://localhost:8000`.
 FastAPI docs are available at `http://localhost:8000/docs`.
 
+### Restore a database dump locally
+
+From the repository root (overwrites local `allocura`; password: `allocura`):
+
+```bash
+docker compose stop backend
+docker compose up -d db
+docker compose exec -T db dropdb -U allocura --force --if-exists allocura
+docker compose exec -T db createdb -U allocura -T template0 allocura
+pg_restore -h localhost -U allocura -d allocura --no-owner --no-acl --exit-on-error /path/to/allocura-azure.dump
+```
+
+The dump includes embeddings. Set `DATABASE_URL=postgresql+asyncpg://allocura:allocura@localhost:5432/allocura`
+for the local backend.
+
 ## Local Foundry extraction
 
 For a backend started directly with uvicorn, use `apps/backend/.env.example` as a
