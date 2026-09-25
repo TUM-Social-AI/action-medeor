@@ -72,8 +72,8 @@ FastAPI docs are available at `http://localhost:8000/docs`.
 
 ## Local Foundry extraction
 
-For a backend started directly with uvicorn, put these settings in the ignored
-`apps/backend/.env` file:
+For a backend started directly with uvicorn, use `apps/backend/.env.example` as a
+template for the ignored `apps/backend/.env` file. Add these settings if they are missing:
 
 ```dotenv
 LLM_PROVIDER=azure_openai
@@ -91,8 +91,9 @@ with column rules. An upload can still produce items through basic parsing if an
 so an app upload alone does not prove that Foundry responded. The `import_requests` table stores
 `used_llm_fallback` and `parser_warnings` for that check.
 
-For Docker Compose, set the same variables in the root `.env` copied from `.env.example`.
-Compose passes them to the backend container.
+The example file is never loaded automatically. Docker Compose reads a separate root `.env`
+if one exists, or uses exported environment variables and its defaults. The production Azure
+Container App receives its settings as runtime environment variables and secret references.
 
 ## Start here: complete Matching V1 operating example
 
@@ -444,11 +445,10 @@ available for the [overview](apps/backend/app/matching/README_DE.md) and
 
 ## Environment
 
-Copy `.env.example` to `.env` for Docker Compose overrides.
-
-```bash
-cp .env.example .env
-```
+For a local backend, keep `apps/backend/.env` beside `apps/backend/.env.example`.
+If no local backend `.env` exists yet, create it from the example and fill in the private
+database URL, Foundry endpoint, and API key. Docker Compose uses its own defaults or a
+separate root `.env` for overrides; Azure Container Apps uses runtime settings and secrets.
 
 The first database target is PostgreSQL with pgvector so local Docker and deployment use the same
 shape. The backend keeps the database behind `DATABASE_URL`, so it can be swapped later.
