@@ -105,27 +105,26 @@ def _call_openai(prompt: str, schema: type[T], settings: Settings) -> T:
 
 
 def _call_azure_openai(prompt: str, schema: type[T], settings: Settings) -> T:
-    """Azure OpenAI needs its own client rather than just a base_url override on the plain OpenAI
-    one: an "api-key" header instead of bearer auth, an api-version query param, and routing by
-    deployment name (/deployments/{name}/...) rather than by model name - the AzureOpenAI client
-    handles all of that. azure_openai_deployment is the name YOU gave the deployment in Azure AI
-    Foundry/OpenAI Studio (e.g. "Luna"), not the underlying model's own name."""
-    if not settings.azure_openai_api_key:
-        raise LlmUnavailable("AZURE_OPENAI_API_KEY is not configured")
-    if not settings.azure_openai_endpoint:
-        raise LlmUnavailable("AZURE_OPENAI_ENDPOINT is not configured")
+    """Use Foundry's v1 chat API, with optional extraction-specific resource overrides.
+
+    The model argument is the chat deployment name, which may differ from its model ID.
+    Embedding and extraction deployments can share the same resource endpoint and API key.
+    """
+    api_key = settings.azure_openai_api_key or settings.azure_foundry_api_key
+    endpoint = settings.azure_openai_endpoint or settings.azure_foundry_endpoint
+    if not api_key:
+        raise LlmUnavailable("AZURE_OPENAI_API_KEY or AZURE_FOUNDRY_API_KEY is not configured")
+    if not endpoint:
+        raise LlmUnavailable("AZURE_OPENAI_ENDPOINT or AZURE_FOUNDRY_ENDPOINT is not configured")
     if not settings.azure_openai_deployment:
         raise LlmUnavailable("AZURE_OPENAI_DEPLOYMENT is not configured")
 
-    from openai import AzureOpenAI
+    from openai import OpenAI
 
-    client = AzureOpenAI(
-        api_key=settings.azure_openai_api_key,
-        azure_endpoint=settings.azure_openai_endpoint,
-        api_version=settings.azure_openai_api_version,
-    )
-    # Azure routes by deployment name, not model name - the "model" argument to chat.completions
-    # is actually the deployment name here.
+    base_url = endpoint.rstrip("/")
+    if not base_url.endswith("/openai/v1"):
+        base_url += "/openai/v1"
+    client = OpenAI(api_key=api_key, base_url=base_url + "/")
     return _run_openai_chat(
         client, settings.azure_openai_deployment, prompt, schema, "Azure OpenAI"
     )

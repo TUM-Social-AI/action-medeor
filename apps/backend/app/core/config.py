@@ -38,9 +38,8 @@ class Settings(BaseSettings):
     #   the same wire protocol (OpenRouter, Groq, Together, a self-hosted vLLM/Ollama endpoint...)
     #   when openai_base_url is set - the easiest way to try models from other companies without
     #   adding a provider per company.
-    # - "azure_openai" is Azure OpenAI specifically: unlike plain "openai" with a base_url
-    #   override, Azure needs its own request shape (api-key header, api-version query param,
-    #   /deployments/{name}/ routing), which the SDK's dedicated AzureOpenAI client handles.
+    # - "azure_openai" calls a Foundry chat deployment through its v1 API. It can share the
+    #   endpoint and API key configured for embeddings, while using a separate deployment.
     llm_provider: Literal["anthropic", "gemini", "openai", "azure_openai"] = "anthropic"
     anthropic_api_key: str | None = None
     anthropic_extraction_model: str = "claude-haiku-4-5"
@@ -55,12 +54,10 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
 
     azure_openai_api_key: str | None = None
-    # Resource endpoint from the Azure portal, e.g. https://your-resource-name.openai.azure.com/
+    # Optional override if extraction uses a different Foundry resource from embeddings.
     azure_openai_endpoint: str | None = None
-    # The deployment name you gave the model in Azure AI Foundry/OpenAI Studio (not the
-    # underlying model name itself - e.g. a deployment named "Luna" pointing at gpt-4o).
+    # The chat deployment name in Foundry, which can differ from the underlying model name.
     azure_openai_deployment: str | None = None
-    azure_openai_api_version: str = "2024-10-21"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

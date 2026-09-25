@@ -70,6 +70,30 @@ DATABASE_URL=postgresql+asyncpg://allocura:allocura@localhost:5432/allocura
 The frontend runs at `http://localhost:3000`, and the backend runs at `http://localhost:8000`.
 FastAPI docs are available at `http://localhost:8000/docs`.
 
+## Local Foundry extraction
+
+For a backend started directly with uvicorn, put these settings in the ignored
+`apps/backend/.env` file:
+
+```dotenv
+LLM_PROVIDER=azure_openai
+AZURE_OPENAI_DEPLOYMENT=<exact chat deployment name in Foundry>
+```
+
+The backend reuses `AZURE_FOUNDRY_ENDPOINT` and `AZURE_FOUNDRY_API_KEY` from the embedding
+configuration. `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_API_KEY` are optional overrides if
+extraction uses another resource. The deployment name may differ from the model name
+`gpt-6-luna`; no extraction model version or vector dimensions are needed.
+
+Restart the backend after editing its `.env`, then upload a Word document in the app and review
+the extracted items. Word documents use the configured LLM; spreadsheets are primarily parsed
+with column rules. An upload can still produce items through basic parsing if an LLM call fails,
+so an app upload alone does not prove that Foundry responded. The `import_requests` table stores
+`used_llm_fallback` and `parser_warnings` for that check.
+
+For Docker Compose, set the same variables in the root `.env` copied from `.env.example`.
+Compose passes them to the backend container.
+
 ## Start here: complete Matching V1 operating example
 
 This section is the shortest complete path from an empty database to a testable matching system.

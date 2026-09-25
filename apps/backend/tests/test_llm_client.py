@@ -9,8 +9,8 @@ openai SDK's chat.completions resource, rather than the SDK itself.
 import pytest
 from pydantic import BaseModel
 
-from app.core.config import get_settings
-from app.parsing.llm_client import LlmUnavailable, _run_openai_chat, call_llm
+from app.core.config import Settings, get_settings
+from app.parsing.llm_client import LlmUnavailable, _call_azure_openai, _run_openai_chat, call_llm
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +45,7 @@ def test_call_llm_requires_azure_openai_api_key(monkeypatch) -> None:
     # delenv - it shadows a real value in a developer's local .env the same way.
     monkeypatch.setenv("LLM_PROVIDER", "azure_openai")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "")
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "")
 
     with pytest.raises(LlmUnavailable, match="AZURE_OPENAI_API_KEY"):
         call_llm("prompt", _Sample)
@@ -54,6 +55,7 @@ def test_call_llm_requires_azure_openai_endpoint(monkeypatch) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "azure_openai")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "")
+    monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "")
 
     with pytest.raises(LlmUnavailable, match="AZURE_OPENAI_ENDPOINT"):
         call_llm("prompt", _Sample)
@@ -70,7 +72,7 @@ def test_call_llm_requires_azure_openai_deployment(monkeypatch) -> None:
 
 
 # --- _run_openai_chat: shared by the "openai" and "azure_openai" providers, since both use the
-# same openai SDK client shape (AzureOpenAI is a subclass with the same .chat.completions API). ---
+# same openai SDK client shape. ---
 
 
 class _FakeMessage:
@@ -101,9 +103,11 @@ class _FakeCompletions:
         self._create_content = create_content
         self.parse_called = False
         self.create_called = False
+        self.parse_kwargs: dict[str, object] = {}
 
-    def parse(self, **_kwargs: object) -> _FakeResponse:
+    def parse(self, **kwargs: object) -> _FakeResponse:
         self.parse_called = True
+        self.parse_kwargs = kwargs
         if self._parse_error is not None:
             raise self._parse_error
         return _FakeResponse(_FakeMessage(parsed=self._parse_result))
@@ -156,3 +160,41 @@ def test_run_openai_chat_raises_on_malformed_fallback_content() -> None:
 
     with pytest.raises(LlmUnavailable, match="did not match the expected schema"):
         _run_openai_chat(client, "some-model", "prompt", _Sample, "Test")
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "expected_base_url"),
+    [
+        ("https://foundry.example.test/", "https://foundry.example.test/openai/v1/"),
+        ("https://foundry.example.test/openai/v1/", "https://foundry.example.test/openai/v1/"),
+    ],
+)
+def test_azure_extraction_reuses_foundry_resource_and_chat_deployment(
+    monkeypatch, endpoint: str, expected_base_url: str
+) -> None:
+    import openai
+
+    parsed = _Sample(value="from Foundry")
+    completions = _FakeCompletions(parse_result=parsed)
+    client = _FakeClient(completions)
+    client_options: dict[str, str] = {}
+
+    def fake_openai(**kwargs: str) -> _FakeClient:
+        client_options.update(kwargs)
+        return client
+
+    monkeypatch.setattr(openai, "OpenAI", fake_openai)
+    settings = Settings(
+        _env_file=None,
+        azure_foundry_api_key="test-key",
+        azure_foundry_endpoint=endpoint,
+        azure_openai_api_key=None,
+        azure_openai_endpoint=None,
+        azure_openai_deployment="luna-chat",
+    )
+
+    result = _call_azure_openai("prompt", _Sample, settings)
+
+    assert result is parsed
+    assert client_options == {"api_key": "test-key", "base_url": expected_base_url}
+    assert completions.parse_kwargs["model"] == "luna-chat"
