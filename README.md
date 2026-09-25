@@ -134,6 +134,35 @@ The schema is defined by the migrations under
 
 ### 3. Upload `Artikeldaten.csv` and `Artikeluebersetzungen.csv` together
 
+For a local test using the files already in `data/`, run the catalog upload job from
+`apps/backend` while the API is running:
+
+```bash
+uv run python -m app.jobs.import_catalog --limit 25
+```
+
+`--limit` selects the first 25 nonempty article rows and includes every translation for those
+articles. The job writes temporary CSVs and deletes them after the API request. Override the input
+paths with `--articles` and `--translations`, and the server with `--api-url` (default:
+`http://localhost:8000`). Omit `--limit` to upload both complete, unchanged files, as a scheduled
+job should do:
+
+```bash
+uv run python -m app.jobs.import_catalog
+```
+
+After a successful upload, the job runs `python -m app.catalog.embedding_worker`. Configure the
+embedding provider and `DATABASE_URL` in `apps/backend/.env` before running it; the worker must use
+the same database as the API. If the worker fails, the command exits with an error, but the catalog
+import has already succeeded and can be retried safely. For a lexical-only test without a configured
+model, pass `--skip-embeddings`.
+
+Run a limited import against a fresh test database. The catalog API treats every upload as a complete
+snapshot: omitted articles in a later upload are marked missing, or a large drop is rejected. The API
+already compares article identity and text versions, refreshes inventory quantities, and queues
+embeddings only for new or text-changed eligible versions with an active model. The worker also
+backfills missing embeddings on its first run.
+
 The easiest manual method is `http://localhost:8000/docs`: open
 `POST /api/v1/catalog-imports`, choose **Try it out**, select both files in their matching form fields
 and execute the request.

@@ -26,7 +26,10 @@ async def run() -> dict[str, object]:
 
 
 def main() -> None:
-    print(json.dumps(asyncio.run(run()), default=str))
+    result = asyncio.run(run())
+    print(json.dumps(result, default=str), flush=True)
+    if result["failed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
