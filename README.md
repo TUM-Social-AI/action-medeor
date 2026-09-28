@@ -573,42 +573,26 @@ serves both applications on port `8000`:
 /api/*   FastAPI endpoints
 ```
 
-Build the image from the repository root:
+### Signed-in user in Azure Container Apps
 
-```bash
-docker build -t allocura .
-```
+The sidebar and home greeting read `/api/me`. Locally it returns `Local User`; in Azure,
+Container Apps built-in authentication supplies the signed-in user's name through its trusted
+`X-MS-CLIENT-PRINCIPAL` claims or `X-MS-CLIENT-PRINCIPAL-NAME` header. Do not expose the
+container directly around the Container Apps authentication layer: these headers are only
+trusted when that layer controls the public ingress.
 
-For a local smoke test, start the Compose database and run the image on the Compose network:
+For the existing `allocura-app-auth` app registration, configure the Container App's
+**Security > Authentication** to use Microsoft Entra ID and **Require authentication**,
+redirecting unauthenticated browser requests to Microsoft. The app registration needs a
+Web redirect URI of `<app-url>/.auth/login/aad/callback` and ID tokens enabled. The
+name works without Microsoft Graph access.
 
-```bash
-docker compose up -d db
-docker run --rm -p 8000:8000 \
-  --network allocura_default \
-  -e APP_ENV=production \
-  -e DATABASE_URL=postgresql+asyncpg://allocura:allocura@db:5432/allocura \
-  allocura
-```
-
-Open `http://localhost:8000`. The production runtime accepts these environment variables:
-
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `DATABASE_URL` | Yes | Async SQLAlchemy PostgreSQL URL. Use the externally managed production database. |
-| `APP_ENV` | Recommended | Set to `production` to disable automatic local-development CORS behavior. |
-| `CORS_ORIGINS` | No | Comma-separated cross-origin frontend URLs. Same-origin production needs none. |
-| `EMBEDDING_PROVIDER` | No | `sentence-transformers`, `azure-openai` or `azure-cohere`; leave blank to disable vector retrieval. |
-| `EMBEDDING_MODEL_NAME` | With provider | Approved model name. |
-| `EMBEDDING_MODEL_VERSION` | For Foundry | Immutable deployed model version. |
-| `EMBEDDING_MODEL_REVISION` | For Sentence Transformers | Pinned immutable upstream revision. Do not use `main` in production. |
-| `EMBEDDING_DEPLOYMENT` | For Foundry | Foundry deployment name used for inference. |
-| `EMBEDDING_DIMENSIONS` | For Foundry | Exact configured vector dimensions. |
-| `AZURE_FOUNDRY_ENDPOINT` | For Foundry | Foundry resource endpoint; no embedding route suffix. |
-| `AZURE_FOUNDRY_API_KEY` | For Foundry key auth | Secret supplied at runtime; never commit it. Prefer managed identity in production. |
-
-`VITE_API_BASE_URL` is a frontend build-time setting for separately hosted local development. The
-combined production build deliberately leaves it unset so browser requests use same-origin
-`/api/...` URLs.
+The profile avatar is one of six bundled animal illustrations. A stable hash of the Entra
+user ID assigns an initial avatar; users can choose another from the profile popup in the
+sidebar. The selected avatar is stored in `user_avatar_preferences`, so it follows the user
+across browsers and devices.
+Run `alembic upgrade head` before deploying this version. Neither Microsoft Graph
+permissions nor a Container Apps token store are needed for avatars.
 
 ## Embedding model evaluation
 

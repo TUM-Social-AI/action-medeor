@@ -13,6 +13,15 @@ class Base(DeclarativeBase):
     pass
 
 
+class UserAvatarPreferenceRow(Base):
+    """Selected animal avatar for one signed-in Entra user."""
+
+    __tablename__ = "user_avatar_preferences"
+
+    user_id: Mapped[str] = mapped_column(primary_key=True)
+    avatar_id: Mapped[str]
+
+
 class ImportRequestRow(Base):
     """One uploaded partner request file and the partner metadata collected for it."""
 
