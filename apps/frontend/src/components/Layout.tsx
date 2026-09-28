@@ -75,7 +75,7 @@ export function Layout({ children, currentScreen, onNavigate }: LayoutProps) {
           <NavItem
             icon={<FileText size={15} />}
             label="Create Request"
-            active={false}
+            active={isWorkflow}
             disabled={isWorkflow}
             onClick={() => onNavigate('ingestion')}
           />
@@ -177,8 +177,8 @@ function NavItem({
     <button
       onClick={onClick}
       disabled={disabled}
-      aria-current={active ? 'page' : undefined}
-      className={`w-full flex items-center gap-2.5 rounded-lg transition-colors text-left px-3 py-2 focus-visible:outline-2 focus-visible:outline-white ${active ? 'bg-white/15 text-white' : disabled ? 'text-white/40 cursor-default' : 'text-white/55 hover:text-white/85 hover:bg-white/8'}`}
+      aria-current={active && !disabled ? 'page' : undefined}
+      className={`w-full flex items-center gap-2.5 rounded-lg transition-colors text-left px-3 py-2 focus-visible:outline-2 focus-visible:outline-white ${active ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85 hover:bg-white/8'}`}
       style={{ fontSize: 13 }}
     >
       <span className={active ? 'text-white' : 'text-white/55'}>{icon}</span>
