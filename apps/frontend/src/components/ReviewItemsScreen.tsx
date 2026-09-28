@@ -414,8 +414,8 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
 
       {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
 
-      <div className="flex gap-5 items-start">
-        <div className="flex-1 min-w-0">
+      <div className="flex flex-col xl:flex-row gap-5 items-start">
+        <div className="w-full flex-1 min-w-0">
           <div className="mb-4">
             <h1 className="text-gray-900">Review Extracted Items</h1>
             <p className="text-gray-500 text-sm mt-0.5">
@@ -494,12 +494,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             </button>
           </div>
 
-          {/* overflow-x-auto, not overflow-hidden: the column set adapts to the uploaded file,
-              so the table can exceed the container and must scroll rather than clip Actions. */}
-          <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+          <div role="region" aria-label="Extracted items table" tabIndex={0} className="bg-white rounded-xl border border-gray-200 max-w-full max-h-[min(65vh,42rem)] overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A]">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-gray-200 bg-gray-50/80">
+                <tr className="border-b border-gray-200 bg-gray-50">
                   {[
                     ...(attributeColumns.length > 0 ? [{ key: null, label: '' }] : []),
                     { key: null, label: '#' },
@@ -517,7 +515,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                   ].map((header, headerIndex) => (
                     <th
                       key={`${header.label}-${headerIndex}`}
-                      className="text-left px-4 py-3 text-xs text-gray-500"
+                      className="sticky top-0 z-10 bg-gray-50 text-left px-4 py-3 text-xs text-gray-500"
                       style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}
                     >
                       {header.key ? (
@@ -568,7 +566,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                       {showItemNumber && (
                         <td className="px-4 py-3">
                           {item.itemNumber ? (
-                            <span className="text-xs text-gray-500 font-mono">{item.itemNumber}</span>
+                            <span className="text-xs text-gray-500">{item.itemNumber}</span>
                           ) : (
                             <span className="text-xs text-gray-300 italic">-</span>
                           )}
@@ -773,7 +771,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
           </div>
         </div>
 
-        <div className="w-56 flex-shrink-0 sticky top-6 space-y-4">
+        <div className="w-full xl:w-56 flex-shrink-0 xl:sticky xl:top-6 space-y-4">
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h3 className="text-gray-900 text-sm mb-4" style={{ fontWeight: 600 }}>
               Extraction Summary
@@ -906,7 +904,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                       Item #
                     </label>
                     <input
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] font-mono"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
                       value={editValues.itemNumber ?? ''}
                       onChange={event =>
                         setEditValues(values => ({ ...values, itemNumber: event.target.value }))
@@ -1124,7 +1122,7 @@ function SourceReferencePanel({
         </span>
       </div>
       <div
-        className={`mt-1.5 rounded-lg px-3 py-2 text-xs font-mono leading-relaxed italic ${
+        className={`mt-1.5 rounded-lg px-3 py-2 text-xs leading-relaxed italic ${
           isMissing ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
         }`}
       >

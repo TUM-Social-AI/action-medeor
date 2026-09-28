@@ -67,7 +67,7 @@ function CandidateCard({
       </div>
       <div className="text-sm text-gray-900 mb-3 leading-snug font-bold">{candidate.descriptions[0] || candidate.item_number}</div>
       <div className="space-y-1 text-xs">
-        <div><span className="text-gray-400 font-semibold inline-block w-14">SKU</span><span className="text-gray-700 font-mono">{candidate.item_number}</span></div>
+        <div><span className="text-gray-400 font-semibold inline-block w-14">SKU</span><span className="text-gray-700">{candidate.item_number}</span></div>
         {candidate.manufacturer && <div><span className="text-gray-400 font-semibold inline-block w-14">MFR</span><span className="text-gray-700">{candidate.manufacturer}</span></div>}
         <div><span className="text-gray-400 font-semibold inline-block w-14">AVAIL.</span><span className={candidate.availability_status === 'on_hand_sufficient' ? 'text-green-700 font-semibold' : 'text-gray-600'}>{availability}</span></div>
       </div>
@@ -91,7 +91,7 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
     <div className="order-3 sm:order-2 w-full sm:w-auto sm:flex-1 min-w-0">
       <div className="text-sm text-gray-900 font-bold mb-1">{candidate.descriptions[0] || candidate.item_number}</div>
       <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs">
-        <span><span className="text-gray-400 font-semibold mr-2">SKU</span><span className="text-gray-700 font-mono">{candidate.item_number}</span></span>
+        <span><span className="text-gray-400 font-semibold mr-2">SKU</span><span className="text-gray-700">{candidate.item_number}</span></span>
         {candidate.manufacturer && <span><span className="text-gray-400 font-semibold mr-2">MFR</span><span className="text-gray-700">{candidate.manufacturer}</span></span>}
         <span><span className="text-gray-400 font-semibold mr-2">AVAIL.</span><span className={candidate.availability_status === 'on_hand_sufficient' ? 'text-green-700 font-semibold' : 'text-gray-600'}>{candidate.availability_status.replace(/_/g, ' ')}</span></span>
       </div>

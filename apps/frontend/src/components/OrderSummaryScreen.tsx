@@ -76,7 +76,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   if (!data) return <div className="p-6"><ErrorPanel message={error ?? 'Summary unavailable'} /></div>;
 
   const availabilityConfirmed = data.items.filter(item => item.availability === 'on_hand_sufficient').length;
-  return <div className="p-6">
+  return <div className="p-6 max-w-7xl mx-auto min-w-0">
     <div className="bg-white rounded-xl border border-gray-200 px-6 py-4 mb-6"><WorkflowStepper currentStep="summary" /></div>
     {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
     <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
@@ -106,19 +106,19 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
             <div className="text-sm text-gray-900 font-bold truncate">Matched Items · {data.sourceFile}</div>
             <div className="text-xs text-gray-400 whitespace-nowrap">Request ID: {data.requestId}</div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[780px]">
-              <thead><tr className="border-b border-gray-200">
-                {['#', 'Requested Item', 'ERP Product', 'SKU', 'Qty', 'Ranking Score', 'Availability'].map(label => <th key={label} className="px-4 py-3 text-xs text-gray-500 text-left uppercase tracking-wide font-semibold">{label}</th>)}
+          <div role="region" aria-label="Matched items table" tabIndex={0} className="max-w-full max-h-[min(60vh,38rem)] overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A]">
+            <table className="w-full min-w-[940px] text-sm text-gray-700">
+              <thead className="sticky top-0 z-10 bg-gray-50"><tr className="border-b border-gray-200">
+                {['#', 'Requested Item', 'ERP Product', 'SKU', 'Qty', 'Ranking Score', 'Availability'].map(label => <th key={label} className="px-4 py-3 text-xs text-gray-500 text-left uppercase tracking-wide font-semibold whitespace-nowrap">{label}</th>)}
               </tr></thead>
               <tbody>{data.items.map((item, index) => <tr key={item.itemId} className={'border-b border-gray-100 hover:bg-gray-50/60 ' + (!item.itemNumber ? 'bg-amber-50/40' : '')}>
-                <td className="px-4 py-3.5 text-xs text-gray-400">{index + 1}</td>
-                <td className="px-4 py-3.5 text-xs text-gray-700">{item.requested}</td>
-                <td className="px-4 py-3.5 text-sm text-gray-900 font-semibold">{item.product || <span className="text-amber-700">Marked unmatched</span>}</td>
-                <td className="px-4 py-3.5 text-xs text-gray-500 font-mono">{item.itemNumber || '—'}</td>
-                <td className="px-4 py-3.5 text-sm text-gray-900 whitespace-nowrap">{item.quantity?.toLocaleString() ?? '—'} <span className="text-xs text-gray-400">{item.unit}</span></td>
-                <td className="px-4 py-3.5 text-sm font-semibold text-gray-700 whitespace-nowrap">{typeof item.rankingScore === 'number' ? formatRankingScore(item.rankingScore) + '/100' : '—'}</td>
-                <td className="px-4 py-3.5 text-xs text-gray-600">{item.availability?.replace(/_/g, ' ') ?? '—'}</td>
+                <td className="px-4 py-3.5 text-gray-500 tabular-nums">{index + 1}</td>
+                <td className="px-4 py-3.5 text-gray-800">{item.requested}</td>
+                <td className="px-4 py-3.5 text-gray-900 font-medium">{item.product || <span className="text-amber-700">Marked unmatched</span>}</td>
+                <td className="px-4 py-3.5 text-gray-700 whitespace-nowrap">{item.itemNumber || '—'}</td>
+                <td className="px-4 py-3.5 text-gray-900 whitespace-nowrap tabular-nums">{item.quantity?.toLocaleString() ?? '—'} <span className="text-gray-500">{item.unit}</span></td>
+                <td className="px-4 py-3.5 font-semibold text-gray-700 whitespace-nowrap tabular-nums">{typeof item.rankingScore === 'number' ? formatRankingScore(item.rankingScore) + '/100' : '—'}</td>
+                <td className="px-4 py-3.5 text-gray-700">{item.availability?.replace(/_/g, ' ') ?? '—'}</td>
               </tr>)}</tbody>
             </table>
           </div>

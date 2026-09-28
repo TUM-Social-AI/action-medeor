@@ -81,7 +81,7 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
         <WorkflowStepper currentStep="ingestion" />
       </div>
 
-      <div className="flex gap-6">
+      <div className="flex flex-col lg:flex-row gap-6">
         <div className="flex-1 min-w-0">
           <div className="mb-5">
             <h1 className="text-gray-900">Import Partner Request</h1>
@@ -150,7 +150,7 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
                   Drag and drop your request file here
                 </div>
                 <div className="text-gray-400 text-sm">or click to browse from your computer</div>
-                <div className="flex items-center gap-6 mt-7">
+                <div className="flex flex-wrap items-center justify-center gap-4 mt-7">
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <div className="w-7 h-7 rounded-md bg-green-100 flex items-center justify-center">
                       <FileSpreadsheet size={14} className="text-green-600" />
@@ -201,7 +201,7 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
           </div>
         </div>
 
-        <div className="flex-shrink-0" style={{ width: 272 }}>
+        <div className="w-full lg:w-[272px] flex-shrink-0">
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <div className="flex items-center gap-2 mb-4">
               <Clock size={14} className="text-gray-400" />

@@ -57,7 +57,7 @@ function RequestTable({ requests, loading, onOpenRequest }: {
           }}
           className={'border-b border-gray-100 last:border-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#1B4E8A] ' + (request.status === 'finalized' ? 'bg-green-50/60 hover:bg-green-100/60' : 'hover:bg-gray-50')}
         >
-          <td className="px-5 py-3.5 text-sm font-mono text-[#1B4E8A] font-semibold" title={request.sourceFile || ''}>{request.requestId}</td>
+          <td className="px-5 py-3.5 text-sm text-[#1B4E8A] font-semibold" title={request.sourceFile || ''}>{request.requestId}</td>
           <td className="px-5 py-3.5 text-sm text-gray-900 font-medium">{request.partner || 'Not specified'}</td>
           <td className="px-5 py-3.5 text-sm text-gray-500">{request.region || '—'}</td>
           <td className="px-5 py-3.5 text-sm text-gray-500">{formatDate(request.createdAt)}</td>
@@ -137,7 +137,7 @@ export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, on
       </button>
     </div>
 
-    <div className="flex items-center gap-2 mb-3"><span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Overview</span><span className="text-xs font-medium text-violet-700 bg-violet-100/70 border border-violet-200/60 rounded-full px-2 py-0.5">Sample data</span></div>
+    <div className="flex items-center gap-2 mb-3"><span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Overview</span><span className="text-xs font-medium text-[#1B4E8A] bg-blue-50 border border-blue-100 rounded-full px-2 py-0.5">Sample data</span></div>
     {homeError && <div className="mb-6"><ErrorPanel message={homeError} /></div>}
     {!home && !homeError && <div className="mb-6"><LoadingPanel label="Loading home data" /></div>}
     {home && <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">{home.stats.map(stat => <StatCard key={stat.key} stat={stat} />)}</div>}

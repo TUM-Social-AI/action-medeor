@@ -112,9 +112,9 @@ export function TrendDashboard() {
   }
 
   return (
-    <div className="p-6">
+    <div className="p-6 max-w-7xl mx-auto min-w-0">
       <div className="mb-6">
-        <div className="flex items-center gap-3"><h1 className="text-gray-900">Trend Dashboard</h1><span className="text-xs font-semibold text-violet-700 bg-violet-100 border border-violet-200 px-2 py-1 rounded-full">Sample data</span></div>
+        <div className="flex items-center gap-3"><h1 className="text-gray-900">Trend Dashboard</h1><span className="text-xs font-semibold text-[#1B4E8A] bg-blue-50 border border-blue-100 px-2 py-1 rounded-full">Sample data</span></div>
         <div className="flex items-center gap-3 mt-1">
           <p className="text-gray-500 text-sm">
             Demand analytics derived from partner requests and offers - action medeor global
@@ -126,14 +126,14 @@ export function TrendDashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-6 gap-4 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-4 mb-6">
         {data.kpis.map(kpi => (
           <KpiTile key={kpi.key} kpi={kpi} />
         ))}
       </div>
 
-      <div className="grid grid-cols-3 gap-5 mb-5">
-        <div className="col-span-2 bg-violet-50/30 rounded-xl border border-violet-100 p-5">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 mb-5">
+        <div className="xl:col-span-2 bg-white rounded-xl border border-gray-200 p-5">
           <div className="flex items-center justify-between mb-4">
             <div>
               <div className="text-sm text-gray-900" style={{ fontWeight: 700 }}>
@@ -184,7 +184,7 @@ export function TrendDashboard() {
           </ResponsiveContainer>
         </div>
 
-        <div className="bg-violet-50/30 rounded-xl border border-violet-100 p-5">
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
           <div className="mb-4">
             <div className="text-sm text-gray-900" style={{ fontWeight: 700 }}>
               Category Demand & Growth
@@ -199,8 +199,8 @@ export function TrendDashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-5">
-        <div className="bg-violet-50/30 rounded-xl border border-violet-100 p-5">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
           <div className="mb-4">
             <div className="text-sm text-gray-900" style={{ fontWeight: 700 }}>
               Requests by Destination Region
@@ -221,7 +221,7 @@ export function TrendDashboard() {
               <Bar dataKey="requests" fill="#1B4E8A" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
-          <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
             {data.regionalDemand.slice(0, 3).map(region => (
               <div key={region.region} className="bg-gray-50 rounded-lg p-2.5 border border-gray-100">
                 <div className="text-xs text-gray-700" style={{ fontWeight: 600 }}>
@@ -236,7 +236,7 @@ export function TrendDashboard() {
           </div>
         </div>
 
-        <div className="bg-violet-50/30 rounded-xl border border-violet-100 p-5">
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
           <div className="mb-4">
             <div className="text-sm text-gray-900" style={{ fontWeight: 700 }}>
               Most Requested Items
@@ -278,7 +278,7 @@ function KpiTile({ kpi }: { kpi: KpiCard }) {
   const visual = KPI_VISUALS[kpi.key] ?? KPI_VISUALS.requests_processed;
 
   return (
-    <div className="bg-violet-50/30 rounded-xl border border-violet-100 p-4">
+    <div className="bg-white rounded-xl border border-gray-200 p-4">
       <div className="flex items-center justify-between mb-2">
         <span
           className="text-xs text-gray-400 leading-tight"
