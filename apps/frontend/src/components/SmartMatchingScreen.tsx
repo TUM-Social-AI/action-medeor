@@ -293,18 +293,18 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
         </section>;
       })}
     </div>
-    <div className="fixed bottom-0 left-56 right-0 z-20 bg-white border-t border-gray-200 shadow-lg px-6 py-3">
+    <div className="fixed bottom-0 right-0 z-20 bg-white border-t border-gray-200 shadow-lg px-3 sm:px-6 py-3" style={{ left: 'var(--sidebar-width, 14rem)' }}>
       {showUndecided && undecided.length > 0 && <div className="absolute bottom-full right-6 w-full max-w-md bg-white border border-gray-200 rounded-xl shadow-xl max-h-72 overflow-y-auto p-2 mb-2">
         <div className="px-3 py-2 text-sm font-semibold text-gray-900">Items still needing a decision</div>
         {undecided.map(line => <button key={line.itemId} onClick={() => jumpTo(line.itemId)} className="block w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-blue-50 text-[#1B4E8A]">
           <span className="block truncate">{line.name}</span><span className="text-xs text-gray-500">{line.status === 'completed' ? 'Choose an article or mark unmatched' : line.status}</span>
         </button>)}
       </div>}
-      <div className="flex items-center justify-between gap-4 max-w-6xl mx-auto">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 max-w-6xl mx-auto">
         <button onClick={() => setShowUndecided(value => !value)} className="text-sm text-[#1B4E8A] hover:underline text-left" aria-expanded={showUndecided}>
           {undecided.length ? undecided.length + ' of ' + data.total + ' items need a decision · View items' : 'All ' + data.total + ' items have a decision'}
         </button>
-        <button disabled={savingItems.size > 0 || finalizing} onClick={() => void continueOrReview()} className="flex items-center gap-2 px-6 py-3 rounded-xl bg-[#1B4E8A] text-white disabled:bg-gray-300 font-bold whitespace-nowrap">
+        <button disabled={savingItems.size > 0 || finalizing} onClick={() => void continueOrReview()} className="flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-[#1B4E8A] text-white disabled:bg-gray-300 font-bold whitespace-nowrap">
           {finalizing ? 'Saving final state…' : 'Continue to Summary'} <ArrowRight size={16} />
         </button>
       </div>
