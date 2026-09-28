@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LoadingType, ReviewResponse, Screen } from './api/types';
 import { createImport } from './api/client';
+import { getAvatar, getCurrentUser, saveAvatar, type AvatarId } from './api/identity';
 import {
   finalizeRequest,
   getRequest,
@@ -32,12 +33,30 @@ const GENERAL_SCREENS: Screen[] = ['home', 'history', 'dashboard', 'settings', '
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
+  const [displayName, setDisplayName] = useState('Local User');
+  const [avatarId, setAvatarId] = useState<AvatarId>('cat');
   const [loadingType, setLoadingType] = useState<LoadingType | null>(null);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [reviewData, setReviewData] = useState<ReviewResponse | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
 
   const navigationVersion = useRef(0);
+
+  useEffect(() => {
+    let active = true;
+    void getCurrentUser().then(user => {
+      if (active) setDisplayName(user.displayName || 'Local User');
+    }).catch(() => {});
+    void getAvatar().then(preference => {
+      if (active) setAvatarId(preference.avatarId);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  const changeAvatar = async (choice: AvatarId) => {
+    const saved = await saveAvatar(choice);
+    setAvatarId(saved.avatarId);
+  };
 
   const navigate = (screen: Screen, id = requestId) => {
     navigationVersion.current += 1;
@@ -154,17 +173,18 @@ export default function App() {
     navigate(screen);
   };
 
-  return <Layout currentScreen={currentScreen} onNavigate={handleNavigate}>
+  return <Layout currentScreen={currentScreen} onNavigate={handleNavigate} displayName={displayName} avatarId={avatarId}>
     {loadingType ? <ProcessingScreen type={loadingType} /> : <>
       {(currentScreen === 'home' || currentScreen === 'history') && <HomeScreen
         history={currentScreen === 'history'}
+        displayName={displayName}
         onCreateRequest={createNewRequest}
         onOpenRequest={openRequest}
         onViewDashboard={() => navigate('dashboard')}
         onViewHistory={() => navigate('history')}
         error={workflowError}
       />}
-      {currentScreen === 'settings' && <SettingsScreen />}
+      {currentScreen === 'settings' && <SettingsScreen avatarId={avatarId} onAvatarChange={changeAvatar} />}
       {currentScreen === 'help' && <HelpScreen onViewHistory={() => navigate('history')} />}
       {currentScreen === 'dashboard' && <TrendDashboard />}
       {currentScreen === 'ingestion' && <IngestionScreen

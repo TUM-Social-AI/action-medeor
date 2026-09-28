@@ -8,14 +8,16 @@ import {
   Home,
   LayoutDashboard,
   Settings,
-  User,
 } from 'lucide-react';
 import type { Screen } from '../api/types';
+import { avatarUrl, type AvatarId } from '../api/identity';
 
 type LayoutProps = {
   children: ReactNode;
   currentScreen: Screen;
   onNavigate: (screen: Screen) => void;
+  displayName: string;
+  avatarId: AvatarId;
 };
 
 const SCREEN_LABELS: Record<Screen, string> = {
@@ -32,7 +34,7 @@ const SCREEN_LABELS: Record<Screen, string> = {
 
 const WORKFLOW_SCREENS: Screen[] = ['ingestion', 'review', 'matching', 'summary'];
 
-export function Layout({ children, currentScreen, onNavigate }: LayoutProps) {
+export function Layout({ children, currentScreen, onNavigate, displayName, avatarId }: LayoutProps) {
   const isWorkflow = WORKFLOW_SCREENS.includes(currentScreen);
 
   return (
@@ -89,14 +91,14 @@ export function Layout({ children, currentScreen, onNavigate }: LayoutProps) {
         <div className="p-3 border-t border-white/10">
           <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-white/10 cursor-pointer transition-colors">
             <div className="w-8 h-8 rounded-full bg-[#1B4E8A] flex items-center justify-center flex-shrink-0 border border-white/20">
-              <User size={14} className="text-white" />
+              <img src={avatarUrl(avatarId)} alt="" className="w-full h-full rounded-full object-cover" />
             </div>
             <div className="min-w-0">
               <div className="text-white truncate" style={{ fontSize: 13, fontWeight: 500 }}>
-                Leon Fischer
+                {displayName}
               </div>
               <div className="text-white/50" style={{ fontSize: 11 }}>
-                Procurement Manager
+                action medeor
               </div>
             </div>
           </div>

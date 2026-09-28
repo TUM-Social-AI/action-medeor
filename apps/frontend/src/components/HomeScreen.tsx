@@ -11,6 +11,7 @@ type Props = {
   onViewDashboard: () => void;
   onViewHistory: () => void;
   history?: boolean;
+  displayName: string;
   error?: string | null;
 };
 
@@ -77,7 +78,7 @@ function RequestTable({ requests, loading, onOpenRequest }: {
   </div>;
 }
 
-export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, onViewHistory, history, error }: Props) {
+export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, onViewHistory, history, error, displayName }: Props) {
   const [requests, setRequests] = useState<SavedRequest[] | null>(null);
   const [home, setHome] = useState<HomeResponse | null>(null);
   const [homeError, setHomeError] = useState<string | null>(null);
@@ -107,7 +108,7 @@ export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, on
 
   return <div className="p-6 max-w-6xl mx-auto">
     <div className="mb-6">
-      <h1 className="text-gray-900">Welcome back, {home?.userName ?? 'Leon'}</h1>
+      <h1 className="text-gray-900">Welcome back, {displayName === 'Local User' ? displayName : displayName.split(/\s+/)[0]}</h1>
       <p className="text-gray-500 text-sm mt-0.5">
         {home?.organization ?? 'action medeor'} - Procurement Operations -{' '}
         {new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
