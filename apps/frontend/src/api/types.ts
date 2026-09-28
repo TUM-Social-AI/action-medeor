@@ -1,4 +1,4 @@
-export type Screen = 'home' | 'ingestion' | 'review' | 'matching' | 'summary' | 'dashboard' | 'history';
+export type Screen = 'home' | 'ingestion' | 'review' | 'matching' | 'summary' | 'dashboard' | 'history' | 'settings' | 'help';
 export type WorkflowStep = 'ingestion' | 'review' | 'matching' | 'summary';
 export type LoadingType = 'extracting' | 'matching';
 
