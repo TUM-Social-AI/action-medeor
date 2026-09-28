@@ -2,14 +2,11 @@ import type { ReactNode } from 'react';
 import {
   Activity,
   ChevronRight,
-  ClipboardList,
   Clock,
   FileText,
-  GitMerge,
   HelpCircle,
   Home,
   LayoutDashboard,
-  ListChecks,
   Settings,
   User,
 } from 'lucide-react';
@@ -29,6 +26,8 @@ const SCREEN_LABELS: Record<Screen, string> = {
   review: 'Review Items',
   matching: 'Smart Matching',
   summary: 'Order Summary',
+  settings: 'Settings',
+  help: 'Help & Support',
 };
 
 const WORKFLOW_SCREENS: Screen[] = ['ingestion', 'review', 'matching', 'summary'];
@@ -59,7 +58,7 @@ export function Layout({ children, currentScreen, onNavigate }: LayoutProps) {
           </div>
         </div>
 
-        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
+        <nav aria-label="Main navigation" className="flex-1 p-3 space-y-0.5 overflow-y-auto">
           <NavItem
             icon={<Home size={15} />}
             label="Home"
@@ -73,39 +72,18 @@ export function Layout({ children, currentScreen, onNavigate }: LayoutProps) {
             onClick={() => onNavigate('dashboard')}
           />
 
-          <NavGroup label="Request Workflow" />
           <NavItem
             icon={<FileText size={15} />}
-            label="Import Request"
-            active={currentScreen === 'ingestion'}
+            label="New Request"
+            active={isWorkflow}
+            disabled={isWorkflow}
             onClick={() => onNavigate('ingestion')}
-          />
-          <NavItem
-            icon={<ListChecks size={15} />}
-            label="Review Items"
-            active={currentScreen === 'review'}
-            onClick={() => onNavigate('review')}
-            indent
-          />
-          <NavItem
-            icon={<GitMerge size={15} />}
-            label="Smart Matching"
-            active={currentScreen === 'matching'}
-            onClick={() => onNavigate('matching')}
-            indent
-          />
-          <NavItem
-            icon={<ClipboardList size={15} />}
-            label="Order Summary"
-            active={currentScreen === 'summary'}
-            onClick={() => onNavigate('summary')}
-            indent
           />
 
           <NavGroup label="Management" />
           <NavItem icon={<Clock size={15} />} label="Request History" active={currentScreen === 'history'} onClick={() => onNavigate('history')} />
-          <NavItem icon={<Settings size={15} />} label="Settings" active={false} onClick={() => {}} />
-          <NavItem icon={<HelpCircle size={15} />} label="Help & Support" active={false} onClick={() => {}} />
+          <NavItem icon={<Settings size={15} />} label="Settings" active={currentScreen === 'settings'} onClick={() => onNavigate('settings')} />
+          <NavItem icon={<HelpCircle size={15} />} label="Help & Support" active={currentScreen === 'help'} onClick={() => onNavigate('help')} />
         </nav>
 
         <div className="p-3 border-t border-white/10">
@@ -186,21 +164,21 @@ function NavItem({
   icon,
   label,
   active,
+  disabled = false,
   onClick,
-  indent,
 }: {
   icon: ReactNode;
   label: string;
   active: boolean;
+  disabled?: boolean;
   onClick: () => void;
-  indent?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-2.5 rounded-lg transition-colors text-left ${
-        indent ? 'pl-7 pr-3 py-1.5' : 'px-3 py-2'
-      } ${active ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85 hover:bg-white/8'}`}
+      disabled={disabled}
+      aria-current={active && !disabled ? 'page' : undefined}
+      className={`w-full flex items-center gap-2.5 rounded-lg transition-colors text-left px-3 py-2 focus-visible:outline-2 focus-visible:outline-white ${active ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85 hover:bg-white/8'}`}
       style={{ fontSize: 13 }}
     >
       <span className={active ? 'text-white' : 'text-white/55'}>{icon}</span>
