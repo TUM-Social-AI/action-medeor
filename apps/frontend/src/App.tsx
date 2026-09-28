@@ -104,53 +104,45 @@ export default function App() {
   };
 
   const handleImport = async (file: File) => {
-    const version = ++navigationVersion.current;
     setWorkflowError(null);
     setLoadingType('extracting');
     try {
       const response = requestId
         ? await uploadRequestFile(requestId, file)
         : await createImport(file);
-      if (version !== navigationVersion.current) return;
       setRequestId(response.requestId);
       setReviewData(response);
       navigate('review', response.requestId);
     } catch (caught) {
-      if (version === navigationVersion.current) setWorkflowError(caught instanceof Error ? caught.message : 'Unable to extract file');
+      setWorkflowError(caught instanceof Error ? caught.message : 'Unable to extract file');
     } finally {
-      if (version === navigationVersion.current) setLoadingType(null);
+      setLoadingType(null);
     }
   };
 
   const handleStartMatching = async () => {
     if (!requestId) return;
-    const version = ++navigationVersion.current;
     setWorkflowError(null);
     setLoadingType('matching');
     try {
       await startRequestMatching(requestId);
-      if (version !== navigationVersion.current) return;
       navigate('matching');
     } catch (caught) {
-      if (version === navigationVersion.current) setWorkflowError(caught instanceof Error ? caught.message : 'Unable to start matching');
+      setWorkflowError(caught instanceof Error ? caught.message : 'Unable to start matching');
     } finally {
-      if (version === navigationVersion.current) setLoadingType(null);
+      setLoadingType(null);
     }
   };
 
   const finalizeAndOpenSummary = async () => {
     if (!requestId) return;
-    const version = ++navigationVersion.current;
     await finalizeRequest(requestId);
-    if (version !== navigationVersion.current) return;
     navigate('summary');
   };
 
   const returnToMatching = async () => {
     if (!requestId) return;
-    const version = ++navigationVersion.current;
     await reopenRequestMatching(requestId);
-    if (version !== navigationVersion.current) return;
     navigate('matching');
   };
 
@@ -159,7 +151,6 @@ export default function App() {
       if (!WORKFLOW_SCREENS.includes(currentScreen)) createNewRequest();
       return;
     }
-    if (WORKFLOW_SCREENS.includes(screen)) return;
     navigate(screen);
   };
 
