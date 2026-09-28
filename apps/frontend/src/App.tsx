@@ -173,7 +173,7 @@ export default function App() {
     navigate(screen);
   };
 
-  return <Layout currentScreen={currentScreen} onNavigate={handleNavigate} displayName={displayName} avatarId={avatarId}>
+  return <Layout currentScreen={currentScreen} onNavigate={handleNavigate} displayName={displayName} avatarId={avatarId} onAvatarChange={changeAvatar}>
     {loadingType ? <ProcessingScreen type={loadingType} /> : <>
       {(currentScreen === 'home' || currentScreen === 'history') && <HomeScreen
         history={currentScreen === 'history'}
@@ -184,7 +184,7 @@ export default function App() {
         onViewHistory={() => navigate('history')}
         error={workflowError}
       />}
-      {currentScreen === 'settings' && <SettingsScreen avatarId={avatarId} onAvatarChange={changeAvatar} />}
+      {currentScreen === 'settings' && <SettingsScreen />}
       {currentScreen === 'help' && <HelpScreen onViewHistory={() => navigate('history')} />}
       {currentScreen === 'dashboard' && <TrendDashboard />}
       {currentScreen === 'ingestion' && <IngestionScreen

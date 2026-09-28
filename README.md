@@ -588,8 +588,9 @@ Web redirect URI of `<app-url>/.auth/login/aad/callback` and ID tokens enabled. 
 name works without Microsoft Graph access.
 
 The profile avatar is one of six bundled animal illustrations. A stable hash of the Entra
-user ID assigns an initial avatar; users can choose another in Settings. The selected avatar
-is stored in `user_avatar_preferences`, so it follows the user across browsers and devices.
+user ID assigns an initial avatar; users can choose another from the profile popup in the
+sidebar. The selected avatar is stored in `user_avatar_preferences`, so it follows the user
+across browsers and devices.
 Run `alembic upgrade head` before deploying this version. Neither Microsoft Graph
 permissions nor a Container Apps token store are needed for avatars.
 

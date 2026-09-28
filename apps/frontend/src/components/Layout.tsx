@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Activity,
   ChevronRight,
@@ -10,7 +10,7 @@ import {
   Settings,
 } from 'lucide-react';
 import type { Screen } from '../api/types';
-import { avatarUrl, type AvatarId } from '../api/identity';
+import { AVATARS, avatarUrl, type AvatarId } from '../api/identity';
 
 type LayoutProps = {
   children: ReactNode;
@@ -18,6 +18,7 @@ type LayoutProps = {
   onNavigate: (screen: Screen) => void;
   displayName: string;
   avatarId: AvatarId;
+  onAvatarChange: (avatarId: AvatarId) => Promise<void>;
 };
 
 const SCREEN_LABELS: Record<Screen, string> = {
@@ -34,12 +35,53 @@ const SCREEN_LABELS: Record<Screen, string> = {
 
 const WORKFLOW_SCREENS: Screen[] = ['ingestion', 'review', 'matching', 'summary'];
 
-export function Layout({ children, currentScreen, onNavigate, displayName, avatarId }: LayoutProps) {
+export function Layout({ children, currentScreen, onNavigate, displayName, avatarId, onAvatarChange }: LayoutProps) {
   const isWorkflow = WORKFLOW_SCREENS.includes(currentScreen);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [savingAvatar, setSavingAvatar] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+  const profileRef = useRef<HTMLDivElement>(null);
+  const profileButtonRef = useRef<HTMLButtonElement>(null);
+  const firstAvatarRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!profileOpen) return;
+    firstAvatarRef.current?.focus();
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!profileRef.current?.contains(event.target as Node)) setProfileOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setProfileOpen(false);
+        profileButtonRef.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [profileOpen]);
+
+  const chooseAvatar = async (choice: AvatarId) => {
+    if (savingAvatar || choice === avatarId) return;
+    setSavingAvatar(true);
+    setAvatarError(null);
+    try {
+      await onAvatarChange(choice);
+      setProfileOpen(false);
+      profileButtonRef.current?.focus();
+    } catch {
+      setAvatarError('Could not save your avatar. Please try again.');
+    } finally {
+      setSavingAvatar(false);
+    }
+  };
 
   return (
     <div className="flex h-screen bg-[#F0F2F7] overflow-hidden">
-      <aside className="w-56 bg-[#0F2044] flex flex-col flex-shrink-0 shadow-xl">
+      <aside className="relative z-20 w-56 bg-[#0F2044] flex flex-col flex-shrink-0 shadow-xl">
         <div className="h-16 flex items-center px-5 border-b border-white/10">
           <button
             onClick={() => onNavigate('home')}
@@ -88,8 +130,41 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
           <NavItem icon={<HelpCircle size={15} />} label="Help & Support" active={currentScreen === 'help'} onClick={() => onNavigate('help')} />
         </nav>
 
-        <div className="p-3 border-t border-white/10">
-          <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-white/10 cursor-pointer transition-colors">
+        <div ref={profileRef} className="relative p-3 border-t border-white/10">
+          {profileOpen && <div
+            id="avatar-picker"
+            role="dialog"
+            aria-label="Choose your avatar"
+            className="absolute bottom-full left-3 mb-3 w-72 rounded-xl border border-gray-200 bg-white p-4 shadow-xl"
+          >
+            <h2 className="text-sm font-semibold text-gray-900">Choose your avatar</h2>
+            <p className="mt-1 text-xs text-gray-500">Pick an animal for your profile.</p>
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {AVATARS.map((avatar, index) => <button
+                key={avatar.id}
+                ref={index === 0 ? firstAvatarRef : undefined}
+                type="button"
+                aria-label={`Choose ${avatar.label} avatar`}
+                aria-pressed={avatarId === avatar.id}
+                disabled={savingAvatar}
+                onClick={() => void chooseAvatar(avatar.id)}
+                className={`rounded-lg border-2 p-1.5 text-center transition-colors disabled:opacity-60 ${avatarId === avatar.id ? 'border-[#0E9E8F] bg-teal-50' : 'border-gray-200 hover:border-gray-400'}`}
+              >
+                <img src={avatarUrl(avatar.id)} alt="" className="mx-auto h-12 w-12 rounded-full" />
+                <span className="mt-1 block text-xs text-gray-700">{avatar.label}</span>
+              </button>)}
+            </div>
+            {avatarError && <p role="alert" className="mt-3 text-xs text-red-700">{avatarError}</p>}
+          </div>}
+          <button
+            ref={profileButtonRef}
+            type="button"
+            aria-label={`Profile: ${displayName}. Choose avatar`}
+            aria-expanded={profileOpen}
+            aria-controls="avatar-picker"
+            onClick={() => { setAvatarError(null); setProfileOpen(open => !open); }}
+            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-white"
+          >
             <div className="w-8 h-8 rounded-full bg-[#1B4E8A] flex items-center justify-center flex-shrink-0 border border-white/20">
               <img src={avatarUrl(avatarId)} alt="" className="w-full h-full rounded-full object-cover" />
             </div>
@@ -101,7 +176,7 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
                 action medeor
               </div>
             </div>
-          </div>
+          </button>
         </div>
       </aside>
 
