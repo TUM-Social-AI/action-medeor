@@ -127,7 +127,7 @@ export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, on
           Start workflow <ArrowRight size={15} className="group-hover:translate-x-0.5 transition-transform" />
         </div>
       </button>
-      <button onClick={onViewDashboard} className="text-left bg-violet-50/30 rounded-2xl p-6 border border-violet-100 cursor-pointer hover:border-[#0E9E8F]/50 hover:shadow-md transition-all group flex flex-col justify-between select-none">
+      <button onClick={onViewDashboard} className="text-left bg-white rounded-2xl p-6 border border-gray-200 cursor-pointer hover:border-[#0E9E8F]/50 hover:shadow-md transition-all group flex flex-col justify-between select-none">
         <div>
           <div className="w-11 h-11 rounded-xl bg-teal-50 flex items-center justify-center mb-4"><LayoutDashboard size={21} className="text-[#0E9E8F]" /></div>
           <div className="text-gray-900 text-base mb-2 font-bold">Trend Dashboard</div>
@@ -154,7 +154,7 @@ export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, on
 
 function StatCard({ stat }: { stat: HomeStat }) {
   const visual = STAT_ICON[stat.key] ?? { icon: <TrendingUp size={17} className="text-[#1B4E8A]" />, bg: 'bg-blue-100' };
-  return <div className="bg-violet-50/30 rounded-xl border border-violet-100 p-5">
+  return <div className="bg-white rounded-xl border border-gray-200 p-5">
     <div className="flex items-center justify-between mb-3"><div className={`w-9 h-9 rounded-lg ${visual.bg} flex items-center justify-center`}>{visual.icon}</div></div>
     <div className={`text-2xl ${visual.highlight ? 'text-[#0E9E8F]' : 'text-gray-900'}`} style={{ fontWeight: 800 }}>{stat.value}</div>
     <div className="text-xs text-gray-700 mt-1 font-semibold">{stat.label}</div>
