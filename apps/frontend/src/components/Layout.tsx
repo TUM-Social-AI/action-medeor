@@ -74,7 +74,7 @@ export function Layout({ children, currentScreen, onNavigate }: LayoutProps) {
 
           <NavItem
             icon={<FileText size={15} />}
-            label="Create Request"
+            label="New Request"
             active={isWorkflow}
             disabled={isWorkflow}
             onClick={() => onNavigate('ingestion')}

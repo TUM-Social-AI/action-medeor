@@ -14,7 +14,7 @@ export function HelpScreen({ onViewHistory }: { onViewHistory: () => void }) {
       <section aria-labelledby="request-guide" className="bg-white rounded-xl border border-gray-200 px-6 py-5">
         <h2 id="request-guide" className="text-gray-900 mb-3">Request workflow</h2>
         <ol className="list-decimal pl-5 space-y-2 text-sm text-gray-700">
-          <li><strong>Upload:</strong> Select Create Request and upload your partner’s file.</li>
+          <li><strong>Upload:</strong> Select New Request and upload your partner’s file.</li>
           <li><strong>Review:</strong> Check extracted items, quantities, units, and partner details. Save any corrections before continuing.</li>
           <li><strong>Match:</strong> Review suggested catalog products and confirm your selections.</li>
           <li><strong>Summary:</strong> Check the final request and selected products. Use the summary’s return action if you need to revise matches.</li>
