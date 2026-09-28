@@ -1,13 +1,22 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { AlertCircle, ArrowLeft, CheckCircle2, FileDown, Package, Pencil, Users, Warehouse } from 'lucide-react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { AlertCircle, ArrowLeft, CheckCircle2, FileDown, Package, Pencil, Users, Warehouse, X } from 'lucide-react';
 import { getRequestSummary, type SavedSummary } from '../api/workflow';
-import { downloadRequestResults } from '../api/export/client';
+import { fetchRequestResults, saveRequestResults } from '../api/export/client';
 import { confirmPartner, updatePartner } from '../api/client';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { formatRankingScore } from '../features/matching/format-ranking-score';
 import { WorkflowStepper } from './WorkflowStepper';
+import { ProcessingProgress } from './ProcessingScreen';
 
 type Props = { requestId: string; onBack: () => Promise<void> };
+
+const EXPORT_STEPS = [
+  'Creating results workbook',
+  'Checking Excel file',
+  'Preparing download',
+] as const;
+
+const showStep = (milliseconds: number) => new Promise<void>(resolve => window.setTimeout(resolve, milliseconds));
 
 function MetricCard({ icon, label, value, sub }: { icon: ReactNode; label: string; value: string; sub: string }) {
   return <div className="bg-white rounded-xl border border-gray-200 p-4">
@@ -22,7 +31,13 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   const [data, setData] = useState<SavedSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [returning, setReturning] = useState(false);
-  const [downloading, setDownloading] = useState(false);
+  const [exportPhase, setExportPhase] = useState<'idle' | 'preparing' | 'ready' | 'error'>('idle');
+  const [preparedFile, setPreparedFile] = useState<Blob | null>(null);
+  const [exportStepsCompleted, setExportStepsCompleted] = useState(0);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const exportTriggerRef = useRef<HTMLButtonElement>(null);
+  const exportDialogRef = useRef<HTMLDivElement>(null);
+  const readyDownloadRef = useRef<HTMLButtonElement>(null);
   const [editingPartner, setEditingPartner] = useState(false);
   const [savingPartner, setSavingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState({ partner: '', region: '', contact: '' });
@@ -45,15 +60,61 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
     }
   };
 
-  const downloadResults = async () => {
-    setDownloading(true);
-    setError(null);
+  useEffect(() => {
+    if (exportPhase === 'preparing' || exportPhase === 'error') exportDialogRef.current?.focus();
+    if (exportPhase === 'ready') readyDownloadRef.current?.focus();
+  }, [exportPhase]);
+
+  const prepareResults = async () => {
+    setPreparedFile(null);
+    setExportStepsCompleted(0);
+    setExportError(null);
+    setExportPhase('preparing');
     try {
-      await downloadRequestResults(requestId);
+      // The API supplies a complete workbook. This also works if it later extends the source file.
+      const file = await fetchRequestResults(requestId);
+      setExportStepsCompleted(1);
+      await showStep(350);
+
+      const signature = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+      if (signature.length < 4 || signature[0] !== 0x50 || signature[1] !== 0x4b
+        || signature[2] !== 0x03 || signature[3] !== 0x04) {
+        throw new Error('The server did not return a valid Excel file. Please try again.');
+      }
+      setExportStepsCompleted(2);
+      await showStep(350);
+
+      setPreparedFile(file);
+      setExportStepsCompleted(3);
+      // Keep all three checkmarks visible before switching to the ready dialog.
+      await showStep(650);
+      setExportPhase('ready');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not download Excel results');
-    } finally {
-      setDownloading(false);
+      setExportError(caught instanceof Error ? caught.message : 'Could not prepare Excel results');
+      setExportPhase('error');
+    }
+  };
+
+  const closeExport = () => {
+    setExportPhase('idle');
+    setPreparedFile(null);
+    exportTriggerRef.current?.focus();
+  };
+
+  const handleExportKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape' && exportPhase !== 'preparing') closeExport();
+    if (event.key !== 'Tab') return;
+    const controls = Array.from(exportDialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []);
+    if (controls.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    if (event.shiftKey && document.activeElement === controls[0]) {
+      event.preventDefault();
+      controls[controls.length - 1].focus();
+    } else if (!event.shiftKey && document.activeElement === controls[controls.length - 1]) {
+      event.preventDefault();
+      controls[0].focus();
     }
   };
 
@@ -105,11 +166,47 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
         <button type="button" disabled={returning} onClick={() => void returnToMatching()} className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50">
           <ArrowLeft size={14} /> Back to Matching
         </button>
-        <button type="button" disabled={downloading} onClick={() => void downloadResults()} className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#009E91] text-white text-sm font-semibold hover:bg-[#00877D] disabled:opacity-50">
-          <FileDown size={16} /> {downloading ? 'Preparing Excel…' : 'Download Excel'}
+        <button ref={exportTriggerRef} type="button" disabled={exportPhase !== 'idle'} onClick={() => void prepareResults()} className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#009E91] text-white text-sm font-semibold hover:bg-[#00877D] disabled:opacity-50">
+          <FileDown size={16} /> Download Excel
         </button>
       </div>
     </div>
+
+    {exportPhase !== 'idle' && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-950/50 p-4">
+      <div ref={exportDialogRef} role="dialog" aria-modal="true" aria-labelledby="export-dialog-title" aria-describedby="export-dialog-description" tabIndex={-1} onKeyDown={handleExportKeyDown} className={"w-full max-w-md rounded-2xl bg-white shadow-2xl focus:outline-none " + (exportPhase === 'preparing' ? 'border border-gray-100 p-10' : 'p-8')}>
+        {exportPhase === 'preparing' ? <div role="status" aria-live="polite">
+          <ProcessingProgress
+            title="Preparing Excel file"
+            subtitle={`Preparing ${data.items.length} saved results and request details for your download.`}
+            steps={EXPORT_STEPS}
+            completedSteps={exportStepsCompleted}
+            accentColor="#1B4E8A"
+            iconBg="bg-blue-50"
+            titleId="export-dialog-title"
+            subtitleId="export-dialog-description"
+          />
+          <span className="sr-only">{exportStepsCompleted} of {EXPORT_STEPS.length} steps complete</span>
+        </div> : exportPhase === 'ready' ? <>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-teal-50 text-[#009E91]"><CheckCircle2 size={28} /></div>
+            <button type="button" onClick={closeExport} aria-label="Close download dialog" className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"><X size={18} /></button>
+          </div>
+          <h2 id="export-dialog-title" className="mt-5 text-lg font-bold text-gray-900">Excel file ready</h2>
+          <p id="export-dialog-description" className="mt-1 text-sm text-gray-500 break-all">matched-results-{data.requestId}.xlsx</p>
+          <p className="mt-1 text-xs text-gray-400">{data.items.length} line items · {data.matchedCount} matched · {data.unmatchedCount} unmatched</p>
+          <button ref={readyDownloadRef} type="button" onClick={() => { if (preparedFile) saveRequestResults(preparedFile, requestId); }} className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-[#1B4E8A] px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#173F70]">
+            <FileDown size={16} /> Download Excel
+          </button>
+          <button type="button" onClick={closeExport} className="mt-3 w-full rounded-lg py-2 text-sm text-gray-500 hover:bg-gray-50">Close</button>
+        </> : <>
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-50 text-red-600"><AlertCircle size={28} /></div>
+          <h2 id="export-dialog-title" className="mt-5 text-lg font-bold text-gray-900">Excel file unavailable</h2>
+          <p id="export-dialog-description" className="mt-1 text-sm text-gray-500">{exportError}</p>
+          <button type="button" onClick={() => void prepareResults()} className="mt-6 w-full rounded-xl bg-[#1B4E8A] px-4 py-3 text-sm font-semibold text-white hover:bg-[#173F70]">Try again</button>
+          <button type="button" onClick={closeExport} className="mt-3 w-full rounded-lg py-2 text-sm text-gray-500 hover:bg-gray-50">Close</button>
+        </>}
+      </div>
+    </div>}
 
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
       <MetricCard icon={<Package size={18} />} label="Total line items" value={String(data.items.length)} sub="From the uploaded request" />

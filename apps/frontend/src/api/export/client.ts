@@ -10,8 +10,11 @@ export async function downloadInquiryExport(inquiryId: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-export async function downloadRequestResults(requestId: string): Promise<void> {
-  const file = await requestBlob(`/api/requests/${encodeURIComponent(requestId)}/results.xlsx`);
+export function fetchRequestResults(requestId: string): Promise<Blob> {
+  return requestBlob(`/api/requests/${encodeURIComponent(requestId)}/results.xlsx`);
+}
+
+export function saveRequestResults(file: Blob, requestId: string): void {
   const url = URL.createObjectURL(file);
   const anchor = document.createElement('a');
   anchor.href = url;
