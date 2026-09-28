@@ -285,7 +285,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
                 <div className="flex flex-wrap items-center gap-3 ml-auto">
                   {savingItems.has(line.itemId) ? <span role="status" className="text-xs text-gray-500">Saving…</span>
                     : recentlySavedItems.has(line.itemId) && <span role="status" className="inline-flex items-center gap-1 text-xs text-green-700"><Check size={14} /> Decision saved</span>}
-                  <button type="button" disabled={savingItems.has(line.itemId)} aria-pressed={line.decisionType === 'no_match'} onClick={() => void choose(line.itemId)} className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold bg-white text-gray-700 ring-1 ring-inset ring-gray-300 shadow-sm transition-colors hover:bg-gray-50 disabled:opacity-50"><Ban size={16} /> Mark this item as unmatched</button>
+                  <button type="button" disabled={savingItems.has(line.itemId)} aria-pressed={line.decisionType === 'no_match'} onClick={() => void choose(line.itemId)} className={'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold bg-white shadow-sm transition-colors disabled:opacity-50 ' + (line.decisionType === 'no_match' ? 'text-[#1B4E8A] ring-2 ring-inset ring-[#1B4E8A]' : 'text-gray-700 ring-1 ring-inset ring-gray-300 hover:bg-gray-50')}><Ban size={16} /> Mark this item as unmatched</button>
                 </div>
               </div>
             </>}
