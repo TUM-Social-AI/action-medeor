@@ -63,6 +63,8 @@ export type SavedSummary = {
 
 export const createRequest = () => requestJson<SavedRequest>('/api/requests', { method: 'POST' });
 export const listRequests = () => requestJson<SavedRequest[]>('/api/requests');
+export const deleteRequest = (id: string) =>
+  requestJson<void>(`/api/requests/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const getRequest = (id: string) => requestJson<SavedRequest>(`/api/requests/${id}`);
 export function uploadRequestFile(id: string, file: File) {
   const body = new FormData();

@@ -384,6 +384,43 @@ async def request_match_rates(session: AsyncSession) -> dict[str, int]:
     return {row.request_id: int(row.matched) for row in result}
 
 
+class RequestCurrentlyMatching(Exception):
+    """An active worker could recreate matching records after a request is removed."""
+
+
+async def delete_request(session: AsyncSession, request_id: str) -> bool:
+    """Remove a saved request and its matching data in one transaction."""
+    params = {"id": request_id}
+    # Match workers lock the job before the request, so use the same order here.
+    await session.execute(
+        text("SELECT request_id FROM request_matching_jobs WHERE request_id = :id FOR UPDATE"),
+        params,
+    )
+    status = await session.scalar(
+        text("SELECT workflow_status FROM import_requests WHERE request_id = :id FOR UPDATE"),
+        params,
+    )
+    if status is None:
+        await session.rollback()
+        return False
+    if status == "matching":
+        await session.rollback()
+        raise RequestCurrentlyMatching()
+
+    await session.execute(text("DELETE FROM request_matching_jobs WHERE request_id = :id"), params)
+    await session.execute(
+        text("""DELETE FROM match_decisions
+                WHERE match_run_id IN (SELECT id FROM match_runs WHERE inquiry_id = :id)"""),
+        params,
+    )
+    await session.execute(text("DELETE FROM match_runs WHERE inquiry_id = :id"), params)
+    await session.execute(text("DELETE FROM request_source_references WHERE request_id = :id"), params)
+    await session.execute(text("DELETE FROM request_items WHERE request_id = :id"), params)
+    await session.execute(text("DELETE FROM import_requests WHERE request_id = :id"), params)
+    await session.commit()
+    return True
+
+
 async def list_requests(session: AsyncSession) -> list[ImportRequestRow]:
     result = await session.execute(
         select(ImportRequestRow)

@@ -143,6 +143,20 @@ async def list_requests(session: AsyncSession = Depends(get_session)) -> list[Re
     ]
 
 
+@router.delete("/requests/{request_id}", status_code=204)
+async def delete_request(request_id: str, session: AsyncSession = Depends(get_session)) -> Response:
+    try:
+        deleted = await repository.delete_request(session, request_id)
+    except repository.RequestCurrentlyMatching as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Wait until matching finishes before deleting this request",
+        ) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return Response(status_code=204)
+
+
 @router.get("/requests/{request_id}")
 async def get_request(request_id: str, session: AsyncSession = Depends(get_session)) -> RequestState:
     request = await repository.get_request_by_id(session, request_id)

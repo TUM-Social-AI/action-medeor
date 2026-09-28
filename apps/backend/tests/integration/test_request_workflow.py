@@ -206,6 +206,7 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             assert early_choice.status_code == 200, early_choice.text
             assert early_choice.json()["status"] == "matching"
             assert early_choice.json()["lines"][0]["selectedCandidateId"]
+            assert (await client.delete(f"/api/requests/{request_id}")).status_code == 409
             async with async_session() as session:
                 await session.execute(
                     text("UPDATE request_items SET match_status = 'failed' WHERE id = :id"),
@@ -375,6 +376,17 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             assert changed.json()["lines"][0]["selectedCandidateId"] == first_line["candidates"][0]["candidate_id"]
             finalized_again = await client.post(f"/api/requests/{request_id}/finalize")
             assert finalized_again.json()["status"] == "finalized"
+            removed = await client.delete(f"/api/requests/{request_id}")
+            assert removed.status_code == 204, removed.text
+            assert (await client.get(f"/api/requests/{request_id}")).status_code == 404
+            assert (await client.get(f"/api/requests/{request_id}/results.xlsx")).status_code == 404
+            assert all(row["requestId"] != request_id for row in (await client.get("/api/requests")).json())
+            assert (await client.delete(f"/api/requests/{request_id}")).status_code == 404
+            async with async_session() as session:
+                assert await session.scalar(
+                    text("SELECT COUNT(*) FROM match_runs WHERE inquiry_id = :id"),
+                    {"id": request_id},
+                ) == 0
     finally:
         # Keep this integration test independent of other catalog fixtures.
         if request_id:
