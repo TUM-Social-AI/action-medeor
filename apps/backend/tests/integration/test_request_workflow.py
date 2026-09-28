@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+from io import BytesIO
 from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from openpyxl import load_workbook
 from sqlalchemy import text
 
 import app.jobs.match_requests as match_worker
@@ -177,6 +179,7 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             assert failed["status"] == "matching_failed"
             premature = await client.post(f"/api/requests/{request_id}/finalize")
             assert premature.status_code == 409
+            assert (await client.get(f"/api/requests/{request_id}/results.xlsx")).status_code == 409
             assert [line["status"] for line in failed["lines"]] == ["completed", "failed"]
             assert failed["lines"][0]["selectedCandidateId"] == failed["lines"][0]["candidates"][0]["candidate_id"]
             completed_run = failed["lines"][0]["runId"]
@@ -320,6 +323,20 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             )
             assert "totalPrice" not in summary.json()
             assert summary.json()["partnerConfirmed"] is False
+            export = await client.get(f"/api/requests/{request_id}/results.xlsx")
+            assert export.status_code == 200, export.text
+            assert export.headers["content-type"].startswith(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            assert f"matched-results-{request_id}.xlsx" in export.headers["content-disposition"]
+            workbook = load_workbook(BytesIO(export.content))
+            result_sheet = workbook["Matched results"]
+            assert result_sheet.max_row == 3
+            assert result_sheet["J2"].value in {"Top suggestion selected", "Alternative selected"}
+            assert result_sheet["L2"].value == summary.json()["items"][0]["itemNumber"]
+            assert result_sheet["J3"].value == "Unmatched"
+            assert result_sheet["L3"].value is None
+            assert dict(workbook["Request details"].values)["Request ID"] == request_id
             edited_partner = await client.patch(
                 f"/api/requests/{request_id}/partner",
                 json={

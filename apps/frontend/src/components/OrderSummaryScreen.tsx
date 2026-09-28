@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { AlertCircle, ArrowLeft, CheckCircle2, Package, Pencil, Users, Warehouse } from 'lucide-react';
+import { AlertCircle, ArrowLeft, CheckCircle2, FileDown, Package, Pencil, Users, Warehouse } from 'lucide-react';
 import { getRequestSummary, type SavedSummary } from '../api/workflow';
+import { downloadRequestResults } from '../api/export/client';
 import { confirmPartner, updatePartner } from '../api/client';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { formatRankingScore } from '../features/matching/format-ranking-score';
@@ -21,6 +22,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   const [data, setData] = useState<SavedSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [returning, setReturning] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [editingPartner, setEditingPartner] = useState(false);
   const [savingPartner, setSavingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState({ partner: '', region: '', contact: '' });
@@ -40,6 +42,18 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not reopen matching');
       setReturning(false);
+    }
+  };
+
+  const downloadResults = async () => {
+    setDownloading(true);
+    setError(null);
+    try {
+      await downloadRequestResults(requestId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not download Excel results');
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -87,9 +101,14 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
         </div>
         <p className="text-gray-500 text-sm mt-0.5">Final review of saved matches for {data.partner || 'this partner'} · Request {data.requestId}</p>
       </div>
-      <button disabled={returning} onClick={() => void returnToMatching()} className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50">
-        <ArrowLeft size={14} /> Back to Matching
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" disabled={returning} onClick={() => void returnToMatching()} className="flex items-center gap-2 px-4 py-2.5 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+          <ArrowLeft size={14} /> Back to Matching
+        </button>
+        <button type="button" disabled={downloading} onClick={() => void downloadResults()} className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#009E91] text-white text-sm font-semibold hover:bg-[#00877D] disabled:opacity-50">
+          <FileDown size={16} /> {downloading ? 'Preparing Excel…' : 'Download Excel'}
+        </button>
+      </div>
     </div>
 
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
