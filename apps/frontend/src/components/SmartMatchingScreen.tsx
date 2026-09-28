@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Ban, ChevronDown, ChevronUp, Info, MapPin, RefreshCw, X } from 'lucide-react';
+import { ArrowRight, Ban, Check, ChevronDown, ChevronUp, Info, MapPin, RefreshCw, X } from 'lucide-react';
 import type { MatchCandidateV1 } from '../api/matching/contracts';
 import {
   autoSelectRequestMatches,
@@ -59,8 +59,10 @@ function CandidateCard({
         </div>
         <div className="flex flex-col items-end gap-1">
           <span className="text-xs text-gray-400">#{candidate.rank}</span>
-          {candidate.rank === 1 && <span className="px-1.5 py-0.5 bg-teal-100 text-teal-700 rounded text-xs font-bold">TOP SUGGESTION</span>}
-          {selected && <span className="px-1.5 py-0.5 bg-[#1B4E8A] text-white rounded text-xs font-bold">SELECTED</span>}
+          <span className="h-5 flex items-center">
+            {selected ? <span className="px-1.5 py-0.5 bg-[#1B4E8A] text-white rounded text-xs font-bold">SELECTED</span>
+              : candidate.rank === 1 ? <span className="px-1.5 py-0.5 bg-teal-100 text-teal-700 rounded text-xs font-bold">TOP SUGGESTION</span> : null}
+          </span>
         </div>
       </div>
       <div className="text-sm text-gray-900 mb-3 leading-snug font-bold">{candidate.descriptions[0] || candidate.item_number}</div>
@@ -77,12 +79,38 @@ function CandidateCard({
   </div>;
 }
 
+
+function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1; onInfo: () => void }) {
+  const score = candidate.score_components.ranking_score;
+  return <div className="border-2 border-[#1B4E8A] rounded-xl px-4 py-3 bg-blue-50/40 flex flex-wrap items-center gap-x-5 gap-y-2">
+    <div className="order-1 flex items-center gap-2 flex-shrink-0">
+      <span className="w-5 h-5 rounded-full border-2 border-[#1B4E8A] bg-[#1B4E8A] flex items-center justify-center"><span className="w-2 h-2 rounded-full bg-white" /></span>
+      <span className="text-xl leading-none text-gray-900 font-extrabold">{typeof score === 'number' ? formatRankingScore(score) : '—'}</span>
+      <span className="text-xs text-gray-500">/100</span>
+    </div>
+    <div className="order-3 sm:order-2 w-full sm:w-auto sm:flex-1 min-w-0">
+      <div className="text-sm text-gray-900 font-bold mb-1">{candidate.descriptions[0] || candidate.item_number}</div>
+      <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs">
+        <span><span className="text-gray-400 font-semibold mr-2">SKU</span><span className="text-gray-700 font-mono">{candidate.item_number}</span></span>
+        {candidate.manufacturer && <span><span className="text-gray-400 font-semibold mr-2">MFR</span><span className="text-gray-700">{candidate.manufacturer}</span></span>}
+        <span><span className="text-gray-400 font-semibold mr-2">AVAIL.</span><span className={candidate.availability_status === 'on_hand_sufficient' ? 'text-green-700 font-semibold' : 'text-gray-600'}>{candidate.availability_status.replace(/_/g, ' ')}</span></span>
+      </div>
+    </div>
+    <div className="order-2 sm:order-3 flex items-center gap-2 ml-auto">
+      <button type="button" onClick={onInfo} aria-label={'Details for ' + (candidate.descriptions[0] || candidate.item_number)} className="p-1.5 rounded-full text-[#1B4E8A] hover:bg-blue-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Info size={17} /></button>
+      <span className="px-2.5 py-1 bg-[#1B4E8A] text-white rounded-full text-xs font-bold">SELECTED</span>
+    </div>
+  </div>;
+}
+
 export function SmartMatchingScreen({ requestId, onContinue }: Props) {
   const [data, setData] = useState<SavedMatching | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState<CandidateDetails>(null);
   const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
   const [savingItems, setSavingItems] = useState<Set<number>>(new Set());
+  const [recentlySavedItems, setRecentlySavedItems] = useState<Set<number>>(new Set());
+  const savedTimers = useRef<Map<number, number>>(new Map());
   const savingItemsRef = useRef<Set<number>>(new Set());
   const decisionVersion = useRef(0);
   const [finalizing, setFinalizing] = useState(false);
@@ -96,7 +124,6 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
         .then(value => {
           if (active && savingItemsRef.current.size === 0 && version === decisionVersion.current) {
             setData(value);
-            setError(null);
           }
         })
         .catch(caught => { if (active) setError(String(caught)); });
@@ -111,12 +138,25 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
       })
       .catch(() => { if (active) void refresh(); });
     const timer = window.setInterval(() => { if (active) void refresh(); }, 2000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      savedTimers.current.forEach(timeout => window.clearTimeout(timeout));
+      savedTimers.current.clear();
+    };
   }, [requestId]);
 
   const choose = async (itemId: number, candidateId?: string) => {
     if (savingItemsRef.current.has(itemId)) return;
     decisionVersion.current += 1;
+    const savedTimer = savedTimers.current.get(itemId);
+    if (savedTimer) window.clearTimeout(savedTimer);
+    savedTimers.current.delete(itemId);
+    setRecentlySavedItems(previous => {
+      const next = new Set(previous);
+      next.delete(itemId);
+      return next;
+    });
     savingItemsRef.current.add(itemId);
     setSavingItems(new Set(savingItemsRef.current));
     try {
@@ -133,6 +173,21 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
             : line,
         ),
       } : updated);
+      setExpandedItems(previous => {
+        if (!previous.has(itemId)) return previous;
+        const next = new Set(previous);
+        next.delete(itemId);
+        return next;
+      });
+      setRecentlySavedItems(previous => new Set(previous).add(itemId));
+      savedTimers.current.set(itemId, window.setTimeout(() => {
+        setRecentlySavedItems(previous => {
+          const next = new Set(previous);
+          next.delete(itemId);
+          return next;
+        });
+        savedTimers.current.delete(itemId);
+      }, 2500));
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not save the decision');
@@ -194,22 +249,22 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
         const expanded = expandedItems.has(line.itemId);
         const visible = expanded ? line.candidates : line.candidates.slice(0, VISIBLE_COUNT);
         const selectedOutside = !expanded && line.candidates.slice(VISIBLE_COUNT).find(candidate => candidate.candidate_id === line.selectedCandidateId);
-        return <section id={'match-item-' + line.itemId} key={line.itemId} className="bg-white rounded-xl border-2 border-gray-200 overflow-hidden scroll-mt-6">
-          <div className="px-5 py-3.5 bg-gray-50 border-b border-gray-200 flex items-center gap-3">
+        return <section id={'match-item-' + line.itemId} key={line.itemId} className={'rounded-xl border-2 overflow-hidden scroll-mt-6 ' + (line.decisionType === 'no_match' ? 'bg-gray-100 border-gray-300' : 'bg-white border-gray-200')}>
+          <div className={'px-5 py-3.5 border-b border-gray-200 flex items-center gap-3 ' + (line.decisionType === 'no_match' ? 'bg-gray-200/70' : 'bg-gray-50')}>
             <MapPin size={15} className="text-gray-400 flex-shrink-0" />
             <div className="flex-1 flex items-center gap-3 flex-wrap">
               <span className="text-sm text-gray-900 font-bold">{line.name}</span>
               <span className="text-sm text-gray-500">Qty: {line.quantity?.toLocaleString() ?? 'Not specified'} {line.unit}</span>
               <span className="text-xs text-gray-500 capitalize">{line.domain}</span>
             </div>
-            <span className={'flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-semibold ' + (line.decisionType ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700')}>{selectionLabel(line)}</span>
+            <span className={'flex-shrink-0 px-2.5 py-1 rounded-full text-xs font-semibold ' + (line.decisionType === 'no_match' ? 'bg-orange-100 text-orange-800' : line.decisionType ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700')}>{selectionLabel(line)}</span>
           </div>
           <div className="p-5">
             {line.error && <div className="mb-3"><ErrorPanel message={line.error} /></div>}
             {(line.status === 'pending' || line.status === 'running') && <LoadingPanel label={line.status === 'running' ? 'Matching this item' : 'Waiting for matching worker'} />}
             {line.status === 'completed' && <>
               {line.candidates.length === 0 && <p className="text-sm text-gray-500">No candidates were found for this item.</p>}
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              <div className={'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 ' + (line.decisionType === 'no_match' ? 'opacity-65' : '')}>
                 {visible.map(candidate => <CandidateCard
                   key={candidate.candidate_id}
                   candidate={candidate}
@@ -221,14 +276,17 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
               </div>
               {selectedOutside && <div className="mt-4">
                 <div className="flex items-center gap-2 mb-2.5"><div className="flex-1 h-px bg-gray-200" /><span className="text-xs text-gray-400">Your current selection</span><div className="flex-1 h-px bg-gray-200" /></div>
-                <div className="max-w-md"><CandidateCard candidate={selectedOutside} selected disabled={savingItems.has(line.itemId)} onSelect={() => void choose(line.itemId, selectedOutside.candidate_id)} onInfo={() => setDetails({ line, candidate: selectedOutside })} /></div>
+                <SelectedCandidate candidate={selectedOutside} onInfo={() => setDetails({ line, candidate: selectedOutside })} />
               </div>}
-              {line.candidates.length > VISIBLE_COUNT && <button onClick={() => toggleExpand(line.itemId)} className="mt-3 flex items-center gap-1 text-sm text-[#1B4E8A] hover:underline">
-                {expanded ? <><ChevronUp size={14} /> Show fewer options</> : <><ChevronDown size={14} /> See {line.candidates.length - VISIBLE_COUNT} more options</>}
-              </button>}
-              <div className="mt-4 pt-3 border-t border-gray-100 flex items-center gap-3">
-                <button type="button" disabled={savingItems.has(line.itemId)} aria-pressed={line.decisionType === 'no_match'} onClick={() => void choose(line.itemId)} className={'inline-flex items-center gap-2 rounded-lg border-2 px-4 py-2.5 text-sm font-semibold shadow-sm transition-colors disabled:opacity-50 ' + (line.decisionType === 'no_match' ? 'border-[#1B4E8A] bg-[#1B4E8A] text-white' : 'border-[#1B4E8A] bg-white text-[#1B4E8A] hover:bg-blue-50')}><Ban size={16} /> Mark this item as unmatched</button>
-                {line.decisionType && <span className="text-xs text-green-700">Decision saved</span>}
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                {line.candidates.length > VISIBLE_COUNT && <button type="button" onClick={() => toggleExpand(line.itemId)} aria-expanded={expanded} className="flex items-center gap-1 text-sm text-[#1B4E8A] hover:underline">
+                  {expanded ? <><ChevronUp size={14} /> Show fewer options</> : <><ChevronDown size={14} /> See {line.candidates.length - VISIBLE_COUNT} more options</>}
+                </button>}
+                <div className="flex flex-wrap items-center gap-3 ml-auto">
+                  {savingItems.has(line.itemId) ? <span role="status" className="text-xs text-gray-500">Saving…</span>
+                    : recentlySavedItems.has(line.itemId) && <span role="status" className="inline-flex items-center gap-1 text-xs text-green-700"><Check size={14} /> Decision saved</span>}
+                  <button type="button" disabled={savingItems.has(line.itemId)} aria-pressed={line.decisionType === 'no_match'} onClick={() => void choose(line.itemId)} className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold bg-white text-gray-700 ring-1 ring-inset ring-gray-300 shadow-sm transition-colors hover:bg-gray-50 disabled:opacity-50"><Ban size={16} /> Mark this item as unmatched</button>
+                </div>
               </div>
             </>}
           </div>
