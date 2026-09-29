@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
-  Activity,
   ChevronRight,
   Clock,
   FileText,
   HelpCircle,
   Home,
   LayoutDashboard,
+  PanelLeftClose,
+  PanelLeftOpen,
   Settings,
 } from 'lucide-react';
 import type { Screen } from '../api/types';
@@ -37,12 +38,53 @@ const WORKFLOW_SCREENS: Screen[] = ['ingestion', 'review', 'matching', 'summary'
 
 export function Layout({ children, currentScreen, onNavigate, displayName, avatarId, onAvatarChange }: LayoutProps) {
   const isWorkflow = WORKFLOW_SCREENS.includes(currentScreen);
+  const [compact, setCompact] = useState(() => window.matchMedia('(max-width: 1199px)').matches);
+  const [phone, setPhone] = useState(() => window.matchMedia('(max-width: 639px)').matches);
+  const [sidebarExpanded, setSidebarExpanded] = useState(() => !window.matchMedia('(max-width: 1199px)').matches);
   const [profileOpen, setProfileOpen] = useState(false);
   const [savingAvatar, setSavingAvatar] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const profileRef = useRef<HTMLDivElement>(null);
   const profileButtonRef = useRef<HTMLButtonElement>(null);
   const firstAvatarRef = useRef<HTMLButtonElement>(null);
+  const expandSidebarRef = useRef<HTMLButtonElement>(null);
+  const collapseSidebarRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 1199px)');
+    const phoneQuery = window.matchMedia('(max-width: 639px)');
+    const updatePhone = () => setPhone(phoneQuery.matches);
+    const update = () => {
+      setCompact(query.matches);
+      setSidebarExpanded(!query.matches);
+      setProfileOpen(false);
+    };
+    query.addEventListener('change', update);
+    phoneQuery.addEventListener('change', updatePhone);
+    return () => {
+      query.removeEventListener('change', update);
+      phoneQuery.removeEventListener('change', updatePhone);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!compact || !sidebarExpanded) return;
+    collapseSidebarRef.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSidebarExpanded(false);
+        expandSidebarRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [compact, sidebarExpanded]);
+
+  const navigate = (screen: Screen) => {
+    onNavigate(screen);
+    if (compact) setSidebarExpanded(false);
+    setProfileOpen(false);
+  };
 
   useEffect(() => {
     if (!profileOpen) return;
@@ -80,40 +122,34 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
   };
 
   return (
-    <div className="flex h-screen bg-[#F0F2F7] overflow-hidden">
-      <aside className="relative z-20 w-56 bg-[#0F2044] flex flex-col flex-shrink-0 shadow-xl">
-        <div className="h-16 flex items-center px-5 border-b border-white/10">
-          <button
-            onClick={() => onNavigate('home')}
-            className="flex items-center gap-2.5 hover:opacity-80 transition-opacity"
-          >
-            <div className="w-8 h-8 rounded-lg bg-[#0E9E8F] flex items-center justify-center shadow-sm">
-              <Activity size={16} className="text-white" />
-            </div>
-            <span className="text-white" style={{ fontWeight: 700, fontSize: 18 }}>
-              Allocura
-            </span>
+    <div className="flex h-screen bg-[#F0F2F7] overflow-hidden" style={{ '--sidebar-width': phone ? '0rem' : compact || !sidebarExpanded ? '4rem' : '14rem' } as CSSProperties}>
+      {compact && sidebarExpanded && <button type="button" aria-label="Close sidebar" onClick={() => setSidebarExpanded(false)} className="fixed inset-0 z-40 bg-black/30" />}
+      <aside id="app-sidebar" className={'z-50 bg-[#0F2044] flex flex-col flex-shrink-0 shadow-xl transition-[width] duration-200 ' + (sidebarExpanded ? 'w-56 ' : 'w-16 ') + (compact && sidebarExpanded ? 'fixed inset-y-0 left-0' : phone ? 'hidden' : 'relative')}>
+        <div className={'h-16 flex items-center border-b border-white/10 ' + (sidebarExpanded ? 'justify-between px-4' : 'justify-center')}>
+          <button onClick={() => navigate('home')} aria-label="Go to home" title="Home" className="flex min-w-0 items-center hover:opacity-80 transition-opacity">
+            {sidebarExpanded
+              ? <img src="/brand/allocura-wordmark-dark.svg" alt="" className="block h-8 w-auto max-w-[9.5rem]" />
+              : <img src="/brand/allocura-symbol-dark.svg" alt="" className="block h-8 w-8 object-contain" />}
           </button>
+          {sidebarExpanded && <button ref={collapseSidebarRef} type="button" onClick={() => setSidebarExpanded(false)} aria-label="Collapse sidebar" aria-controls="app-sidebar" aria-expanded={true} title="Collapse sidebar" className="p-1.5 rounded-lg text-white/70 hover:bg-white/10 hover:text-white focus-visible:outline-2 focus-visible:outline-white"><PanelLeftClose size={18} /></button>}
         </div>
 
-        <div className="px-5 py-2.5 border-b border-white/10">
-          <div className="text-white/40" style={{ fontSize: 11, fontWeight: 500 }}>
-            action medeor - Procurement
-          </div>
-        </div>
+        {sidebarExpanded && <div className="px-5 py-2.5 border-b border-white/10"><div className="text-white/40 text-[11px] font-medium">action medeor - Procurement</div></div>}
 
-        <nav aria-label="Main navigation" className="flex-1 p-3 space-y-0.5 overflow-y-auto">
+        <nav aria-label="Main navigation" className={'flex-1 space-y-0.5 overflow-y-auto ' + (sidebarExpanded ? 'p-3' : 'p-2')}>
           <NavItem
             icon={<Home size={15} />}
             label="Home"
             active={currentScreen === 'home'}
-            onClick={() => onNavigate('home')}
+            collapsed={!sidebarExpanded}
+            onClick={() => navigate('home')}
           />
           <NavItem
             icon={<LayoutDashboard size={15} />}
             label="Trend Dashboard"
             active={currentScreen === 'dashboard'}
-            onClick={() => onNavigate('dashboard')}
+            collapsed={!sidebarExpanded}
+            onClick={() => navigate('dashboard')}
           />
 
           <NavItem
@@ -121,21 +157,22 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
             label="New Request"
             active={isWorkflow}
             disabled={isWorkflow}
-            onClick={() => onNavigate('ingestion')}
+            collapsed={!sidebarExpanded}
+            onClick={() => navigate('ingestion')}
           />
 
-          <NavGroup label="Management" />
-          <NavItem icon={<Clock size={15} />} label="Request History" active={currentScreen === 'history'} onClick={() => onNavigate('history')} />
-          <NavItem icon={<Settings size={15} />} label="Settings" active={currentScreen === 'settings'} onClick={() => onNavigate('settings')} />
-          <NavItem icon={<HelpCircle size={15} />} label="Help & Support" active={currentScreen === 'help'} onClick={() => onNavigate('help')} />
+          <NavGroup label="Management" collapsed={!sidebarExpanded} />
+          <NavItem icon={<Clock size={15} />} label="Request History" active={currentScreen === 'history'} collapsed={!sidebarExpanded} onClick={() => navigate('history')} />
+          <NavItem icon={<Settings size={15} />} label="Settings" active={currentScreen === 'settings'} collapsed={!sidebarExpanded} onClick={() => navigate('settings')} />
+          <NavItem icon={<HelpCircle size={15} />} label="Help & Support" active={currentScreen === 'help'} collapsed={!sidebarExpanded} onClick={() => navigate('help')} />
         </nav>
 
-        <div ref={profileRef} className="relative p-3 border-t border-white/10">
+        <div ref={profileRef} className={'relative border-t border-white/10 ' + (sidebarExpanded ? 'p-3' : 'p-2')}>
           {profileOpen && <div
             id="avatar-picker"
             role="dialog"
             aria-label="Choose your avatar"
-            className="absolute bottom-full left-3 mb-3 w-72 rounded-xl border border-gray-200 bg-white p-4 shadow-xl"
+            className={'absolute w-72 rounded-xl border border-gray-200 bg-white p-4 shadow-xl ' + (sidebarExpanded ? 'bottom-full left-3 mb-3' : 'bottom-0 left-full ml-2')}
           >
             <h2 className="text-sm font-semibold text-gray-900">Choose your avatar</h2>
             <p className="mt-1 text-xs text-gray-500">Pick an animal for your profile.</p>
@@ -163,29 +200,27 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
             aria-expanded={profileOpen}
             aria-controls="avatar-picker"
             onClick={() => { setAvatarError(null); setProfileOpen(open => !open); }}
-            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-white"
+            className={'flex w-full items-center gap-2.5 rounded-lg py-2 text-left transition-colors hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-white ' + (sidebarExpanded ? 'px-2.5' : 'justify-center px-0')}
           >
             <div className="w-8 h-8 rounded-full bg-[#1B4E8A] flex items-center justify-center flex-shrink-0 border border-white/20">
               <img src={avatarUrl(avatarId)} alt="" className="w-full h-full rounded-full object-cover" />
             </div>
-            <div className="min-w-0">
-              <div className="text-white truncate" style={{ fontSize: 13, fontWeight: 500 }}>
-                {displayName}
-              </div>
-              <div className="text-white/50" style={{ fontSize: 11 }}>
-                action medeor
-              </div>
-            </div>
+            {sidebarExpanded && <div className="min-w-0">
+              <div className="text-white truncate" style={{ fontSize: 13, fontWeight: 500 }}>{displayName}</div>
+              <div className="text-white/50" style={{ fontSize: 11 }}>action medeor</div>
+            </div>}
           </button>
         </div>
       </aside>
+      {compact && sidebarExpanded && !phone && <div className="w-16 flex-shrink-0" aria-hidden="true" />}
 
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center px-6 justify-between flex-shrink-0 z-10">
-          <div className="flex items-center gap-1.5">
+        <header className="h-16 bg-white border-b border-gray-200 flex items-center px-3 sm:px-6 justify-between gap-3 flex-shrink-0 z-10">
+          <div className="flex items-center gap-1.5 min-w-0">
+            {!sidebarExpanded && <button ref={expandSidebarRef} type="button" onClick={() => setSidebarExpanded(true)} aria-label="Expand sidebar" aria-controls="app-sidebar" aria-expanded={false} title="Expand sidebar" className="mr-2 p-1.5 rounded-lg text-gray-600 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><PanelLeftOpen size={19} /></button>}
             <button
-              onClick={() => onNavigate('home')}
-              className="text-gray-400 text-sm hover:text-gray-700 transition-colors"
+              onClick={() => navigate('home')}
+              className="text-gray-400 text-sm hover:text-gray-700 transition-colors hidden sm:block"
             >
               Allocura
             </button>
@@ -194,11 +229,11 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
                 {isWorkflow && (
                   <>
                     <ChevronRight size={13} className="text-gray-300" />
-                    <span className="text-gray-400 text-sm">Request Workflow</span>
+                    <span className="text-gray-400 text-sm hidden md:inline">Request Workflow</span>
                   </>
                 )}
                 <ChevronRight size={13} className="text-gray-300" />
-                <span className="text-gray-900 text-sm" style={{ fontWeight: 500 }}>
+                <span className="text-gray-900 text-sm truncate" style={{ fontWeight: 500 }}>
                   {SCREEN_LABELS[currentScreen]}
                 </span>
               </>
@@ -206,7 +241,7 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
           </div>
 
           <div
-            className="px-3 py-1 bg-blue-50 border border-blue-100 rounded-full text-xs text-blue-700"
+            className="hidden sm:block px-3 py-1 bg-blue-50 border border-blue-100 rounded-full text-xs text-blue-700 flex-shrink-0"
             style={{ fontWeight: 500 }}
           >
             action medeor
@@ -219,10 +254,10 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
   );
 }
 
-function NavGroup({ label }: { label: string }) {
+function NavGroup({ label, collapsed }: { label: string; collapsed: boolean }) {
   return (
-    <div className="pt-4 pb-1">
-      <div
+    <div className={collapsed ? 'my-3 border-t border-white/10' : 'pt-4 pb-1'}>
+      {!collapsed && <div
         className="text-white/40 px-3 pb-1"
         style={{
           fontSize: 10,
@@ -232,7 +267,7 @@ function NavGroup({ label }: { label: string }) {
         }}
       >
         {label}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -241,12 +276,14 @@ function NavItem({
   icon,
   label,
   active,
+  collapsed,
   disabled = false,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
   active: boolean;
+  collapsed: boolean;
   disabled?: boolean;
   onClick: () => void;
 }) {
@@ -255,12 +292,14 @@ function NavItem({
       onClick={onClick}
       disabled={disabled}
       aria-current={active && !disabled ? 'page' : undefined}
-      className={`w-full flex items-center gap-2.5 rounded-lg transition-colors text-left px-3 py-2 focus-visible:outline-2 focus-visible:outline-white ${active ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85 hover:bg-white/8'}`}
+      aria-label={collapsed ? label : undefined}
+      title={collapsed ? label : undefined}
+      className={`w-full flex items-center gap-2.5 rounded-lg transition-colors text-left focus-visible:outline-2 focus-visible:outline-white ${collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2'} ${active ? 'bg-white/15 text-white' : 'text-white/55 hover:text-white/85 hover:bg-white/8'}`}
       style={{ fontSize: 13 }}
     >
       <span className={active ? 'text-white' : 'text-white/55'}>{icon}</span>
-      {label}
-      {active && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-[#0E9E8F]" />}
+      {!collapsed && label}
+      {!collapsed && active && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-[#0E9E8F]" />}
     </button>
   );
 }

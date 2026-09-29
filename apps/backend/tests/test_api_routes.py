@@ -500,3 +500,29 @@ async def request(method: str, url: str, **kwargs: Any) -> Any:
         base_url="http://testserver",
     ) as client:
         return await client.request(method, url, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_delete_request_requires_a_saved_request_and_rejects_active_matching(monkeypatch) -> None:
+    from app.api import routes
+    from app.db import repository
+    from app.db.session import get_session
+
+    async def fake_session():
+        yield object()
+
+    async def fake_delete(_session, request_id: str) -> bool:
+        if request_id == "ACTIVE":
+            raise repository.RequestCurrentlyMatching()
+        return request_id == "SAVED"
+
+    app.dependency_overrides[get_session] = fake_session
+    monkeypatch.setattr(routes.repository, "delete_request", fake_delete)
+    try:
+        assert (await request("DELETE", "/api/requests/SAVED")).status_code == 204
+        assert (await request("DELETE", "/api/requests/MISSING")).status_code == 404
+        active = await request("DELETE", "/api/requests/ACTIVE")
+        assert active.status_code == 409
+        assert "matching finishes" in active.json()["detail"]
+    finally:
+        app.dependency_overrides.pop(get_session, None)

@@ -1,8 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { ArrowRight, CheckCircle2, Clock, FileText, LayoutDashboard, Package, Plus, Star, TrendingUp, Users } from 'lucide-react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { ArrowRight, CheckCircle2, Clock, FileText, LayoutDashboard, Package, Plus, Star, Trash2, TrendingUp, Users } from 'lucide-react';
 import { getHome } from '../api/client';
 import type { HomeResponse, HomeStat } from '../api/types';
-import { listRequests, type SavedRequest } from '../api/workflow';
+import { deleteRequest, listRequests, type SavedRequest } from '../api/workflow';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 
 type Props = {
@@ -28,10 +28,11 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
 
-function RequestTable({ requests, loading, onOpenRequest }: {
+function RequestTable({ requests, loading, onOpenRequest, onDeleteRequest }: {
   requests: SavedRequest[] | null;
   loading: boolean;
   onOpenRequest: Props['onOpenRequest'];
+  onDeleteRequest?: (request: SavedRequest, trigger: HTMLButtonElement) => void;
 }) {
   return <div className="overflow-x-auto">
     <table className="w-full min-w-[780px]">
@@ -39,25 +40,19 @@ function RequestTable({ requests, loading, onOpenRequest }: {
         {['Request ID', 'Partner Organization', 'Region', 'Date', 'Items', 'Match Rate', 'Status'].map(header =>
           <th key={header} className="text-left px-5 py-2.5 text-xs text-gray-500 uppercase tracking-wide font-semibold">{header}</th>,
         )}
+        {onDeleteRequest && <th className="text-right px-5 py-2.5 text-xs text-gray-500 uppercase tracking-wide font-semibold">Actions</th>}
       </tr></thead>
       <tbody>
-        {loading && <tr><td colSpan={7} className="p-5"><LoadingPanel label="Loading requests" /></td></tr>}
-        {!loading && requests?.length === 0 && <tr><td colSpan={7} className="p-6 text-sm text-gray-500">No requests yet.</td></tr>}
+        {loading && <tr><td colSpan={onDeleteRequest ? 8 : 7} className="p-5"><LoadingPanel label="Loading requests" /></td></tr>}
+        {!loading && requests?.length === 0 && <tr><td colSpan={onDeleteRequest ? 8 : 7} className="p-6 text-sm text-gray-500">No requests yet.</td></tr>}
         {requests?.map(request => <tr
           key={request.requestId}
-          role="button"
-          tabIndex={0}
-          aria-label={`Open request ${request.requestId}`}
           onClick={() => onOpenRequest(request)}
-          onKeyDown={event => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              onOpenRequest(request);
-            }
-          }}
-          className={'border-b border-gray-100 last:border-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#1B4E8A] ' + (request.status === 'finalized' ? 'bg-green-50/60 hover:bg-green-100/60' : 'hover:bg-gray-50')}
+          className={'border-b border-gray-100 last:border-0 transition-colors cursor-pointer ' + (request.status === 'finalized' ? 'bg-green-50/60 hover:bg-green-100/60' : 'hover:bg-gray-50')}
         >
-          <td className="px-5 py-3.5 text-sm font-mono text-[#1B4E8A] font-semibold" title={request.sourceFile || ''}>{request.requestId}</td>
+          <td className="px-5 py-3.5 text-sm text-[#1B4E8A] font-semibold" title={request.sourceFile || ''}>
+            <button type="button" onClick={event => { event.stopPropagation(); onOpenRequest(request); }} className="rounded text-left hover:underline focus-visible:outline-2 focus-visible:outline-[#1B4E8A]" aria-label={`Open request ${request.requestId}`}>{request.requestId}</button>
+          </td>
           <td className="px-5 py-3.5 text-sm text-gray-900 font-medium">{request.partner || 'Not specified'}</td>
           <td className="px-5 py-3.5 text-sm text-gray-500">{request.region || '—'}</td>
           <td className="px-5 py-3.5 text-sm text-gray-500">{formatDate(request.createdAt)}</td>
@@ -72,6 +67,11 @@ function RequestTable({ requests, loading, onOpenRequest }: {
               {request.status.replace(/_/g, ' ')}
             </span>
           </td>
+          {onDeleteRequest && <td className="px-5 py-3.5 text-right">
+            <button type="button" onClick={event => { event.stopPropagation(); onDeleteRequest(request, event.currentTarget); }} aria-label={`Delete request ${request.requestId}`} title={`Delete request ${request.requestId}`} className="inline-flex items-center justify-center rounded-lg border border-gray-200 p-2 text-gray-500 hover:border-red-300 hover:bg-red-50 hover:text-red-700 focus-visible:outline-2 focus-visible:outline-red-600">
+              <Trash2 size={15} />
+            </button>
+          </td>}
         </tr>)}
       </tbody>
     </table>
@@ -83,6 +83,13 @@ export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, on
   const [home, setHome] = useState<HomeResponse | null>(null);
   const [homeError, setHomeError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [requestToDelete, setRequestToDelete] = useState<SavedRequest | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const cancelDeleteRef = useRef<HTMLButtonElement>(null);
+  const deleteDialogRef = useRef<HTMLDivElement>(null);
+  const historyHeadingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -97,13 +104,78 @@ export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, on
     return () => { active = false; };
   }, [history]);
 
+  useEffect(() => {
+    if (!history) {
+      setRequestToDelete(null);
+      setDeleteError(null);
+    }
+  }, [history]);
+
+  useEffect(() => {
+    if (history && requestToDelete) cancelDeleteRef.current?.focus();
+  }, [history, requestToDelete]);
+
+  const cancelDeletion = () => {
+    if (deleting) return;
+    setRequestToDelete(null);
+    setDeleteError(null);
+    deleteTriggerRef.current?.focus();
+  };
+
+  const confirmDeletion = async () => {
+    if (!requestToDelete || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteRequest(requestToDelete.requestId);
+      setRequests(previous => previous?.filter(request => request.requestId !== requestToDelete.requestId) ?? null);
+      setRequestToDelete(null);
+      window.requestAnimationFrame(() => historyHeadingRef.current?.focus());
+    } catch (caught) {
+      setDeleteError(caught instanceof Error ? caught.message : 'Could not delete this request');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape' && !deleting) {
+      event.stopPropagation();
+      cancelDeletion();
+    }
+    if (event.key !== 'Tab') return;
+    const controls = Array.from(deleteDialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []);
+    if (controls.length === 0) {
+      event.preventDefault();
+    } else if (event.shiftKey && document.activeElement === controls[0]) {
+      event.preventDefault();
+      controls[controls.length - 1].focus();
+    } else if (!event.shiftKey && document.activeElement === controls[controls.length - 1]) {
+      event.preventDefault();
+      controls[0].focus();
+    }
+  };
+
   if (history) return <div className="p-6 max-w-6xl mx-auto">
     <div className="flex items-center justify-between mb-6">
-      <div><h1 className="text-gray-900">Request History</h1><p className="text-sm text-gray-500">Reopen saved extraction and matching work.</p></div>
+      <div><h1 ref={historyHeadingRef} tabIndex={-1} className="text-gray-900 focus:outline-none">Request History</h1><p className="text-sm text-gray-500">Reopen or delete saved extraction and matching work.</p></div>
       <button onClick={onCreateRequest} className="flex items-center gap-2 px-5 py-3 bg-[#1B4E8A] text-white rounded-xl"><Plus size={16} /> New Request</button>
     </div>
     {(error || loadError) && <div className="mb-4"><ErrorPanel message={error || loadError || ''} /></div>}
-    {!loadError && <div className="bg-white rounded-xl border border-gray-200 overflow-hidden"><RequestTable requests={requests} loading={!requests} onOpenRequest={onOpenRequest} /></div>}
+    {!loadError && <div className="bg-white rounded-xl border border-gray-200 overflow-hidden"><RequestTable requests={requests} loading={!requests} onOpenRequest={onOpenRequest} onDeleteRequest={(request, trigger) => { deleteTriggerRef.current = trigger; setDeleteError(null); setRequestToDelete(request); }} /></div>}
+    {requestToDelete && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-950/45 backdrop-blur-sm p-4" onClick={event => { if (event.target === event.currentTarget) cancelDeletion(); }}>
+      <div ref={deleteDialogRef} role="dialog" aria-modal="true" aria-labelledby="delete-request-title" aria-describedby="delete-request-description" onKeyDown={handleDeleteDialogKeyDown} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-red-50 text-red-700"><Trash2 size={20} /></div>
+        <h2 id="delete-request-title" className="mt-4 text-lg font-bold text-gray-900">Delete request?</h2>
+        <p id="delete-request-description" className="mt-2 text-sm leading-relaxed text-gray-600">This will permanently remove request <strong>{requestToDelete.requestId}</strong>, its uploaded file, items, and saved matching results.</p>
+        {requestToDelete.sourceFile && <p className="mt-2 truncate text-xs text-gray-500" title={requestToDelete.sourceFile}>{requestToDelete.sourceFile}</p>}
+        {deleteError && <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{deleteError}</p>}
+        <div className="mt-6 flex justify-end gap-3">
+          <button ref={cancelDeleteRef} type="button" disabled={deleting} onClick={cancelDeletion} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+          <button type="button" disabled={deleting} onClick={() => void confirmDeletion()} className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50">{deleting ? 'Deleting…' : 'Delete request'}</button>
+        </div>
+      </div>
+    </div>}
   </div>;
 
   return <div className="p-6 max-w-6xl mx-auto">
@@ -127,7 +199,7 @@ export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, on
           Start workflow <ArrowRight size={15} className="group-hover:translate-x-0.5 transition-transform" />
         </div>
       </button>
-      <button onClick={onViewDashboard} className="text-left bg-violet-50/30 rounded-2xl p-6 border border-violet-100 cursor-pointer hover:border-[#0E9E8F]/50 hover:shadow-md transition-all group flex flex-col justify-between select-none">
+      <button onClick={onViewDashboard} className="text-left bg-white rounded-2xl p-6 border border-gray-200 cursor-pointer hover:border-[#0E9E8F]/50 hover:shadow-md transition-all group flex flex-col justify-between select-none">
         <div>
           <div className="w-11 h-11 rounded-xl bg-teal-50 flex items-center justify-center mb-4"><LayoutDashboard size={21} className="text-[#0E9E8F]" /></div>
           <div className="text-gray-900 text-base mb-2 font-bold">Trend Dashboard</div>
@@ -137,7 +209,7 @@ export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, on
       </button>
     </div>
 
-    <div className="flex items-center gap-2 mb-3"><span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Overview</span><span className="text-xs font-medium text-violet-700 bg-violet-100/70 border border-violet-200/60 rounded-full px-2 py-0.5">Sample data</span></div>
+    <div className="flex items-center gap-2 mb-3"><span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Overview</span><span className="text-xs font-medium text-[#1B4E8A] bg-blue-50 border border-blue-100 rounded-full px-2 py-0.5">Sample data</span></div>
     {homeError && <div className="mb-6"><ErrorPanel message={homeError} /></div>}
     {!home && !homeError && <div className="mb-6"><LoadingPanel label="Loading home data" /></div>}
     {home && <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">{home.stats.map(stat => <StatCard key={stat.key} stat={stat} />)}</div>}
@@ -154,7 +226,7 @@ export function HomeScreen({ onCreateRequest, onOpenRequest, onViewDashboard, on
 
 function StatCard({ stat }: { stat: HomeStat }) {
   const visual = STAT_ICON[stat.key] ?? { icon: <TrendingUp size={17} className="text-[#1B4E8A]" />, bg: 'bg-blue-100' };
-  return <div className="bg-violet-50/30 rounded-xl border border-violet-100 p-5">
+  return <div className="bg-white rounded-xl border border-gray-200 p-5">
     <div className="flex items-center justify-between mb-3"><div className={`w-9 h-9 rounded-lg ${visual.bg} flex items-center justify-center`}>{visual.icon}</div></div>
     <div className={`text-2xl ${visual.highlight ? 'text-[#0E9E8F]' : 'text-gray-900'}`} style={{ fontWeight: 800 }}>{stat.value}</div>
     <div className="text-xs text-gray-700 mt-1 font-semibold">{stat.label}</div>

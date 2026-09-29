@@ -76,14 +76,14 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
   };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="bg-white rounded-xl border border-gray-200 px-6 py-4 mb-6">
+    <div className="px-6 py-4 max-w-6xl mx-auto">
+      <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 mb-5">
         <WorkflowStepper currentStep="ingestion" />
       </div>
 
-      <div className="flex gap-6">
+      <div className="flex flex-col lg:flex-row gap-6">
         <div className="flex-1 min-w-0">
-          <div className="mb-5">
+          <div className="mb-4">
             <h1 className="text-gray-900">Import Partner Request</h1>
             <p className="text-gray-500 text-sm mt-1">
               Upload a medical supply request file received from a partner organization in a crisis
@@ -101,7 +101,7 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
             onDragLeave={() => setIsDragging(false)}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
-            className={`relative border-2 border-dashed rounded-xl p-14 flex flex-col items-center justify-center cursor-pointer transition-all select-none ${
+            className={`relative border-2 border-dashed rounded-xl px-8 py-10 lg:px-10 2xl:py-12 flex flex-col items-center justify-center cursor-pointer transition-all select-none ${
               isDragging
                 ? 'border-[#1B4E8A] bg-blue-50/60'
                 : uploadedFile
@@ -150,7 +150,7 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
                   Drag and drop your request file here
                 </div>
                 <div className="text-gray-400 text-sm">or click to browse from your computer</div>
-                <div className="flex items-center gap-6 mt-7">
+                <div className="flex flex-wrap items-center justify-center gap-4 mt-7">
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <div className="w-7 h-7 rounded-md bg-green-100 flex items-center justify-center">
                       <FileSpreadsheet size={14} className="text-green-600" />
@@ -174,7 +174,7 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
             )}
           </div>
 
-          <div className="mt-4 bg-blue-50 border border-blue-100 rounded-lg p-4 flex gap-3">
+          <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg p-3 flex gap-3">
             <Info size={15} className="text-blue-500 flex-shrink-0 mt-0.5" />
             <p className="text-sm text-blue-700 leading-relaxed">
               Partner request files should contain item names, quantities, and units. Allocura
@@ -184,7 +184,7 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
             </p>
           </div>
 
-          <div className="mt-6 flex items-center justify-end">
+          <div className="mt-4 flex items-center justify-end">
             <button
               onClick={() => uploadedFile && onContinue(uploadedFile)}
               disabled={!uploadedFile}
@@ -201,7 +201,7 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
           </div>
         </div>
 
-        <div className="flex-shrink-0" style={{ width: 272 }}>
+        <div className="w-full lg:w-[272px] flex-shrink-0">
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <div className="flex items-center gap-2 mb-4">
               <Clock size={14} className="text-gray-400" />

@@ -4,6 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import fixtures
+from app.api.matched_results_export import build_matched_results_workbook, results_filename
 from app.api.request_workflow import (
     latest_snapshot_id,
     matching_state,
@@ -140,6 +141,20 @@ async def list_requests(session: AsyncSession = Depends(get_session)) -> list[Re
         )
         for request in requests
     ]
+
+
+@router.delete("/requests/{request_id}", status_code=204)
+async def delete_request(request_id: str, session: AsyncSession = Depends(get_session)) -> Response:
+    try:
+        deleted = await repository.delete_request(session, request_id)
+    except repository.RequestCurrentlyMatching as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Wait until matching finishes before deleting this request",
+        ) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return Response(status_code=204)
 
 
 @router.get("/requests/{request_id}")
@@ -514,16 +529,12 @@ async def update_matching(
     return MatchSelectionResponse(itemId=item_id, matchId=payload.matchId)
 
 
-@router.get("/requests/{request_id}/summary")
-async def summary(request_id: str, session: AsyncSession = Depends(get_session)) -> dict | SummaryResponse:
-    request = await repository.get_request_by_id(session, request_id)
-    if request is None:
-        require_mock_request(request_id)
-        return fixtures.summary_response()
+async def _saved_summary(session: AsyncSession, request) -> dict:
     if request.workflow_status not in {"complete", "finalized"}:
         raise HTTPException(status_code=409, detail="Decide every matched item before summary")
-    state = await matching_state(session, request_id)
+    state = await matching_state(session, request.request_id)
     assert state is not None
+    source_items = {item.id: item for item in request.items}
     items = []
     for line in state.lines:
         candidate = next(
@@ -531,11 +542,17 @@ async def summary(request_id: str, session: AsyncSession = Depends(get_session))
              if candidate["candidate_id"] == str(line.selectedCandidateId)),
             None,
         )
+        source = source_items[line.itemId]
         items.append({
             "itemId": line.itemId,
+            "sourceRow": (source.source_reference.row
+                          if source.source_reference and source.source_reference.row > 0 else None),
+            "requestedItemNumber": source.item_number,
             "requested": line.name,
             "quantity": line.quantity,
             "unit": line.unit,
+            "desiredShelfLife": source.shelf_life,
+            "notes": source.notes,
             "domain": line.domain,
             "decision": line.decisionType,
             "itemNumber": candidate["item_number"] if candidate else None,
@@ -547,7 +564,7 @@ async def summary(request_id: str, session: AsyncSession = Depends(get_session))
             if candidate else [],
         })
     return {
-        "requestId": request_id,
+        "requestId": request.request_id,
         "status": request.workflow_status,
         "sourceFile": request.source_file_name,
         "partner": request.partner,
@@ -559,6 +576,30 @@ async def summary(request_id: str, session: AsyncSession = Depends(get_session))
         "matchedCount": sum(item["itemNumber"] is not None for item in items),
         "unmatchedCount": sum(item["itemNumber"] is None for item in items),
     }
+
+
+@router.get("/requests/{request_id}/summary")
+async def summary(request_id: str, session: AsyncSession = Depends(get_session)) -> dict | SummaryResponse:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        require_mock_request(request_id)
+        return fixtures.summary_response()
+    return await _saved_summary(session, request)
+
+
+@router.get("/requests/{request_id}/results.xlsx")
+async def download_matched_results(
+    request_id: str, session: AsyncSession = Depends(get_session)
+) -> Response:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    results = await _saved_summary(session, request)
+    return Response(
+        content=build_matched_results_workbook(results),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{results_filename(request_id)}"'},
+    )
 
 
 @router.post("/requests/{request_id}/offer")
