@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { AlertCircle, ArrowLeft, CheckCircle2, FileDown, Package, Pencil, Users, Warehouse, X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { AlertCircle, ArrowLeft, CheckCircle2, FileDown, Maximize2, Package, Pencil, Users, Warehouse, X } from 'lucide-react';
 import { getRequestSummary, type SavedSummary } from '../api/workflow';
 import { fetchRequestResults, saveRequestResults } from '../api/export/client';
 import { confirmPartner, updatePartner } from '../api/client';
@@ -19,11 +19,13 @@ const EXPORT_STEPS = [
 const showStep = (milliseconds: number) => new Promise<void>(resolve => window.setTimeout(resolve, milliseconds));
 
 function MetricCard({ icon, label, value, sub }: { icon: ReactNode; label: string; value: string; sub: string }) {
-  return <div className="bg-white rounded-xl border border-gray-200 p-4">
-    <div className="w-9 h-9 rounded-lg bg-blue-50 text-[#1B4E8A] flex items-center justify-center mb-3">{icon}</div>
-    <div className="text-xs text-gray-500 font-semibold uppercase tracking-wide">{label}</div>
-    <div className="text-2xl text-gray-900 font-extrabold mt-1">{value}</div>
-    <div className="text-xs text-gray-400 mt-1">{sub}</div>
+  return <div className="flex items-center gap-3 bg-white rounded-xl border border-gray-200 px-3 py-2.5 sm:px-4">
+    <div className="w-9 h-9 rounded-lg bg-blue-50 text-[#1B4E8A] flex flex-shrink-0 items-center justify-center">{icon}</div>
+    <div className="min-w-0">
+      <div className="text-[11px] leading-4 text-gray-500 font-semibold uppercase tracking-wide">{label}</div>
+      <div className="text-xl leading-6 text-gray-900 font-extrabold tabular-nums">{value}</div>
+      <div className="hidden sm:block truncate text-xs leading-4 text-gray-400" title={sub}>{sub}</div>
+    </div>
   </div>;
 }
 
@@ -41,6 +43,11 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   const [editingPartner, setEditingPartner] = useState(false);
   const [savingPartner, setSavingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState({ partner: '', region: '', contact: '' });
+  const [tableExpanded, setTableExpanded] = useState(false);
+  const [canExpandTable, setCanExpandTable] = useState(false);
+  const tableExpandRef = useRef<HTMLButtonElement>(null);
+  const tableCloseRef = useRef<HTMLButtonElement>(null);
+  const tableRegionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -118,6 +125,61 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
     }
   };
 
+  useLayoutEffect(() => {
+    if (tableExpanded) return;
+    const region = tableRegionRef.current;
+    const table = region?.querySelector('table');
+    const rows = Array.from(table?.tBodies[0]?.rows ?? []).slice(0, 4);
+    if (!region || !table || rows.length < 4) {
+      setCanExpandTable(false);
+      return;
+    }
+
+    const measureVisibleRows = () => {
+      const headerHeight = table.tHead?.getBoundingClientRect().height ?? 0;
+      const fourRowsHeight = rows.reduce((height, row) => height + row.getBoundingClientRect().height, 0);
+      setCanExpandTable(region.clientHeight - headerHeight + 1 < fourRowsHeight);
+    };
+    measureVisibleRows();
+    const observer = new ResizeObserver(measureVisibleRows);
+    observer.observe(region);
+    if (table.tHead) observer.observe(table.tHead);
+    rows.forEach(row => observer.observe(row));
+    return () => observer.disconnect();
+  }, [data?.items, tableExpanded]);
+
+  useEffect(() => {
+    if (!tableExpanded) return;
+    tableCloseRef.current?.focus();
+    const main = tableRegionRef.current?.closest('main');
+    const previousOverflow = main?.style.overflow;
+    if (main) main.style.overflow = 'hidden';
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setTableExpanded(false);
+        window.requestAnimationFrame(() => (tableExpandRef.current ?? tableRegionRef.current)?.focus());
+      }
+      if (event.key !== 'Tab') return;
+      if (event.shiftKey && document.activeElement === tableCloseRef.current) {
+        event.preventDefault();
+        tableRegionRef.current?.focus();
+      } else if (!event.shiftKey && document.activeElement === tableRegionRef.current) {
+        event.preventDefault();
+        tableCloseRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (main) main.style.overflow = previousOverflow ?? '';
+    };
+  }, [tableExpanded]);
+
+  const closeTable = () => {
+    setTableExpanded(false);
+    window.requestAnimationFrame(() => (tableExpandRef.current ?? tableRegionRef.current)?.focus());
+  };
+
   const savePartner = async () => {
     if (!data) return;
     setSavingPartner(true);
@@ -151,10 +213,10 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   if (!data) return <div className="p-6"><ErrorPanel message={error ?? 'Summary unavailable'} /></div>;
 
   const availabilityConfirmed = data.items.filter(item => item.availability === 'on_hand_sufficient').length;
-  return <div className="p-6 max-w-7xl mx-auto min-w-0">
-    <div className="bg-white rounded-xl border border-gray-200 px-6 py-4 mb-6"><WorkflowStepper currentStep="summary" /></div>
+  return <div className="px-6 py-4 max-w-7xl mx-auto min-w-0">
+    <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 mb-5"><WorkflowStepper currentStep="summary" /></div>
     {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
-    <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+    <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
       <div>
         <div className="flex items-center gap-3">
           <h1>Order Summary</h1>
@@ -208,7 +270,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
       </div>
     </div>}
 
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
       <MetricCard icon={<Package size={18} />} label="Total line items" value={String(data.items.length)} sub="From the uploaded request" />
       <MetricCard icon={<CheckCircle2 size={18} />} label="Selected articles" value={String(data.matchedCount)} sub="Saved catalog decisions" />
       <MetricCard icon={<AlertCircle size={18} />} label="Unmatched lines" value={String(data.unmatchedCount)} sub="Explicitly marked unmatched" />
@@ -217,34 +279,39 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
 
     <div className="flex flex-col lg:flex-row gap-5">
       <div className="flex-1 min-w-0">
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between gap-3">
-            <div className="text-sm text-gray-900 font-bold truncate">Matched Items · {data.sourceFile}</div>
-            <div className="text-xs text-gray-400 whitespace-nowrap">Request ID: {data.requestId}</div>
+        <div className={tableExpanded ? 'fixed inset-0 z-[60] bg-gray-950/50 p-2 sm:p-4' : ''}>
+          <div role={tableExpanded ? 'dialog' : undefined} aria-modal={tableExpanded ? true : undefined} aria-labelledby="summary-table-title" className={'bg-white rounded-xl border border-gray-200 overflow-hidden ' + (tableExpanded ? 'flex h-full flex-col shadow-2xl' : '')}>
+          <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between gap-3 sm:px-5">
+            <div id="summary-table-title" className="text-sm text-gray-900 font-bold truncate">Matched Items · {data.sourceFile}</div>
+            <div className="flex flex-shrink-0 items-center gap-3">
+              <div className="hidden sm:block text-xs text-gray-400 whitespace-nowrap">Request ID: {data.requestId}</div>
+              {tableExpanded ? <button ref={tableCloseRef} type="button" onClick={closeTable} aria-label="Close expanded table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><X size={14} /> Close</button> : canExpandTable && <button ref={tableExpandRef} type="button" onClick={() => setTableExpanded(true)} aria-label="Expand matched items table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Maximize2 size={14} /> Expand</button>}
+            </div>
           </div>
-          <div role="region" aria-label="Matched items table" tabIndex={0} className="max-w-full max-h-[min(60vh,38rem)] overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A]">
+          <div ref={tableRegionRef} role="region" aria-label="Matched items table" tabIndex={0} className={'max-w-full overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A] ' + (tableExpanded ? 'min-h-0 flex-1' : 'max-h-[max(14rem,calc(100dvh-28rem))]')}>
             <table className="w-full min-w-[940px] text-sm text-gray-700">
               <thead className="sticky top-0 z-10 bg-gray-50"><tr className="border-b border-gray-200">
                 {['#', 'Requested Item', 'ERP Product', 'SKU', 'Qty', 'Ranking Score', 'Availability'].map(label => <th key={label} className="px-4 py-3 text-xs text-gray-500 text-left uppercase tracking-wide font-semibold whitespace-nowrap">{label}</th>)}
               </tr></thead>
               <tbody>{data.items.map((item, index) => <tr key={item.itemId} className={'border-b border-gray-100 hover:bg-gray-50/60 ' + (!item.itemNumber ? 'bg-amber-50/40' : '')}>
-                <td className="px-4 py-3.5 text-gray-500 tabular-nums">{index + 1}</td>
-                <td className="px-4 py-3.5 text-gray-800">{item.requested}</td>
-                <td className="px-4 py-3.5 text-gray-900 font-medium">{item.product || <span className="text-amber-700">Marked unmatched</span>}</td>
-                <td className="px-4 py-3.5 text-gray-700 whitespace-nowrap">{item.itemNumber || '—'}</td>
-                <td className="px-4 py-3.5 text-gray-900 whitespace-nowrap tabular-nums">{item.quantity?.toLocaleString() ?? '—'} <span className="text-gray-500">{item.unit}</span></td>
-                <td className="px-4 py-3.5 font-semibold text-gray-700 whitespace-nowrap tabular-nums">{typeof item.rankingScore === 'number' ? formatRankingScore(item.rankingScore) + '/100' : '—'}</td>
-                <td className="px-4 py-3.5 text-gray-700">{item.availability?.replace(/_/g, ' ') ?? '—'}</td>
+                <td className="px-4 py-2.5 text-gray-500 tabular-nums">{index + 1}</td>
+                <td className="px-4 py-2.5 text-gray-800">{item.requested}</td>
+                <td className="px-4 py-2.5 text-gray-900 font-medium">{item.product || <span className="text-amber-700">Marked unmatched</span>}</td>
+                <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{item.itemNumber || '—'}</td>
+                <td className="px-4 py-2.5 text-gray-900 whitespace-nowrap tabular-nums">{item.quantity?.toLocaleString() ?? '—'} <span className="text-gray-500">{item.unit}</span></td>
+                <td className="px-4 py-2.5 font-semibold text-gray-700 whitespace-nowrap tabular-nums">{typeof item.rankingScore === 'number' ? formatRankingScore(item.rankingScore) + '/100' : '—'}</td>
+                <td className="px-4 py-2.5 text-gray-700">{item.availability?.replace(/_/g, ' ') ?? '—'}</td>
               </tr>)}</tbody>
             </table>
+          </div>
           </div>
         </div>
         <p className="text-xs text-gray-500 mt-3">Ranking scores come from the matching evidence used to sort candidates. The best option for each item scores 100; compare scores only within the same requested item. Pricing and offer generation are not available yet.</p>
       </div>
 
       <aside className="w-full lg:w-64 flex-shrink-0">
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <div className="flex items-center justify-between gap-2 mb-4">
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className="flex items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2"><Users size={15} className="text-gray-400" /><h2 className="text-sm text-gray-900 font-semibold">Partner & Request Details</h2></div>
             {!data.partnerConfirmed && !editingPartner && <button type="button" title="Edit partner details" aria-label="Edit partner details" onClick={() => { setPartnerDraft({ partner: data.partner, region: data.region, contact: data.contact }); setEditingPartner(true); }} className="p-1 rounded text-gray-500 hover:bg-gray-100"><Pencil size={14} /></button>}
           </div>
@@ -259,7 +326,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
               <button type="button" disabled={savingPartner} onClick={() => void savePartner()} className="flex-1 rounded-lg bg-[#1B4E8A] px-2 py-1.5 text-xs font-semibold text-white disabled:opacity-50">Save</button>
             </div>
           </div> : <>
-            <dl className="space-y-3">
+            <dl className="space-y-1.5">
               {[
                 { label: 'Organization', value: data.partner },
                 { label: 'Region', value: data.region },
