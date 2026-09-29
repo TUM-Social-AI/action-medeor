@@ -1,4 +1,6 @@
-# Allocura
+<p align="center">
+  <img src="apps/frontend/public/brand/allocura-wordmark.svg" alt="Allocura" width="320" />
+</p>
 
 Full-stack monorepo for the Allocura procurement-matching prototype. Matching V1 now includes the
 versioned PostgreSQL data model, repeatable ERP CSV synchronization, SharePoint-offer handoff,
