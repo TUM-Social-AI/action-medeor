@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
-  Activity,
   ChevronRight,
   Clock,
   FileText,
@@ -127,9 +126,10 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
       {compact && sidebarExpanded && <button type="button" aria-label="Close sidebar" onClick={() => setSidebarExpanded(false)} className="fixed inset-0 z-40 bg-black/30" />}
       <aside id="app-sidebar" className={'z-50 bg-[#0F2044] flex flex-col flex-shrink-0 shadow-xl transition-[width] duration-200 ' + (sidebarExpanded ? 'w-56 ' : 'w-16 ') + (compact && sidebarExpanded ? 'fixed inset-y-0 left-0' : phone ? 'hidden' : 'relative')}>
         <div className={'h-16 flex items-center border-b border-white/10 ' + (sidebarExpanded ? 'justify-between px-4' : 'justify-center')}>
-          <button onClick={() => navigate('home')} aria-label="Go to home" title="Home" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-[#0E9E8F] flex items-center justify-center shadow-sm flex-shrink-0"><Activity size={16} className="text-white" /></div>
-            {sidebarExpanded && <span className="text-white font-bold text-lg truncate">Allocura</span>}
+          <button onClick={() => navigate('home')} aria-label="Go to home" title="Home" className="flex min-w-0 items-center hover:opacity-80 transition-opacity">
+            {sidebarExpanded
+              ? <img src="/brand/allocura-wordmark-dark.svg" alt="" className="block h-8 w-auto max-w-[9.5rem]" />
+              : <img src="/brand/allocura-symbol-dark.svg" alt="" className="block h-8 w-8 object-contain" />}
           </button>
           {sidebarExpanded && <button ref={collapseSidebarRef} type="button" onClick={() => setSidebarExpanded(false)} aria-label="Collapse sidebar" aria-controls="app-sidebar" aria-expanded={true} title="Collapse sidebar" className="p-1.5 rounded-lg text-white/70 hover:bg-white/10 hover:text-white focus-visible:outline-2 focus-visible:outline-white"><PanelLeftClose size={18} /></button>}
         </div>
