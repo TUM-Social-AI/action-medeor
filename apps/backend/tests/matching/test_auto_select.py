@@ -3,6 +3,7 @@ from uuid import uuid4
 from app.matching.auto_select import automatic_candidate
 from app.matching.contracts import (
     AvailabilityStatus,
+    CandidateType,
     MatchCandidateV1,
     PackagingResult,
     RuleOutcome,
@@ -62,3 +63,12 @@ def test_relaxed_similarity_accepts_extra_descriptors_but_not_flagged_results() 
     flagged = candidate(requested, "410003", 1, review=RuleOutcome.REVIEW)
     assert automatic_candidate(requested, None, (first, duplicate)) == first
     assert automatic_candidate(requested, "410003", (flagged,)) is None
+
+
+def test_supplier_offer_requires_manual_selection() -> None:
+    offer = candidate("Sterile catheter CH18", "temporary", 1).model_copy(update={
+        "candidate_type": CandidateType.HISTORICAL_OFFER,
+        "item_number": None,
+    })
+    assert automatic_candidate("Sterile catheter CH18", None, (offer,)) is None
+    assert automatic_candidate("Sterile catheter CH18", "410001", (offer,)) is None

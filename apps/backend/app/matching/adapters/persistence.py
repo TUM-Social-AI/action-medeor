@@ -245,6 +245,7 @@ class PostgresHistoryRepository:
                 FROM historical_offers h
                 JOIN source_snapshots s ON s.id = h.source_snapshot_id
                 WHERE h.is_current = TRUE AND h.active = TRUE
+                  AND (h.valid_until IS NULL OR h.valid_until >= CURRENT_DATE)
                   AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
                   AND (
                     CAST(:partner_id AS TEXT) IS NULL
@@ -286,7 +287,10 @@ class PostgresHistoryRepository:
                     price=row["price"],
                     currency=row["currency"],
                     price_basis=row["price_basis"],
+                    unit_price=row["unit_price"],
+                    unit_price_unit=row["unit_price_unit"],
                     offer_date=row["offer_date"],
+                    valid_until=row["valid_until"],
                     metadata=row["metadata_json"] or {},
                     source=source,
                 )

@@ -556,12 +556,21 @@ async def _saved_summary(session: AsyncSession, request) -> dict:
             "domain": line.domain,
             "decision": line.decisionType,
             "itemNumber": candidate["item_number"] if candidate else None,
+            "candidateType": candidate["candidate_type"] if candidate else None,
+            "supplier": candidate.get("supplier") if candidate else None,
+            "price": candidate.get("price") if candidate else None,
+            "currency": candidate.get("currency") if candidate else None,
+            "priceBasis": candidate.get("price_basis") if candidate else None,
+            "unitPrice": candidate.get("unit_price") if candidate else None,
+            "unitPriceUnit": candidate.get("unit_price_unit") if candidate else None,
+            "offerValidUntil": candidate.get("offer_valid_until") if candidate else None,
             "product": candidate["descriptions"][0] if candidate else None,
             "availability": candidate["availability_status"] if candidate else None,
             "rankingScore": candidate["score_components"].get("ranking_score") if candidate else None,
             "warnings": candidate["warnings"] if candidate else [],
             "retrievalMethods": [evidence["retriever"] for evidence in candidate["retrieval_evidence"]]
             if candidate else [],
+            "provenance": candidate["provenance"] if candidate else [],
         })
     return {
         "requestId": request.request_id,
@@ -573,8 +582,8 @@ async def _saved_summary(session: AsyncSession, request) -> dict:
         "contact": request.contact,
         "requestDate": request.request_date,
         "items": items,
-        "matchedCount": sum(item["itemNumber"] is not None for item in items),
-        "unmatchedCount": sum(item["itemNumber"] is None for item in items),
+        "matchedCount": sum(item["decision"] != "no_match" for item in items),
+        "unmatchedCount": sum(item["decision"] == "no_match" for item in items),
     }
 
 

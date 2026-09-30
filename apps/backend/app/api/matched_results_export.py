@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from io import BytesIO
 from typing import Any
+from urllib.parse import urlparse
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -31,6 +32,8 @@ RESULT_COLUMNS = (
     ("Availability", "availability", 24),
     ("Warnings", "warnings", 42),
     ("Retrieval methods", "retrievalMethods", 28),
+    ("Match source", "sourceType", 24),
+    ("SharePoint document", "sourceUrl", 60),
 )
 
 DECISION_LABELS = {
@@ -47,6 +50,19 @@ def results_filename(request_id: str) -> str:
     return f"matched-results-{safe_id}.xlsx"
 
 
+def _sharepoint_url(item: dict[str, Any]) -> str | None:
+    for source in item.get("provenance") or []:
+        if source.get("source_type") != "sharepoint":
+            continue
+        uri = source.get("uri")
+        if not isinstance(uri, str):
+            continue
+        parsed = urlparse(uri)
+        if parsed.scheme == "https" and (parsed.hostname or "").endswith(".sharepoint.com"):
+            return uri
+    return None
+
+
 def normalized_results(summary: dict[str, Any]) -> list[dict[str, Any]]:
     """One row per requested line, including explicitly unmatched lines."""
     rows = []
@@ -55,6 +71,11 @@ def normalized_results(summary: dict[str, Any]) -> list[dict[str, Any]]:
         row["decision"] = DECISION_LABELS.get(item["decision"], item["decision"])
         row["warnings"] = "\n".join(item["warnings"])
         row["retrievalMethods"] = ", ".join(item["retrievalMethods"])
+        row["sourceType"] = (
+            "SharePoint offer" if item.get("candidateType") == "historical_offer"
+            else "ERP catalog" if item.get("itemNumber") else "Unmatched"
+        )
+        row["sourceUrl"] = _sharepoint_url(item)
         rows.append(row)
     return rows
 
@@ -89,6 +110,10 @@ def build_matched_results_workbook(summary: dict[str, Any]) -> bytes:
     for row in normalized_results(summary):
         sheet.append([_excel_value(row.get(key)) for _, key, _ in RESULT_COLUMNS])
         row_number = sheet.max_row
+        if row["sourceUrl"]:
+            link_cell = sheet.cell(row_number, len(RESULT_COLUMNS))
+            link_cell.hyperlink = row["sourceUrl"]
+            link_cell.style = "Hyperlink"
         unmatched = row["decision"] == "Unmatched"
         for cell in sheet[row_number]:
             cell.alignment = Alignment(vertical="top", wrap_text=True)

@@ -60,7 +60,10 @@ class OfferRepositoryService:
             price=row["price"],
             currency=row["currency"],
             price_basis=row["price_basis"],
+            unit_price=row["unit_price"],
+            unit_price_unit=row["unit_price_unit"],
             offer_date=row["offer_date"],
+            valid_until=row["valid_until"],
             metadata=row["metadata_json"] or {},
             archived_at=row["archived_at"],
             updated_at=row["updated_at"],
@@ -159,14 +162,16 @@ class OfferRepositoryService:
                         id, source_snapshot_id, external_id, external_version,
                         is_current, active, raw_request_text, item_number,
                         offered_description, partner_id, destination_country, supplier,
-                        quantity, package, price, currency, price_basis, offer_date,
-                        metadata_json, created_at, updated_at
+                        quantity, package, price, currency, price_basis, unit_price,
+                        unit_price_unit, offer_date, valid_until, metadata_json,
+                        created_at, updated_at
                     ) VALUES (
                         :id, :source_id, :external_id, :external_version, TRUE, TRUE,
                         :raw_request_text, :item_number, :offered_description, :partner_id,
                         :destination_country, :supplier, CAST(:quantity AS jsonb),
-                        CAST(:package AS jsonb), :price, :currency, :price_basis, :offer_date,
-                        CAST(:metadata AS jsonb), :created_at, :updated_at
+                        CAST(:package AS jsonb), :price, :currency, :price_basis, :unit_price,
+                        :unit_price_unit, :offer_date, :valid_until, CAST(:metadata AS jsonb),
+                        :created_at, :updated_at
                     )
                     """
                 ),
@@ -190,7 +195,10 @@ class OfferRepositoryService:
                     "price": payload.price,
                     "currency": payload.currency,
                     "price_basis": payload.price_basis,
+                    "unit_price": payload.unit_price,
+                    "unit_price_unit": payload.unit_price_unit,
                     "offer_date": payload.offer_date,
+                    "valid_until": payload.valid_until,
                     "metadata": _json(metadata),
                     "created_at": updated_at,
                     "updated_at": updated_at,
@@ -242,13 +250,15 @@ class OfferRepositoryService:
                         id, source_snapshot_id, external_id, external_version, is_current,
                         active, archived_at, raw_request_text, item_number, offered_description,
                         partner_id, destination_country, supplier, quantity, package, price,
-                        currency, price_basis, offer_date, metadata_json, created_at, updated_at
+                        currency, price_basis, unit_price, unit_price_unit, offer_date,
+                        valid_until, metadata_json, created_at, updated_at
                     ) VALUES (
                         :new_id, :source_id, :external_id, :external_version, TRUE,
                         FALSE, :archived_at, :raw_request_text, :item_number,
                         :offered_description, :partner_id, :destination_country, :supplier,
                         CAST(:quantity AS jsonb), CAST(:package AS jsonb), :price, :currency,
-                        :price_basis, :offer_date, CAST(:metadata AS jsonb), :created_at, :updated_at
+                        :price_basis, :unit_price, :unit_price_unit, :offer_date,
+                        :valid_until, CAST(:metadata AS jsonb), :created_at, :updated_at
                     )
                     """
                 ),
@@ -269,7 +279,10 @@ class OfferRepositoryService:
                     "price": current["price"],
                     "currency": current["currency"],
                     "price_basis": current["price_basis"],
+                    "unit_price": current["unit_price"],
+                    "unit_price_unit": current["unit_price_unit"],
                     "offer_date": current["offer_date"],
+                    "valid_until": current["valid_until"],
                     "metadata": _json(current["metadata_json"] or {}),
                     "created_at": archived_at,
                     "updated_at": archived_at,

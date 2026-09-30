@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -10,10 +11,12 @@ from app.matching.adapters.in_memory import (
 )
 from app.matching.constraints.engine import load_default_policy
 from app.matching.contracts import (
+    CandidateType,
     DecisionType,
     MatchDecisionRequestV1,
     MatchRequestV1,
     RuleOutcome,
+    SourceType,
 )
 from app.matching.service import MatchingService
 from tests.matching.factories import historical_offer, item, line
@@ -88,6 +91,152 @@ async def test_complete_hybrid_match_is_reproducible_and_excludes_inactive_item(
     )
     assert decision.match_run_id == result.match_run_id
     assert len(runs.decisions) == 1
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_offer_source_is_attached_only_to_its_matched_article() -> None:
+    offer = historical_offer("410001001")
+    offer = offer.model_copy(update={"source": offer.source.model_copy(update={
+        "uri": "https://medeor.sharepoint.com/sites/test/offer.xlsx",
+    })})
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([
+            item("410001001", "Foley urinary catheter sterile CH18"),
+            item("410001002", "Foley urinary catheter sterile CH12", charriere=12),
+        ]),
+        history_repository=InMemoryHistoryRepository([offer]),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(),
+    )
+
+    result = await service.match(MatchRequestV1(inquiry_line=line()))
+    candidates = {candidate.item_number: candidate for candidate in result.candidates}
+
+    assert [source.source_type for source in candidates["410001001"].provenance] == [
+        SourceType.ERP, SourceType.SHAREPOINT,
+    ]
+    assert candidates["410001001"].provenance[1].uri == (
+        "https://medeor.sharepoint.com/sites/test/offer.xlsx"
+    )
+    assert all(source.source_type != "sharepoint" for source in candidates["410001002"].provenance)
+
+
+@pytest.mark.asyncio
+async def test_supplier_offer_without_erp_number_is_selectable_and_links_to_source() -> None:
+    offer = historical_offer("410001001")
+    offer = offer.model_copy(update={
+        "record_id": "offer-without-sku",
+        "item_number": None,
+        "offered_description": "Sterile Foley urinary catheter CH18",
+        "supplier": "Example supplier",
+        "unit_price": Decimal("0.42"),
+        "unit_price_unit": "piece",
+        "currency": "EUR",
+        "valid_until": date(2026, 12, 31),
+        "source": offer.source.model_copy(update={
+            "uri": "https://medeor.sharepoint.com/sites/test/new-offer.pdf",
+        }),
+    })
+    runs = InMemoryMatchRunRepository()
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository(),
+        history_repository=InMemoryHistoryRepository([offer]),
+        run_repository=runs,
+        policy=load_default_policy(),
+    )
+
+    result = await service.match(MatchRequestV1(inquiry_line=line()))
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.candidate_type is CandidateType.HISTORICAL_OFFER
+    assert candidate.item_number is None
+    assert candidate.supplier == "Example supplier"
+    assert candidate.unit_price == Decimal("0.42")
+    assert candidate.unit_price_unit == "piece"
+    assert candidate.currency == "EUR"
+    assert candidate.offer_valid_until == date(2026, 12, 31)
+    assert candidate.review_status is RuleOutcome.REVIEW
+    assert candidate.provenance == (offer.source,)
+    assert candidate.provenance[0].uri == "https://medeor.sharepoint.com/sites/test/new-offer.pdf"
+    assert candidate.rank == 1
+
+    decision = await service.save_decision(MatchDecisionRequestV1(
+        match_run_id=result.match_run_id,
+        inquiry_line_id=result.inquiry_line_id,
+        decision_type=DecisionType.ACCEPT_SUGGESTION,
+        candidate_id=candidate.candidate_id,
+    ))
+    assert decision.match_run_id == result.match_run_id
+    assert runs.decisions[decision.decision_id].selected_item_number is None
+
+
+@pytest.mark.asyncio
+async def test_supplier_offer_is_ranked_alongside_catalog_article() -> None:
+    offer = historical_offer("410001001").model_copy(update={
+        "record_id": "standalone-offer",
+        "item_number": None,
+        "offered_description": "Foley urinary catheter sterile CH18",
+    })
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([
+            item("410001001", "Foley urinary catheter sterile CH18")
+        ]),
+        history_repository=InMemoryHistoryRepository([offer]),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(),
+    )
+
+    result = await service.match(MatchRequestV1(inquiry_line=line()))
+
+    assert {candidate.candidate_type for candidate in result.candidates} == {
+        CandidateType.CATALOG, CandidateType.HISTORICAL_OFFER,
+    }
+    assert [candidate.rank for candidate in result.candidates] == [1, 2]
+    assert result.candidates[0].score_components["ranking_score"] > (
+        result.candidates[1].score_components["ranking_score"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_matching_supplier_offer_remains_visible_when_catalog_fills_top_k() -> None:
+    offer = historical_offer("410001001").model_copy(update={
+        "record_id": "standalone-offer",
+        "item_number": None,
+        "offered_description": "Foley urinary catheter sterile CH18",
+    })
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([
+            item("410001001", "Foley urinary catheter sterile CH18"),
+            item("410001002", "Foley sterile urinary catheter CH18"),
+        ]),
+        history_repository=InMemoryHistoryRepository([offer]),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(),
+    )
+
+    result = await service.match(MatchRequestV1(inquiry_line=line(), top_k=2))
+
+    assert len(result.candidates) == 2
+    assert result.candidates[-1].candidate_type is CandidateType.HISTORICAL_OFFER
+    assert result.candidates[-1].item_number is None
+
+
+@pytest.mark.asyncio
+async def test_unrelated_supplier_offer_is_not_suggested() -> None:
+    offer = historical_offer("410001001").model_copy(update={
+        "item_number": None,
+        "raw_request_text": "Adjustable examination table",
+        "offered_description": "Adjustable examination table",
+    })
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository(),
+        history_repository=InMemoryHistoryRepository([offer]),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(),
+    )
+    result = await service.match(MatchRequestV1(inquiry_line=line()))
+    assert result.candidates == ()
 
 
 @pytest.mark.asyncio
@@ -178,3 +327,20 @@ async def test_suggested_decision_must_reference_an_exposed_candidate() -> None:
                 selected_item_number="not-exposed",
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_expired_supplier_offer_is_not_suggested() -> None:
+    offer = historical_offer("410001001").model_copy(update={
+        "item_number": None,
+        "offered_description": "Foley urinary catheter sterile CH18",
+        "valid_until": date(2020, 1, 1),
+    })
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository(),
+        history_repository=InMemoryHistoryRepository([offer]),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(),
+    )
+    result = await service.match(MatchRequestV1(inquiry_line=line()))
+    assert result.candidates == ()

@@ -8,12 +8,16 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from app.matching.constraints.engine import ConstraintEngine, MatchingPolicy
 from app.matching.contracts import (
     AvailabilityStatus,
+    CandidateType,
+    ConstraintResult,
     MatchCandidateV1,
     MatchDecisionRequestV1,
     MatchDecisionResponseV1,
     MatchRequestV1,
     MatchRunResponseV1,
     MatchRunStatus,
+    PackagingResult,
+    RetrievalEvidence,
     RuleOutcome,
     ValidationStatus,
 )
@@ -27,7 +31,7 @@ from app.matching.ports import (
     VectorRepository,
 )
 from app.matching.ranking.features import description_similarity
-from app.matching.ranking.ranker import rank_candidates
+from app.matching.ranking.ranker import calculate_ranking_scores, rank_candidates
 from app.matching.representation import represent_inquiry
 from app.matching.retrieval.exact import ExactRetriever
 from app.matching.retrieval.fusion import reciprocal_rank_fusion
@@ -104,6 +108,7 @@ class MatchingService:
                 destination_country=request.inquiry_line.destination_country,
                 limit=request.retrieval_limit,
             )
+            offers_by_id = {offer.record_id: offer for offer in offers}
             result_sets.append(
                 self._historical.search(
                     query=query,
@@ -152,14 +157,15 @@ class MatchingService:
                 if warning:
                     state.warnings.append(warning)
 
-            ranked = rank_candidates(states, availability)[: request.top_k]
-            candidates = tuple(
-                MatchCandidateV1(
+            ranked_catalog = rank_candidates(states, availability)
+            candidate_rows: list[tuple[str, MatchCandidateV1]] = []
+            for state in ranked_catalog:
+                candidate_rows.append((state.item.item_number, MatchCandidateV1(
                     candidate_id=uuid5(
                         NAMESPACE_URL, f"allocura:{run_id}:{state.item.item_number}"
                     ),
                     item_number=state.item.item_number,
-                    rank=rank,
+                    rank=1,
                     descriptions=state.item.descriptions,
                     manufacturer=state.item.manufacturer,
                     review_status=state.review_status,
@@ -174,10 +180,91 @@ class MatchingService:
                     constraints=tuple(state.constraints),
                     packaging=state.packaging,
                     warnings=tuple(dict.fromkeys(state.warnings)),
-                    provenance=(state.item.source,),
-                )
-                for rank, state in enumerate(ranked, start=1)
-                if state.review_status is not RuleOutcome.EXCLUDE
+                    provenance=(
+                        state.item.source,
+                        *(
+                            offers_by_id[record_id].source
+                            for hit in state.evidence
+                            if hit.retriever == "history"
+                            for record_id in [hit.details.get("record_id")]
+                            if isinstance(record_id, str) and record_id in offers_by_id
+                        ),
+                    ),
+                )))
+
+            for offer_rank, (offer, similarity) in enumerate(
+                self._historical.search_standalone(
+                    query=query, offers=offers, limit=request.retrieval_limit
+                ), start=1
+            ):
+                description = offer.offered_description or offer.raw_request_text
+                candidate_rows.append((f"offer:{offer.record_id}", MatchCandidateV1(
+                    candidate_id=uuid5(NAMESPACE_URL, f"allocura:{run_id}:offer:{offer.record_id}"),
+                    item_number=None,
+                    candidate_type=CandidateType.HISTORICAL_OFFER,
+                    supplier=offer.supplier,
+                    price=offer.price,
+                    currency=offer.currency,
+                    price_basis=offer.price_basis,
+                    unit_price=offer.unit_price,
+                    unit_price_unit=offer.unit_price_unit,
+                    offer_valid_until=offer.valid_until,
+                    rank=1,
+                    descriptions=(description,),
+                    review_status=RuleOutcome.REVIEW,
+                    availability_status=AvailabilityStatus.UNKNOWN,
+                    retrieval_evidence=(RetrievalEvidence(
+                        retriever="sharepoint_offer",
+                        rank=offer_rank,
+                        score=similarity,
+                        details={"record_id": offer.record_id},
+                    ),),
+                    score_components={
+                        "rrf": 1 / (60 + offer_rank),
+                        "offer_similarity": similarity,
+                        "name_similarity": description_similarity(
+                            request.inquiry_line.raw_description, (description,)
+                        ),
+                    },
+                    constraints=(ConstraintResult(
+                        code="supplier_offer_unverified",
+                        outcome=RuleOutcome.REVIEW,
+                        message="Supplier offer details require review; product attributes and stock are not verified.",
+                    ),),
+                    packaging=PackagingResult(status="unknown"),
+                    warnings=("Supplier offer availability is not confirmed.",),
+                    provenance=(offer.source,),
+                )))
+
+            scores = calculate_ranking_scores([
+                (key, candidate.review_status, candidate.availability_status,
+                 candidate.score_components)
+                for key, candidate in candidate_rows
+            ])
+            candidate_rows.sort(key=lambda row: (-scores[row[0]], row[0]))
+            visible_rows = candidate_rows[: request.top_k]
+            # A catalog-heavy result can otherwise hide every matching supplier
+            # offer, since unverified offers rank below confirmed catalog items.
+            if request.top_k > 1 and not any(
+                candidate.candidate_type is CandidateType.HISTORICAL_OFFER
+                for _, candidate in visible_rows
+            ):
+                best_offer = next((
+                    row for row in candidate_rows
+                    if row[1].candidate_type is CandidateType.HISTORICAL_OFFER
+                ), None)
+                if best_offer is not None:
+                    visible_rows = [*visible_rows[: request.top_k - 1], best_offer]
+            candidates = tuple(
+                candidate.model_copy(update={
+                    "rank": rank,
+                    "score_components": {
+                        **candidate.score_components,
+                        "ranking_score": scores[key],
+                        "ranking_score_normalized": 1.0,
+                    },
+                })
+                for rank, (key, candidate) in enumerate(visible_rows, start=1)
             )
             completed_at = datetime.now(UTC)
             result = MatchRunResponseV1(

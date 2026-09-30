@@ -520,15 +520,31 @@ PUT /api/v1/offers/{same-graph-drive-item-id}
   "source_url": "https://medeor.sharepoint.com/sites/TheLabworks/.../offer.xlsx",
   "captured_at": "2026-08-19T10:10:00Z",
   "raw_request_text": "Sterile Foley catheter CH18, 50 pieces",
-  "item_number": "401234567",
+  "offered_description": "Sterile Foley catheter CH18",
   "supplier": "Example supplier",
-  "price": "12.50",
-  "currency": "EUR"
+  "currency": "EUR",
+  "unit_price": "0.42",
+  "unit_price_unit": "piece",
+  "valid_until": "2026-12-31"
 }
 ```
 
 The shared external ID connects the file catalogue with its structured result without either service
 having to infer identity from a filename.
+
+To check a supplier offer that is absent from the ERP catalog, submit it through
+`PUT /api/v1/offers/{id}` and omit `item_number`. Use the real SharePoint document URL,
+`offered_description`, and text that overlaps the requested item. The file metadata endpoint
+is optional for this manual check and does not feed matching on its own. Run matching again:
+the offer appears as a separate candidate with **Offer from SharePoint** and an **Open document**
+link. It can be selected without an ERP SKU. Its product attributes and stock need human review.
+Standalone offers currently use text retrieval, not offer embeddings. A matching offer retains one
+slot in the returned suggestions even when catalog articles fill the other slots. Optional
+`valid_until` is an ISO date (`YYYY-MM-DD`); expired offers are excluded from new matches.
+Optional `unit_price` requires `unit_price_unit` and `currency`, and is displayed as a per-unit
+quote without assuming a total order value. To revise an existing offer, send a new
+`source_version`; replaying the same version leaves the saved fields unchanged. Older saved
+match runs need a new run to include updated offer details.
 
 ### ERP import behavior
 

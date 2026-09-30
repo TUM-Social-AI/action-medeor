@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from difflib import SequenceMatcher
 
 from app.matching.contracts import HistoricalOfferV1
 from app.matching.domain import RetrievalHit, SearchRepresentation
@@ -17,6 +18,38 @@ def _history_score(query: SearchRepresentation, offer: HistoricalOfferV1) -> flo
 
 class HistoryRetriever:
     name = "history"
+
+    def search_standalone(
+        self,
+        *,
+        query: SearchRepresentation,
+        offers: Sequence[HistoricalOfferV1],
+        limit: int,
+    ) -> list[tuple[HistoricalOfferV1, float]]:
+        """Find supplier offers that have no corresponding ERP article."""
+        matches: list[tuple[HistoricalOfferV1, float]] = []
+        for offer in offers:
+            if offer.item_number:
+                continue
+            score = 0.0
+            for description in (offer.offered_description, offer.raw_request_text):
+                if not description:
+                    continue
+                normalized = normalize_text(description)
+                tokens = tokenize(description)
+                overlap = query.tokens & tokens
+                if not overlap:
+                    continue
+                union = query.tokens | tokens
+                token_score = len(overlap) / len(union)
+                text_score = SequenceMatcher(
+                    None, query.semantic_core, normalized, autojunk=False
+                ).ratio()
+                score = max(score, token_score, text_score)
+            if score >= 0.35:
+                matches.append((offer, score))
+        matches.sort(key=lambda value: (-value[1], value[0].record_id))
+        return matches[:limit]
 
     def search(
         self,
