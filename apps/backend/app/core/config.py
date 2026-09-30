@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 32
     azure_foundry_endpoint: str = ""
     azure_foundry_api_key: str = ""
+    sharepoint_tenant_id: str = ""
+    sharepoint_client_id: str = ""
+    sharepoint_client_secret: str = ""
+    sharepoint_drive_id: str = ""
+    sharepoint_root_folder_id: str = ""
 
     # Fallback extractor for documents whose layout isn't a clean, heuristically-parseable table
     # (free-form PDF pages, Word documents). Left unset in most environments; extraction

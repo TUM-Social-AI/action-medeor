@@ -38,6 +38,7 @@ class SharePointOfferFileService:
                            SELECT 1 FROM historical_offers h
                            WHERE h.external_id = f.external_id
                              AND h.is_current = TRUE AND h.active = TRUE
+                             AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
                        ) AS structured_output_available
                 FROM sharepoint_offer_files f
                 JOIN source_snapshots s ON s.id = f.source_snapshot_id
@@ -116,6 +117,8 @@ class SharePointOfferFileService:
         self,
         external_id: str,
         payload: SharePointOfferFileUpsertV1,
+        *,
+        commit: bool = True,
     ) -> SharePointOfferFileRecordV1:
         await self._lock(external_id)
         current = await self._current(external_id)
@@ -124,7 +127,8 @@ class SharePointOfferFileService:
             and current["external_version"] == payload.source_version
             and current["active"]
         ):
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             return self._record(current, replay=True)
         try:
             source_id = await self._source_snapshot(external_id=external_id, payload=payload)
@@ -163,12 +167,14 @@ class SharePointOfferFileService:
                     "updated_at": updated_at,
                 },
             )
-            await self._session.commit()
+            if commit:
+                await self._session.commit()
             row = await self._current(external_id)
             assert row is not None
             return self._record(row)
         except Exception:
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             raise
 
     async def archive(
@@ -176,13 +182,15 @@ class SharePointOfferFileService:
         external_id: str,
         *,
         archived_at: datetime | None = None,
+        commit: bool = True,
     ) -> SharePointOfferFileRecordV1:
         await self._lock(external_id)
         current = await self._current(external_id)
         if current is None:
             raise LookupError("SharePoint offer file not found")
         if not current["active"]:
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             return self._record(current, replay=True)
         archived_at = archived_at or datetime.now(UTC)
         try:
@@ -196,12 +204,14 @@ class SharePointOfferFileService:
                 ),
                 {"id": current["id"], "archived_at": archived_at},
             )
-            await self._session.commit()
+            if commit:
+                await self._session.commit()
             row = await self._current(external_id)
             assert row is not None
             return self._record(row)
         except Exception:
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             raise
 
     async def list_current(
@@ -219,6 +229,7 @@ class SharePointOfferFileService:
                            SELECT 1 FROM historical_offers h
                            WHERE h.external_id = f.external_id
                              AND h.is_current = TRUE AND h.active = TRUE
+                             AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
                        ) AS structured_output_available
                 FROM sharepoint_offer_files f
                 JOIN source_snapshots s ON s.id = f.source_snapshot_id
@@ -229,6 +240,7 @@ class SharePointOfferFileService:
                           SELECT 1 FROM historical_offers h
                           WHERE h.external_id = f.external_id
                             AND h.is_current = TRUE AND h.active = TRUE
+                            AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
                       )
                   )
                 ORDER BY f.modified_at DESC NULLS LAST, f.updated_at DESC, f.external_id

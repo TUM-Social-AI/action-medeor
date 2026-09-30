@@ -210,13 +210,15 @@ class OfferRepositoryService:
         *,
         source_version: str | None = None,
         archived_at: datetime | None = None,
+        commit: bool = True,
     ) -> OfferRecordV1:
         await self._lock(external_id)
         current = await self._current(external_id)
         if current is None:
             raise LookupError("Offer not found")
         if not current["active"]:
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             return self._record(current, replay=True)
         archived_at = archived_at or datetime.now(UTC)
         archive_version = source_version or f"archive:{archived_at.isoformat()}"
@@ -273,12 +275,14 @@ class OfferRepositoryService:
                     "updated_at": archived_at,
                 },
             )
-            await self._session.commit()
+            if commit:
+                await self._session.commit()
             row = await self._current(external_id)
             assert row is not None
             return self._record(row)
         except Exception:
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             raise
 
     async def list_current(self, *, active_only: bool = True, limit: int = 200) -> list[OfferRecordV1]:

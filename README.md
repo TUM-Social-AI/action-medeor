@@ -314,8 +314,9 @@ is connected, matching falls back to exact, lexical and historical retrieval unl
 
 ### 7. Register a SharePoint file, hand it to extraction and store the result
 
-The repository does not parse SharePoint documents. A separate read-only Microsoft Graph job must
-discover each file and send its stable drive-item ID, version and live URL to:
+The repository does not yet parse SharePoint documents. The read-only Microsoft Graph job below
+discovers each file and records its stable drive-item ID, version and live URL through the same
+service exposed at:
 
 ```text
 PUT /api/v1/sharepoint-offer-files/{graph-drive-item-id}
@@ -337,6 +338,47 @@ File metadata behavior is implemented in
 [`apps/backend/app/offers/files.py`](apps/backend/app/offers/files.py); normalized offer versioning is
 implemented in [`apps/backend/app/offers/service.py`](apps/backend/app/offers/service.py); both HTTP
 boundaries are in [`apps/backend/app/offers/api.py`](apps/backend/app/offers/api.py).
+
+### Run the SharePoint folder sync job
+
+The backend image contains a one-shot job for the configured action-medeor folder. Set
+`SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET`,
+`SHAREPOINT_DRIVE_ID`, and `SHAREPOINT_ROOT_FOLDER_ID` in the runtime environment. The empty
+entries are in `apps/backend/.env.example`; keep the client secret in an Azure Container Apps
+secret when deploying. Apply `uv run alembic upgrade head` before the first sync.
+
+From `apps/backend`:
+
+```bash
+uv run python -m app.jobs.sharepoint_sync test
+uv run python -m app.jobs.sharepoint_sync sync
+uv run python -m app.jobs.sharepoint_sync offer-smoke --api-url http://localhost:8000
+```
+
+`test` reads the configured folder recursively, logs the visible file names and IDs, and verifies
+one download. `sync` runs once and exits; use the same backend image with the `sync` command in
+the existing scheduled Azure Container Apps Job. It writes file metadata and sync state to
+PostgreSQL, calls the temporary `extract(change, document)` method for new or content-changed
+files, and leaves those files pending for the later real extraction workstream. It does not write
+mock supplier offers. A full successful scan is required before missing files are archived or a
+new delta cursor is saved. Folder snapshots list the granted subtree on each run but download only
+new or content-changed files; concurrent SharePoint edits during a paged snapshot may require a
+later reconciliation run.
+
+`offer-smoke` is an explicit check of the final supplier-offer HTTP boundary. It downloads one
+visible file and makes exactly one PUT with mock offer fields, real SharePoint link and metadata,
+and a stable smoke-only external ID/version. Repeating it replays the same offer version. Mock
+offers are marked in metadata, excluded from matching evidence, and do not satisfy the
+`needs_extraction` queue.
+
+The job tries `GET /v1.0/drives/{drive_id}/items/{folder_id}/delta` on its first sync. If Graph
+rejects or does not support this folder-scoped operation, it logs the endpoint, status, Graph code,
+message, and response, then uses recursive `children` listing for the configured folder. Microsoft
+currently documents `Files.Read.All` as the least privileged **application** permission for the
+[driveItem delta endpoint](https://learn.microsoft.com/en-us/graph/api/driveitem-delta?view=graph-rest-1.0);
+this job does not request it or any site-wide permission. A 403 on folder metadata, listing, or
+file content fails the run with a selected-folder permission error. This behavior lets the live
+`Files.SelectedOperations.Selected` grant determine which operations actually work.
 
 ### 8. Run and record a match
 
