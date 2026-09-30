@@ -13,7 +13,7 @@ export function toMatchCandidateView(candidate: MatchCandidateV1): MatchCandidat
   return {
     id: candidate.candidate_id,
     itemNumber: candidate.item_number,
-    name: candidate.descriptions[0] ?? candidate.item_number,
+    name: candidate.descriptions[0] ?? candidate.item_number ?? 'Supplier offer',
     manufacturer: candidate.manufacturer ?? undefined,
     rank: candidate.rank,
     reviewStatus: candidate.review_status,

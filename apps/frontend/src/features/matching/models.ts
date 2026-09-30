@@ -6,7 +6,7 @@ import type {
 
 export type MatchCandidateView = {
   id: string;
-  itemNumber: string;
+  itemNumber: string | null;
   name: string;
   manufacturer?: string;
   rank: number;

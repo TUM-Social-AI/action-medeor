@@ -127,11 +127,18 @@ export type PackagingResult = {
 
 export type MatchCandidateV1 = {
   candidate_id: string;
-  item_number: string;
+  item_number: string | null;
   candidate_type: 'catalog' | 'historical_offer' | 'procurement';
   rank: number;
   descriptions: string[];
   manufacturer?: string | null;
+  supplier?: string | null;
+  price?: string | number | null;
+  currency?: string | null;
+  price_basis?: string | null;
+  unit_price?: string | number | null;
+  unit_price_unit?: string | null;
+  offer_valid_until?: string | null;
   review_status: RuleOutcome;
   availability_status: AvailabilityStatus;
   retrieval_evidence: RetrievalEvidence[];

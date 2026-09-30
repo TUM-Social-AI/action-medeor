@@ -1,5 +1,5 @@
 import { requestJson } from './http';
-import type { MatchCandidateV1, ProductDomain } from './matching/contracts';
+import type { MatchCandidateV1, ProductDomain, SourceReferenceV1 } from './matching/contracts';
 import type { Priority, ReviewResponse } from './types';
 
 export type RequestStatus = 'draft' | 'review' | 'matching_queued' | 'matching' | 'matching_failed' | 'match_review' | 'complete' | 'finalized';
@@ -51,11 +51,20 @@ export type SavedSummary = {
     domain: ProductDomain;
     decision: string;
     itemNumber: string | null;
+    candidateType: 'catalog' | 'historical_offer' | 'procurement' | null;
+    supplier: string | null;
+    price: string | number | null;
+    currency: string | null;
+    priceBasis: string | null;
+    unitPrice: string | number | null;
+    unitPriceUnit: string | null;
+    offerValidUntil: string | null;
     product: string | null;
     availability: string | null;
     rankingScore: number | null;
     warnings: string[];
     retrievalMethods: string[];
+    provenance: SourceReferenceV1[];
   }>;
   matchedCount: number;
   unmatchedCount: number;
