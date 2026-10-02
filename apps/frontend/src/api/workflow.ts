@@ -59,6 +59,7 @@ export type SavedSummary = {
     unitPrice: string | number | null;
     unitPriceUnit: string | null;
     offerValidUntil: string | null;
+    offerDate: string | null;
     product: string | null;
     availability: string | null;
     rankingScore: number | null;

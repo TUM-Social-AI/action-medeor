@@ -8,6 +8,7 @@ type Props = {
   candidateType?: CandidateType;
   variant?: Variant;
   className?: string;
+  muted?: boolean;
 };
 
 type SharePointDocument = { url: string; name: string; id: string };
@@ -28,7 +29,7 @@ export function sharePointDocuments(provenance: SourceReferenceV1[]): SharePoint
   });
 }
 
-export function SharePointOfferSource({ provenance, candidateType, variant = 'inline', className = '' }: Props) {
+export function SharePointOfferSource({ provenance, candidateType, variant = 'inline', className = '', muted = false }: Props) {
   const sources = provenance.filter(source => source.source_type === 'sharepoint');
   if (!sources.length) return null;
   const documents = sharePointDocuments(provenance);
@@ -36,13 +37,14 @@ export function SharePointOfferSource({ provenance, candidateType, variant = 'in
 
   if (variant === 'footer') {
     const document = documents[0];
+    const tone = muted ? 'border-gray-200 bg-gray-100 text-gray-500 hover:bg-gray-200/70' : 'border-violet-200 bg-violet-100 text-violet-900 hover:bg-violet-200/70';
     return document ? <a href={document.url} target="_blank" rel="noopener noreferrer"
       title={`Open ${document.name} in SharePoint`}
-      className={'group flex items-center gap-2 border-t border-violet-200 bg-violet-100 px-4 py-2 text-violet-900 hover:bg-violet-200/70 ' + className}>
-      <FileText size={14} className="shrink-0 text-violet-600" />
+      className={'group flex items-center gap-2 border-t px-4 py-2 ' + tone + ' ' + className}>
+      <FileText size={14} className={'shrink-0 ' + (muted ? 'text-gray-400' : 'text-violet-600')} />
       <span className="min-w-0 flex-1 truncate text-xs font-medium group-hover:underline">{document.name}</span>
-      <span className="flex shrink-0 items-center gap-1 text-[11px] font-semibold text-violet-700">SharePoint offer <ExternalLink size={11} /></span>
-    </a> : <div className={'border-t border-violet-200 bg-violet-100 px-4 py-2 text-xs font-semibold text-violet-800 ' + className}>SharePoint offer</div>;
+      <span className={'flex shrink-0 items-center gap-1 text-[11px] font-semibold ' + (muted ? 'text-gray-500' : 'text-violet-700')}>SharePoint offer <ExternalLink size={11} /></span>
+    </a> : <div className={'border-t px-4 py-2 text-xs font-semibold ' + tone + ' ' + className}>SharePoint offer</div>;
   }
 
   if (variant === 'compact') {

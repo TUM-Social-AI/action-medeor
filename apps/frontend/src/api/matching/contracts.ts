@@ -139,6 +139,7 @@ export type MatchCandidateV1 = {
   unit_price?: string | number | null;
   unit_price_unit?: string | null;
   offer_valid_until?: string | null;
+  offer_date?: string | null;
   review_status: RuleOutcome;
   availability_status: AvailabilityStatus;
   retrieval_evidence: RetrievalEvidence[];

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Ban, Check, ChevronDown, ChevronUp, Info, MapPin, RefreshCw, X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ArrowRight, Ban, CalendarX2, Check, ChevronDown, ChevronUp, Info, MapPin, RefreshCw, X } from 'lucide-react';
 import type { MatchCandidateV1 } from '../api/matching/contracts';
 import {
   autoSelectRequestMatches,
@@ -11,7 +11,7 @@ import {
 } from '../api/workflow';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { formatRankingScore } from '../features/matching/format-ranking-score';
-import { formatOfferPrice, formatOfferValidUntil, isOfferExpired } from '../features/matching/offer-display';
+import { formatOfferPrice, getOfferStatus } from '../features/matching/offer-display';
 import { WorkflowStepper } from './WorkflowStepper';
 import { SharePointOfferSource } from './SharePointOfferSource';
 
@@ -30,6 +30,33 @@ function checkLabel(outcome: string) {
   return ({ pass: 'Confirmed', review: 'Needs review', warning: 'Warning', unknown: 'Unconfirmed', exclude: 'Excluded' } as Record<string, string>)[outcome] ?? outcome;
 }
 
+function OfferBadge({ candidate }: { candidate: MatchCandidateV1 }) {
+  const status = getOfferStatus(candidate);
+  if (!status.badge) return null;
+  return <span className="inline-flex items-center gap-1 rounded bg-rose-100 px-1.5 py-0.5 text-[11px] font-bold text-rose-700">
+    <CalendarX2 size={10} /> {status.badge}
+  </span>;
+}
+
+function OfferValidity({ candidate }: { candidate: MatchCandidateV1 }) {
+  const status = getOfferStatus(candidate);
+  return <span className={status.warning ? 'font-semibold text-red-700' : 'text-gray-700'}>{status.label}</span>;
+}
+
+function OfferPriceAndValidity({ candidate }: { candidate: MatchCandidateV1 }) {
+  const status = getOfferStatus(candidate);
+  return <span>
+    <span className={status.expired ? 'text-gray-400 line-through decoration-gray-300' : candidate.unit_price == null && candidate.price == null ? 'italic text-gray-500' : 'font-medium text-gray-700'}>{formatOfferPrice(candidate.price, candidate.currency, candidate.price_basis, candidate.unit_price, candidate.unit_price_unit)}</span>
+    <span className="text-gray-400"> · </span>
+    <OfferValidity candidate={candidate} />
+  </span>;
+}
+
+function OfferFollowUp({ candidate }: { candidate: MatchCandidateV1 }) {
+  if (!getOfferStatus(candidate).muted) return null;
+  return <p className="mt-3 text-xs font-semibold text-rose-700">Contact the supplier to receive a new offer.</p>;
+}
+
 function CandidateCard({
   candidate, selected, disabled, onSelect, onInfo,
 }: {
@@ -40,39 +67,43 @@ function CandidateCard({
   onInfo: () => void;
 }) {
   const offer = candidate.candidate_type === 'historical_offer';
+  const status = getOfferStatus(candidate);
+  const muted = offer && status.muted;
   const name = candidate.descriptions[0] || candidate.item_number || 'Supplier offer';
   const firstWarning = offer ? undefined : candidate.constraints.find(value => value.outcome !== 'pass')?.message;
   const rankingScore = candidate.score_components.ranking_score;
-  return <div className={'relative flex h-full flex-col overflow-hidden rounded-xl border-2 transition-colors ' + (selected
-    ? 'border-[#1B4E8A] bg-blue-50/40 shadow-sm'
+  return <div className={'relative flex h-full flex-col overflow-hidden rounded-xl border-2 transition-colors ' + (muted
+    ? (selected ? 'border-[#1B4E8A] shadow-sm ' : 'border-dashed border-gray-300 hover:border-gray-400 ') + 'bg-[repeating-linear-gradient(135deg,#f9fafb_0_8px,#f3f4f6_8px_16px)]'
+    : selected ? 'border-[#1B4E8A] bg-blue-50/40 shadow-sm'
     : offer ? 'border-violet-200 bg-violet-50/40 hover:border-violet-300 hover:shadow-sm'
       : 'border-gray-200 hover:border-gray-300 hover:shadow-sm')}>
     <button type="button" onClick={onSelect} disabled={disabled} aria-label={'Select ' + name} aria-pressed={selected}
-      className="w-full flex-1 p-4 pr-11 text-left disabled:cursor-wait">
+      className="flex w-full flex-1 flex-col p-4 pr-11 text-left disabled:cursor-wait">
       <div className="mb-3 flex items-start justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className={'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ' + (selected ? 'border-[#1B4E8A] bg-[#1B4E8A]' : 'border-gray-300 bg-white')}>
             {selected && <span className="h-2 w-2 rounded-full bg-white" />}
           </span>
-          <span className="text-2xl font-extrabold leading-none text-gray-900">{typeof rankingScore === 'number' ? formatRankingScore(rankingScore) : '—'}</span>
+          <span className={"text-2xl font-extrabold leading-none " + (muted ? "text-gray-400" : "text-gray-900")}>{typeof rankingScore === 'number' ? formatRankingScore(rankingScore) : '—'}</span>
           <span className="text-xs leading-tight text-gray-500">/100<br />Ranking score</span>
         </div>
-        {selected ? <span className="rounded bg-[#1B4E8A] px-1.5 py-0.5 text-[11px] font-bold text-white">SELECTED</span>
-          : candidate.rank === 1 ? <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">BEST FIT</span> : null}
+        <div className="flex shrink-0 items-center gap-1">
+          {candidate.rank === 1 && !muted ? <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">BEST FIT</span> : null}
+          {offer && <OfferBadge candidate={candidate} />}
+        </div>
       </div>
-      <div className="mb-2 text-sm font-bold leading-snug text-gray-900">{name}</div>
+      <div title={name} className={"mb-2 h-[2.75em] shrink-0 line-clamp-2 break-words text-sm font-bold leading-snug " + (muted ? "text-gray-500" : "text-gray-900")}>{name}</div>
       {offer ? <div className="space-y-1.5 text-xs">
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">SUPPLIER</span><span className="font-medium text-gray-700">{candidate.supplier || 'Not specified'}</span></div>
-        <div className="flex gap-2"><span className="w-20 shrink-0 text-[11px] font-semibold text-gray-400">{candidate.unit_price != null ? 'UNIT PRICE' : 'PRICE'}</span><span className={candidate.unit_price == null && candidate.price == null ? 'italic text-gray-500' : 'font-medium text-gray-700'}>{formatOfferPrice(candidate.price, candidate.currency, candidate.price_basis, candidate.unit_price, candidate.unit_price_unit)}</span></div>
-        {candidate.offer_valid_until && <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">VALID</span><span className={isOfferExpired(candidate.offer_valid_until) ? 'font-semibold text-red-700' : 'text-gray-700'}>{isOfferExpired(candidate.offer_valid_until) ? 'Expired ' : 'Until '}{formatOfferValidUntil(candidate.offer_valid_until)}</span></div>}
-      </div> : <div className="space-y-1 text-xs">
-        {candidate.item_number && <div><span className="inline-block w-14 font-semibold text-gray-400">SKU</span><span className="text-gray-700">{candidate.item_number}</span></div>}
-        {candidate.manufacturer && <div><span className="inline-block w-14 font-semibold text-gray-400">MFR</span><span className="text-gray-700">{candidate.manufacturer}</span></div>}
-        <div><span className="inline-block w-14 font-semibold text-gray-400">AVAIL.</span><span className={candidate.availability_status === 'on_hand_sufficient' ? 'font-semibold text-green-700' : 'text-gray-600'}>{candidate.availability_status.replace(/_/g, ' ')}</span></div>
+        <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">{candidate.unit_price != null ? 'UNIT PRICE' : 'PRICE'}</span><OfferPriceAndValidity candidate={candidate} /></div>
+      </div> : <div className="space-y-1.5 text-xs">
+        <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">ERP ID</span><span className="text-gray-700">{candidate.item_number || 'Not specified'}</span></div>
+        <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">MFR</span><span className="text-gray-700">{candidate.manufacturer || 'Not specified'}</span></div>
+        <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">AVAIL.</span><span className={candidate.availability_status === 'on_hand_sufficient' ? 'font-semibold text-green-700' : 'text-gray-600'}>{candidate.availability_status.replace(/_/g, ' ')}</span></div>
       </div>}
       {firstWarning && <p className="mt-3 line-clamp-2 text-xs leading-snug text-amber-700">{firstWarning}</p>}
     </button>
-    {offer ? <SharePointOfferSource provenance={candidate.provenance} candidateType={candidate.candidate_type} variant="footer" className="mt-auto" />
+    {offer ? <SharePointOfferSource provenance={candidate.provenance} candidateType={candidate.candidate_type} variant="footer" muted={muted} className="mt-auto" />
       : <SharePointOfferSource provenance={candidate.provenance} candidateType={candidate.candidate_type} className="mt-auto px-4 pb-4 pr-11" />}
     <button type="button" onClick={onInfo} aria-label={'Details for ' + name} title="Match details"
       className={'absolute right-3 rounded-full p-1.5 text-[#1B4E8A] hover:bg-blue-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A] ' + (offer ? 'bottom-12' : 'bottom-3')}>
@@ -84,31 +115,31 @@ function CandidateCard({
 function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1; onInfo: () => void }) {
   const score = candidate.score_components.ranking_score;
   const offer = candidate.candidate_type === 'historical_offer';
+  const status = getOfferStatus(candidate);
+  const muted = offer && status.muted;
   const name = candidate.descriptions[0] || candidate.item_number || 'Supplier offer';
-  return <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border-2 border-[#1B4E8A] bg-blue-50/40 px-4 py-3">
+  return <div className={"flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border-2 border-[#1B4E8A] px-4 py-3 " + (muted ? "bg-gray-100" : "bg-blue-50/40")}>
     <div className="order-1 flex shrink-0 items-center gap-2">
       <span className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-[#1B4E8A] bg-[#1B4E8A]"><span className="h-2 w-2 rounded-full bg-white" /></span>
       <span className="text-xl font-extrabold leading-none text-gray-900">{typeof score === 'number' ? formatRankingScore(score) : '—'}</span>
       <span className="text-xs text-gray-500">/100</span>
     </div>
     <div className="order-3 w-full min-w-0 sm:order-2 sm:w-auto sm:flex-1">
-      <div className="mb-1.5 text-sm font-bold text-gray-900">{name}</div>
+      <div className={"mb-1.5 flex items-start gap-2 text-sm font-bold " + (muted ? "text-gray-500" : "text-gray-900")}><span title={name} className="min-w-0 flex-1 line-clamp-2 break-words leading-snug">{name}</span>{offer && <span className="shrink-0"><OfferBadge candidate={candidate} /></span>}</div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
         {offer ? <>
           <span><span className="mr-1.5 font-semibold text-gray-400">SUPPLIER</span><span className="text-gray-700">{candidate.supplier || 'Not specified'}</span></span>
-          <span><span className="mr-1.5 font-semibold text-gray-400">{candidate.unit_price != null ? 'UNIT PRICE' : 'PRICE'}</span><span className="text-gray-700">{formatOfferPrice(candidate.price, candidate.currency, candidate.price_basis, candidate.unit_price, candidate.unit_price_unit)}</span></span>
-          {candidate.offer_valid_until && <span><span className="mr-1.5 font-semibold text-gray-400">VALID</span><span className={isOfferExpired(candidate.offer_valid_until) ? 'font-semibold text-red-700' : 'text-gray-700'}>{isOfferExpired(candidate.offer_valid_until) ? 'Expired ' : 'Until '}{formatOfferValidUntil(candidate.offer_valid_until)}</span></span>}
+          <span><span className="mr-1.5 font-semibold text-gray-400">{candidate.unit_price != null ? 'UNIT PRICE' : 'PRICE'}</span><OfferPriceAndValidity candidate={candidate} /></span>
           <SharePointOfferSource provenance={candidate.provenance} candidateType={candidate.candidate_type} variant="compact" />
         </> : <>
-          {candidate.item_number && <span><span className="mr-1.5 font-semibold text-gray-400">SKU</span><span className="text-gray-700">{candidate.item_number}</span></span>}
-          {candidate.manufacturer && <span><span className="mr-1.5 font-semibold text-gray-400">MFR</span><span className="text-gray-700">{candidate.manufacturer}</span></span>}
+          <span><span className="mr-1.5 font-semibold text-gray-400">ERP ID</span><span className="text-gray-700">{candidate.item_number || 'Not specified'}</span></span>
+          <span><span className="mr-1.5 font-semibold text-gray-400">MFR</span><span className="text-gray-700">{candidate.manufacturer || 'Not specified'}</span></span>
           <span><span className="mr-1.5 font-semibold text-gray-400">AVAIL.</span><span className="text-gray-600">{candidate.availability_status.replace(/_/g, ' ')}</span></span>
         </>}
       </div>
     </div>
     <div className="order-2 ml-auto flex items-center gap-2 sm:order-3">
       <button type="button" onClick={onInfo} aria-label={'Details for ' + name} className="rounded-full p-1.5 text-[#1B4E8A] hover:bg-blue-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Info size={17} /></button>
-      <span className="rounded-full bg-[#1B4E8A] px-2.5 py-1 text-xs font-bold text-white">SELECTED</span>
     </div>
   </div>;
 }
@@ -118,6 +149,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState<CandidateDetails>(null);
   const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
+  const scrollToItemRef = useRef<number | null>(null);
   const [visibleCount, setVisibleCount] = useState(() => typeof window !== 'undefined' && window.matchMedia(LARGE_SCREEN_QUERY).matches ? 3 : 4);
   const [savingItems, setSavingItems] = useState<Set<number>>(new Set());
   const [recentlySavedItems, setRecentlySavedItems] = useState<Set<number>>(new Set());
@@ -126,6 +158,13 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
   const decisionVersion = useRef(0);
   const [finalizing, setFinalizing] = useState(false);
   const [showUndecided, setShowUndecided] = useState(false);
+
+  useLayoutEffect(() => {
+    const itemId = scrollToItemRef.current;
+    if (itemId === null) return;
+    scrollToItemRef.current = null;
+    document.getElementById('match-item-' + itemId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [expandedItems]);
 
   useEffect(() => {
     const media = window.matchMedia(LARGE_SCREEN_QUERY);
@@ -192,6 +231,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
             : line,
         ),
       } : updated);
+      if (expandedItems.has(itemId)) scrollToItemRef.current = itemId;
       setExpandedItems(previous => {
         if (!previous.has(itemId)) return previous;
         const next = new Set(previous);
@@ -226,12 +266,15 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
     }
   };
 
-  const toggleExpand = (itemId: number) => setExpandedItems(previous => {
-    const next = new Set(previous);
-    if (next.has(itemId)) next.delete(itemId);
-    else next.add(itemId);
-    return next;
-  });
+  const toggleExpand = (itemId: number) => {
+    scrollToItemRef.current = itemId;
+    setExpandedItems(previous => {
+      const next = new Set(previous);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  };
 
   const undecided = data?.lines.filter(line => !line.decisionType) ?? [];
   const canFinalize = data?.total && undecided.length === 0 && data.lines.every(line => line.status === 'completed');
@@ -248,7 +291,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
   };
   const jumpTo = (itemId: number) => {
     setShowUndecided(false);
-    document.getElementById('match-item-' + itemId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('match-item-' + itemId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   if (!data) return <div className="p-6"><LoadingPanel label="Loading saved matching results" /></div>;
@@ -258,7 +301,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
     <div className="mb-5">
       <h1>Smart Matching</h1>
       <p className="text-gray-500 text-sm mt-0.5">
-        Search finished for {data.completed} of {data.total} items. Review suggestions and choose an article or supplier offer, or mark each item unmatched. The ranking score is calculated from the matching evidence before candidates are sorted. The best option scores 100; the others are scaled against it. Scores are only comparable within one item and are not confidence percentages. Your decisions are saved.
+        Search finished for {data.completed} of {data.total} items. Review suggestions and choose an article or supplier offer, or mark each item unmatched. The ranking score is calculated from the matching evidence before candidates are sorted. The best option scores 100; the others are scaled against it. Scores are only comparable within one item and are not confidence percentages. Your decisions are saved. Expired offers and offers at least six months old without an expiry date remain selectable; contact the supplier to receive a new offer.
       </p>
     </div>
     {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
@@ -342,7 +385,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
           {details.candidate.candidate_type === 'historical_offer' && <>
             <div><dt className="text-gray-500">Supplier</dt><dd>{details.candidate.supplier || 'Not specified'}</dd></div>
             <div><dt className="text-gray-500">{details.candidate.unit_price != null ? 'Unit price' : 'Offer price'}</dt><dd>{formatOfferPrice(details.candidate.price, details.candidate.currency, details.candidate.price_basis, details.candidate.unit_price, details.candidate.unit_price_unit)}</dd></div>
-            {details.candidate.offer_valid_until && <div><dt className="text-gray-500">Valid until</dt><dd className={isOfferExpired(details.candidate.offer_valid_until) ? 'font-semibold text-red-700' : ''}>{formatOfferValidUntil(details.candidate.offer_valid_until)}{isOfferExpired(details.candidate.offer_valid_until) ? ' (expired)' : ''}</dd></div>}
+            <div><dt className="text-gray-500">{details.candidate.offer_valid_until ? 'Validity' : 'Offer age'}</dt><dd><OfferValidity candidate={details.candidate} /><OfferFollowUp candidate={details.candidate} /></dd></div>
           </>}
           {details.candidate.candidate_type !== 'historical_offer' && <div><dt className="text-gray-500">Availability</dt><dd>{details.candidate.availability_status.replace(/_/g, ' ')}</dd></div>}
           <div><dt className="text-gray-500">Automated checks</dt><dd>{details.candidate.review_status === 'pass' ? 'No configured issue found' : details.candidate.review_status.replace(/_/g, ' ')}</dd></div>

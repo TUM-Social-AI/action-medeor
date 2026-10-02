@@ -1,11 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { AlertCircle, ArrowLeft, CheckCircle2, FileDown, FileText, Maximize2, Package, Pencil, Users, Warehouse, X } from 'lucide-react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { AlertCircle, ArrowLeft, CheckCircle2, FileDown, Maximize2, Package, Pencil, Users, Warehouse, X } from 'lucide-react';
 import { getRequestSummary, type SavedSummary } from '../api/workflow';
 import { fetchRequestResults, saveRequestResults } from '../api/export/client';
 import { confirmPartner, updatePartner } from '../api/client';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { formatRankingScore } from '../features/matching/format-ranking-score';
-import { formatOfferPrice, formatOfferValidUntil, isOfferExpired } from '../features/matching/offer-display';
+import { formatOfferPrice, getOfferStatus } from '../features/matching/offer-display';
 import { WorkflowStepper } from './WorkflowStepper';
 import { ProcessingProgress } from './ProcessingScreen';
 import { SharePointOfferSource } from './SharePointOfferSource';
@@ -46,7 +46,6 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   const [savingPartner, setSavingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState({ partner: '', region: '', contact: '' });
   const [tableExpanded, setTableExpanded] = useState(false);
-  const [canExpandTable, setCanExpandTable] = useState(false);
   const tableExpandRef = useRef<HTMLButtonElement>(null);
   const tableCloseRef = useRef<HTMLButtonElement>(null);
   const tableRegionRef = useRef<HTMLDivElement>(null);
@@ -127,29 +126,6 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
     }
   };
 
-  useLayoutEffect(() => {
-    if (tableExpanded) return;
-    const region = tableRegionRef.current;
-    const table = region?.querySelector('table');
-    const rows = Array.from(table?.tBodies[0]?.rows ?? []).slice(0, 4);
-    if (!region || !table || rows.length < 4) {
-      setCanExpandTable(false);
-      return;
-    }
-
-    const measureVisibleRows = () => {
-      const headerHeight = table.tHead?.getBoundingClientRect().height ?? 0;
-      const fourRowsHeight = rows.reduce((height, row) => height + row.getBoundingClientRect().height, 0);
-      setCanExpandTable(region.clientHeight - headerHeight + 1 < fourRowsHeight);
-    };
-    measureVisibleRows();
-    const observer = new ResizeObserver(measureVisibleRows);
-    observer.observe(region);
-    if (table.tHead) observer.observe(table.tHead);
-    rows.forEach(row => observer.observe(row));
-    return () => observer.disconnect();
-  }, [data?.items, tableExpanded]);
-
   useEffect(() => {
     if (!tableExpanded) return;
     tableCloseRef.current?.focus();
@@ -217,6 +193,11 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   const availabilityConfirmed = data.items.filter(item => item.candidateType !== 'historical_offer' && item.availability === 'on_hand_sufficient').length;
   const supplierOffers = data.items.filter(item => item.candidateType === 'historical_offer');
   const offersWithoutPrice = supplierOffers.filter(item => item.unitPrice == null && item.price == null).length;
+  const expiredOffers = supplierOffers.filter(item => getOfferStatus({ offer_valid_until: item.offerValidUntil }).expired).length;
+  const oldOffers = supplierOffers.filter(item => {
+    const status = getOfferStatus({ offer_valid_until: item.offerValidUntil, offer_date: item.offerDate });
+    return status.muted && !status.expired;
+  }).length;
   return <div className="px-6 py-4 max-w-7xl mx-auto min-w-0">
     <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 mb-5"><WorkflowStepper currentStep="summary" /></div>
     {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
@@ -281,15 +262,6 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
       <MetricCard icon={<Warehouse size={18} />} label="Stock confirmed" value={String(availabilityConfirmed)} sub="Availability sufficient for request" />
     </div>
 
-    {supplierOffers.length > 0 && <div className="mb-5 flex items-start gap-3 rounded-xl border border-violet-200 bg-violet-50 px-5 py-3.5">
-      <FileText size={18} className="mt-0.5 shrink-0 text-violet-600" />
-      <p className="text-sm leading-snug text-violet-900">
-        <span className="font-bold">{supplierOffers.length} of {data.items.length} selected matches {supplierOffers.length === 1 ? 'is a supplier offer' : 'are supplier offers'}.</span>{' '}
-        Prices and validity dates appear when supplied. Check the SharePoint document and supplier before ordering.
-        {offersWithoutPrice > 0 && ` ${offersWithoutPrice} ${offersWithoutPrice === 1 ? 'offer has' : 'offers have'} no recorded price.`}
-      </p>
-    </div>}
-
     <div className="flex flex-col lg:flex-row gap-5">
       <div className="flex-1 min-w-0">
         <div className={tableExpanded ? 'fixed inset-0 z-[60] bg-gray-950/50 p-2 sm:p-4' : ''}>
@@ -298,7 +270,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
             <div id="summary-table-title" className="text-sm text-gray-900 font-bold truncate">Matched Items · {data.sourceFile}</div>
             <div className="flex flex-shrink-0 items-center gap-3">
               <div className="hidden sm:block text-xs text-gray-400 whitespace-nowrap">Request ID: {data.requestId}</div>
-              {tableExpanded ? <button ref={tableCloseRef} type="button" onClick={closeTable} aria-label="Close expanded table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><X size={14} /> Close</button> : canExpandTable && <button ref={tableExpandRef} type="button" onClick={() => setTableExpanded(true)} aria-label="Expand matched items table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Maximize2 size={14} /> Expand</button>}
+              {tableExpanded ? <button ref={tableCloseRef} type="button" onClick={closeTable} aria-label="Close expanded table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><X size={14} /> Close</button> : <button ref={tableExpandRef} type="button" onClick={() => setTableExpanded(true)} aria-label="Expand matched items table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Maximize2 size={14} /> Expand</button>}
             </div>
           </div>
           <div ref={tableRegionRef} role="region" aria-label="Matched items table" tabIndex={0} className={'max-w-full overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A] ' + (tableExpanded ? 'min-h-0 flex-1' : 'max-h-[max(14rem,calc(100dvh-28rem))]')}>
@@ -308,17 +280,17 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
               </tr></thead>
               <tbody>{data.items.map((item, index) => {
                 const isOffer = item.candidateType === 'historical_offer';
+                const offerStatus = isOffer ? getOfferStatus({ offer_valid_until: item.offerValidUntil, offer_date: item.offerDate }) : null;
                 return <tr key={item.itemId} className={'border-b transition-colors ' + (isOffer
-                  ? 'border-violet-100 bg-violet-50/50 hover:bg-violet-50'
+                  ? offerStatus?.muted ? 'border-rose-200 bg-rose-50 hover:bg-rose-100/70' : 'border-violet-100 bg-violet-50/50 hover:bg-violet-50'
                   : item.decision === 'no_match' ? 'border-gray-100 bg-amber-50/40 hover:bg-amber-50/60'
                     : 'border-gray-100 hover:bg-gray-50/60')}>
-                  <td className={'border-l-[3px] px-4 py-3 text-gray-500 tabular-nums ' + (isOffer ? 'border-l-violet-500' : 'border-l-transparent')}>{index + 1}</td>
+                  <td className={'border-l-[3px] px-4 py-3 text-gray-500 tabular-nums ' + (offerStatus?.muted ? 'border-l-rose-500' : isOffer ? 'border-l-violet-500' : 'border-l-transparent')}>{index + 1}{offerStatus?.muted && <span className="sr-only">, {offerStatus.expired ? 'expired' : 'six months or older'} supplier offer</span>}</td>
                   <td className="px-4 py-3 text-gray-800">{item.requested}</td>
                   <td className="px-4 py-3 text-gray-900">
                     <div className="font-semibold">{item.product || <span className="text-amber-700">Marked unmatched</span>}</div>
                     {isOffer ? <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-violet-700">
                       {item.supplier && <span>{item.supplier}</span>}
-                      {item.offerValidUntil && <span className={isOfferExpired(item.offerValidUntil) ? 'font-semibold text-red-700' : ''}>{isOfferExpired(item.offerValidUntil) ? 'Expired ' : 'Valid until '}{formatOfferValidUntil(item.offerValidUntil)}</span>}
                     </div> : <SharePointOfferSource provenance={item.provenance ?? []} candidateType={item.candidateType} className="mt-1" />}
                   </td>
                   <td className="max-w-[180px] px-4 py-3">
@@ -329,7 +301,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
                   <td className="whitespace-nowrap px-4 py-3 font-semibold text-gray-700 tabular-nums">{typeof item.rankingScore === 'number' ? formatRankingScore(item.rankingScore) + '/100' : '—'}</td>
                   <td className="px-4 py-3">{isOffer ? <span className="text-gray-400">—</span>
                     : <span className="text-gray-700">{item.availability?.replace(/_/g, ' ') ?? '—'}</span>}</td>
-                  <td className="whitespace-nowrap px-4 py-3 text-xs">{isOffer ? <span className={item.unitPrice == null && item.price == null ? 'italic text-gray-400' : 'font-semibold text-violet-800'}>{formatOfferPrice(item.price, item.currency, item.priceBasis, item.unitPrice, item.unitPriceUnit)}</span> : <span className="text-gray-400">—</span>}</td>
+                  <td className="px-4 py-3 text-xs">{isOffer ? <span><span className={offerStatus?.muted ? 'text-gray-400 line-through' : item.unitPrice == null && item.price == null ? 'italic text-gray-400' : 'font-semibold text-violet-800'}>{formatOfferPrice(item.price, item.currency, item.priceBasis, item.unitPrice, item.unitPriceUnit)}</span><span className="text-gray-400"> · </span><span className={offerStatus?.warning ? 'font-semibold text-red-700' : 'text-gray-700'}>{offerStatus?.label}</span></span> : <span className="text-gray-400">—</span>}</td>
                 </tr>;
               })}</tbody>
             </table>
@@ -340,6 +312,10 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
       </div>
 
       <aside className="w-full lg:w-64 flex-shrink-0">
+        {supplierOffers.length > 0 && <div className="mb-4 flex items-start gap-2 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs leading-snug text-violet-900">
+          <AlertCircle size={16} className="mt-0.5 shrink-0 text-violet-600" />
+          <p><span className="font-bold">{supplierOffers.length} supplier {supplierOffers.length === 1 ? 'offer' : 'offers'} selected.</span>{expiredOffers > 0 && ` ${expiredOffers} expired.`}{oldOffers > 0 && ` ${oldOffers} at least six months old without an expiry date.`} Check terms with the supplier before ordering.{offersWithoutPrice > 0 && ` ${offersWithoutPrice} without a recorded price.`}</p>
+        </div>}
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <div className="flex items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2"><Users size={15} className="text-gray-400" /><h2 className="text-sm text-gray-900 font-semibold">Partner & Request Details</h2></div>

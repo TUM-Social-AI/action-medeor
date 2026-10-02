@@ -245,7 +245,6 @@ class PostgresHistoryRepository:
                 FROM historical_offers h
                 JOIN source_snapshots s ON s.id = h.source_snapshot_id
                 WHERE h.is_current = TRUE AND h.active = TRUE
-                  AND (h.valid_until IS NULL OR h.valid_until >= CURRENT_DATE)
                   AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
                   AND (
                     CAST(:partner_id AS TEXT) IS NULL

@@ -209,6 +209,7 @@ class MatchingService:
                     unit_price=offer.unit_price,
                     unit_price_unit=offer.unit_price_unit,
                     offer_valid_until=offer.valid_until,
+                    offer_date=offer.offer_date,
                     rank=1,
                     descriptions=(description,),
                     review_status=RuleOutcome.REVIEW,

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -133,6 +133,7 @@ async def test_supplier_offer_without_erp_number_is_selectable_and_links_to_sour
         "unit_price_unit": "piece",
         "currency": "EUR",
         "valid_until": date(2026, 12, 31),
+        "offer_date": datetime(2026, 4, 2, tzinfo=UTC),
         "source": offer.source.model_copy(update={
             "uri": "https://medeor.sharepoint.com/sites/test/new-offer.pdf",
         }),
@@ -156,6 +157,7 @@ async def test_supplier_offer_without_erp_number_is_selectable_and_links_to_sour
     assert candidate.unit_price_unit == "piece"
     assert candidate.currency == "EUR"
     assert candidate.offer_valid_until == date(2026, 12, 31)
+    assert candidate.offer_date == datetime(2026, 4, 2, tzinfo=UTC)
     assert candidate.review_status is RuleOutcome.REVIEW
     assert candidate.provenance == (offer.source,)
     assert candidate.provenance[0].uri == "https://medeor.sharepoint.com/sites/test/new-offer.pdf"
@@ -330,11 +332,13 @@ async def test_suggested_decision_must_reference_an_exposed_candidate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_expired_supplier_offer_is_not_suggested() -> None:
+@pytest.mark.parametrize("valid_until", [date(2020, 1, 1), None])
+async def test_old_supplier_offer_remains_matchable_and_selectable(valid_until: date | None) -> None:
     offer = historical_offer("410001001").model_copy(update={
         "item_number": None,
         "offered_description": "Foley urinary catheter sterile CH18",
-        "valid_until": date(2020, 1, 1),
+        "valid_until": valid_until,
+        "offer_date": datetime(2019, 12, 1, tzinfo=UTC),
     })
     service = MatchingService(
         catalog_repository=InMemoryCatalogRepository(),
@@ -343,4 +347,15 @@ async def test_expired_supplier_offer_is_not_suggested() -> None:
         policy=load_default_policy(),
     )
     result = await service.match(MatchRequestV1(inquiry_line=line()))
-    assert result.candidates == ()
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.offer_valid_until == valid_until
+    assert candidate.offer_date == datetime(2019, 12, 1, tzinfo=UTC)
+    assert candidate.candidate_type is CandidateType.HISTORICAL_OFFER
+    decision = await service.save_decision(MatchDecisionRequestV1(
+        match_run_id=result.match_run_id,
+        inquiry_line_id=result.inquiry_line_id,
+        decision_type=DecisionType.ACCEPT_SUGGESTION,
+        candidate_id=candidate.candidate_id,
+    ))
+    assert decision.match_run_id == result.match_run_id

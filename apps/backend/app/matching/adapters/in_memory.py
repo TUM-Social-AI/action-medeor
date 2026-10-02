@@ -46,8 +46,7 @@ class InMemoryHistoryRepository:
         matching = [
             offer
             for offer in self.offers
-            if (offer.valid_until is None or offer.valid_until >= datetime.now(UTC).date())
-            and (not partner_id or offer.partner_id in {None, partner_id})
+            if (not partner_id or offer.partner_id in {None, partner_id})
             and (
                 not destination_country or offer.destination_country in {None, destination_country}
             )

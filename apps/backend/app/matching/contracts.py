@@ -277,6 +277,7 @@ class MatchCandidateV1(ContractModel):
     unit_price: Decimal | None = None
     unit_price_unit: str | None = None
     offer_valid_until: date | None = None
+    offer_date: AwareDatetime | None = None
     rank: int = Field(ge=1)
     descriptions: tuple[str, ...]
     manufacturer: str | None = None

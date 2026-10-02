@@ -10,8 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.catalog.service import CatalogImportService
-from app.offers.contracts import NormalizedOfferUpsertV1, SharePointOfferFileUpsertV1
 from app.matching.adapters.persistence import PostgresHistoryRepository
+from app.offers.contracts import NormalizedOfferUpsertV1, SharePointOfferFileUpsertV1
 from app.offers.files import SharePointOfferFileService
 from app.offers.service import OfferRepositoryService
 
@@ -365,7 +365,8 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
 
 
 @pytest.mark.asyncio
-async def test_standalone_offer_validity_and_unit_price_round_trip() -> None:
+@pytest.mark.parametrize("valid_until", [date(2026, 12, 31), date(2020, 1, 1), None])
+async def test_standalone_offer_validity_and_unit_price_round_trip(valid_until: date | None) -> None:
     database_url = os.getenv("MATCHING_TEST_DATABASE_URL")
     if not database_url:
         pytest.skip("MATCHING_TEST_DATABASE_URL is not configured")
@@ -383,7 +384,8 @@ async def test_standalone_offer_validity_and_unit_price_round_trip() -> None:
         currency="EUR",
         unit_price=Decimal("0.42"),
         unit_price_unit="piece",
-        valid_until=date(2026, 12, 31),
+        valid_until=valid_until,
+        offer_date=datetime(2019, 12, 1, tzinfo=UTC),
     )
     try:
         async with sessions() as session:
@@ -393,7 +395,7 @@ async def test_standalone_offer_validity_and_unit_price_round_trip() -> None:
             assert inserted.item_number is None
             assert inserted.unit_price == Decimal("0.42")
             assert inserted.unit_price_unit == "piece"
-            assert inserted.valid_until == date(2026, 12, 31)
+            assert inserted.valid_until == valid_until
             assert replayed.idempotent_replay is True
             assert replayed.offer_id == inserted.offer_id
 
@@ -404,13 +406,14 @@ async def test_standalone_offer_validity_and_unit_price_round_trip() -> None:
             stored = next(offer for offer in offers if offer.source.document_id == external_id)
             assert stored.item_number is None
             assert stored.unit_price == Decimal("0.42")
-            assert stored.valid_until == date(2026, 12, 31)
+            assert stored.valid_until == valid_until
+            assert stored.offer_date == datetime(2019, 12, 1, tzinfo=UTC)
 
         async with sessions() as session:
             archived = await OfferRepositoryService(session).archive(external_id)
             assert archived.active is False
             assert archived.unit_price == Decimal("0.42")
-            assert archived.valid_until == date(2026, 12, 31)
+            assert archived.valid_until == valid_until
     finally:
         async with sessions() as session:
             await session.execute(
