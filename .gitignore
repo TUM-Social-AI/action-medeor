@@ -27,5 +27,6 @@ postgres-data/
 
 # Private embedding benchmark outputs
 benchmarks/embeddings/reports/
+benchmarks/offer-extraction/reports/
 
 data/

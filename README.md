@@ -341,6 +341,13 @@ boundaries are in [`apps/backend/app/offers/api.py`](apps/backend/app/offers/api
 
 ### Run the SharePoint folder sync job
 
+For local supplier-offer extraction experiments, see
+[`benchmarks/offer-extraction/README.md`](benchmarks/offer-extraction/README.md). The prototype
+reads the anonymized Excel files and generated invoice-style PDF quotations, preserves quoted
+price bases, and evaluates the configured GPT Luna deployment. It also supports extracting new
+local files without evaluation labels. This experiment does not change the scheduled sync job
+or write normalized offers to the database.
+
 The backend image contains a one-shot job for the configured action-medeor folder. Set
 `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET`,
 `SHAREPOINT_DRIVE_ID`, and `SHAREPOINT_ROOT_FOLDER_ID` in the runtime environment. The empty
