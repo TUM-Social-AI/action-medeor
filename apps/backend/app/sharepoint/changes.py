@@ -25,6 +25,8 @@ class Item:
     is_deleted: bool = False
     pending_extraction: bool = False
     last_processed_at: datetime | None = None
+    created_at: datetime | None = None
+    domain: str | None = None
 
     @property
     def is_file(self) -> bool:
@@ -67,6 +69,14 @@ def parse_item(raw: dict, *, prior: Item | None = None, parent_id: str | None = 
         else False,
         pending_extraction=prior.pending_extraction if prior else False,
         last_processed_at=prior.last_processed_at if prior else None,
+        created_at=(
+            datetime.fromisoformat(raw["createdDateTime"].replace("Z", "+00:00"))
+            if isinstance(raw.get("createdDateTime"), str)
+            else prior.created_at
+            if prior
+            else None
+        ),
+        domain=prior.domain if prior else None,
     )
 
 
@@ -191,7 +201,7 @@ def compare(prior: dict[str, Item], current: dict[str, Item]) -> list[SharePoint
         old = prior.get(item_id)
         if old is None or old.is_deleted:
             changes.append(SharePointChange("new", item, old))
-        elif _content_changed(old, item):
+        elif _content_changed(old, item) or old.domain != item.domain:
             changes.append(SharePointChange("modified", item, old))
         elif (
             old.name,

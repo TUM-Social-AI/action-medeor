@@ -6,6 +6,7 @@ import { confirmPartner, updatePartner } from '../api/client';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { formatRankingScore } from '../features/matching/format-ranking-score';
 import { formatOfferPrice, getOfferStatus } from '../features/matching/offer-display';
+import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
 import { WorkflowStepper } from './WorkflowStepper';
 import { ProcessingProgress } from './ProcessingScreen';
 import { SharePointOfferSource } from './SharePointOfferSource';
@@ -32,6 +33,7 @@ function MetricCard({ icon, label, value, sub }: { icon: ReactNode; label: strin
 }
 
 export function OrderSummaryScreen({ requestId, onBack }: Props) {
+  useOfferDateRefresh();
   const [data, setData] = useState<SavedSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [returning, setReturning] = useState(false);

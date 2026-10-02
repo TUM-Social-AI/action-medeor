@@ -206,6 +206,7 @@ class HistoricalOfferV1(ContractModel):
     offer_date: AwareDatetime | None = None
     valid_until: date | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    domain: ProductDomain | None = None
     source: SourceReferenceV1
 
 
@@ -278,6 +279,8 @@ class MatchCandidateV1(ContractModel):
     unit_price_unit: str | None = None
     offer_valid_until: date | None = None
     offer_date: AwareDatetime | None = None
+    offer_date_source: str | None = None
+    offer_validity_source: str | None = None
     rank: int = Field(ge=1)
     descriptions: tuple[str, ...]
     manufacturer: str | None = None

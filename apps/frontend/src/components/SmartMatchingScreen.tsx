@@ -12,6 +12,7 @@ import {
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { formatRankingScore } from '../features/matching/format-ranking-score';
 import { formatOfferPrice, getOfferStatus } from '../features/matching/offer-display';
+import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
 import { WorkflowStepper } from './WorkflowStepper';
 import { SharePointOfferSource } from './SharePointOfferSource';
 
@@ -145,6 +146,7 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
 }
 
 export function SmartMatchingScreen({ requestId, onContinue }: Props) {
+  useOfferDateRefresh();
   const [data, setData] = useState<SavedMatching | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState<CandidateDetails>(null);

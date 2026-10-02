@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.parsing.llm_client import call_llm
 
-PROMPT_VERSION = "supplier-offers-v3"
+PROMPT_VERSION = "supplier-offers-v4"
 MAX_INPUT_CHARS = 24_000
 MAX_ROWS = 24
 
@@ -127,8 +127,12 @@ Never infer supplier from a product brand or from adjacent rows without explicit
 
 item_description: original offered wording with all identifying details; do not translate or shorten.
 Always use this block's Item offered cell when populated with a concrete product. Only if that cell
-is empty may you fall back to an explicit product title in status or, for a quotation reference only,
-the requested product. Never replace an offered size/length with a different requested size/length.
+is empty may you fall back to an explicit product title in status, or to the requested product in
+THIS SAME ROW when the supplier block contains a concrete quoted item price or quotation reference.
+For the requested-product fallback, include its exact cell evidence and the warning
+"Offered description taken from request row; supplier product title not specified."
+Never replace an offered size/length with a different requested size/length. If no product can be
+identified, leave item_description empty and warn; this record is retained only for manual review.
 offer_reference: only an identifiable quotation/PI/stocklist ID, never a product URL/title, MOV,
 customer/request ID, markup formula, or entire status note. Use null when no reference ID is given.
 Return the ID alone: "Angebot 105091" -> "105091", "PI 267" -> "267". A bare status ID without
@@ -397,6 +401,8 @@ def extract_offers(
     *,
     llm: Callable = call_llm,
     max_chars: int = MAX_INPUT_CHARS,
+    max_chunks: int | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> OfferExtraction:
     """Extract locally with the configured provider; failures never masquerade as empty success."""
     result = OfferExtraction()
@@ -406,8 +412,14 @@ def extract_offers(
         result.failures.append(f"Document read failed: {type(exc).__name__}: {exc}")
         return result
     result.warnings.extend(warnings)
+    if max_chunks is not None and len(chunks) > max_chunks:
+        result.failures.append(f"Document needs {len(chunks)} chunks; limit is {max_chunks}")
+        return result
     seen: dict[tuple[str, int], ExtractedOffer] = {}
     for index, chunk in enumerate(chunks, 1):
+        if should_stop is not None and should_stop():
+            result.failures.append("Document extraction cancelled before the next model call")
+            break
         result.chunks_attempted += 1
         try:
             extracted = llm(_PROMPT + chunk.text, _LlmResult)

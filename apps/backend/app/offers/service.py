@@ -78,7 +78,9 @@ class OfferRepositoryService:
         source_url: str,
         captured_at: datetime,
         metadata: dict[str, object],
+        document_id: str | None = None,
     ) -> UUID:
+        document_id = document_id or external_id
         existing = await self._session.scalar(
             text(
                 """
@@ -87,7 +89,7 @@ class OfferRepositoryService:
                   AND checksum = :source_version
                 """
             ),
-            {"external_id": external_id, "source_version": source_version},
+            {"external_id": document_id, "source_version": source_version},
         )
         if existing:
             return existing
@@ -106,7 +108,7 @@ class OfferRepositoryService:
             ),
             {
                 "id": snapshot_id,
-                "external_id": external_id,
+                "external_id": document_id,
                 "source_url": source_url,
                 "source_version": source_version,
                 "captured_at": captured_at,
@@ -116,16 +118,18 @@ class OfferRepositoryService:
         return snapshot_id
 
     async def upsert(
-        self, external_id: str, payload: NormalizedOfferUpsertV1
+        self,
+        external_id: str,
+        payload: NormalizedOfferUpsertV1,
+        *,
+        commit: bool = True,
+        source_document_id: str | None = None,
     ) -> OfferRecordV1:
         await self._lock(external_id)
         current = await self._current(external_id)
-        if (
-            current
-            and current["external_version"] == payload.source_version
-            and current["active"]
-        ):
-            await self._session.rollback()
+        if current and current["external_version"] == payload.source_version and current["active"]:
+            if commit:
+                await self._session.rollback()
             return self._record(current, replay=True)
 
         try:
@@ -135,6 +139,7 @@ class OfferRepositoryService:
                 source_url=str(payload.source_url),
                 captured_at=payload.captured_at,
                 metadata=payload.metadata,
+                document_id=source_document_id,
             )
             reported_item_number = payload.item_number
             item_number = None
@@ -148,9 +153,7 @@ class OfferRepositoryService:
                 metadata["reported_item_number"] = reported_item_number
             if current:
                 await self._session.execute(
-                    text(
-                        "UPDATE historical_offers SET is_current = FALSE WHERE id = :current_id"
-                    ),
+                    text("UPDATE historical_offers SET is_current = FALSE WHERE id = :current_id"),
                     {"current_id": current["id"]},
                 )
             offer_id = uuid4()
@@ -204,12 +207,14 @@ class OfferRepositoryService:
                     "updated_at": updated_at,
                 },
             )
-            await self._session.commit()
+            if commit:
+                await self._session.commit()
             row = await self._current(external_id)
             assert row is not None
             return self._record(row)
         except Exception:
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             raise
 
     async def archive(
@@ -298,7 +303,9 @@ class OfferRepositoryService:
                 await self._session.rollback()
             raise
 
-    async def list_current(self, *, active_only: bool = True, limit: int = 200) -> list[OfferRecordV1]:
+    async def list_current(
+        self, *, active_only: bool = True, limit: int = 200
+    ) -> list[OfferRecordV1]:
         result = await self._session.execute(
             text(
                 """

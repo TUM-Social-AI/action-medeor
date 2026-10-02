@@ -7,7 +7,6 @@ import httpx
 import pytest
 
 from app.jobs import sharepoint_sync as job
-from app.offers.contracts import NormalizedOfferUpsertV1
 from app.sharepoint.changes import (
     FolderSnapshotChangeSource,
     GraphDeltaChangeSource,
@@ -150,7 +149,7 @@ async def test_delta_initial_pages_and_followup_change() -> None:
                     "value": [
                         {
                             "id": "f",
-                            "name": "f.txt",
+                            "name": "f.pdf",
                             "file": {},
                             "parentReference": {"id": ROOT},
                             "eTag": "e1",
@@ -174,7 +173,7 @@ async def test_delta_initial_pages_and_followup_change() -> None:
                     "value": [
                         {
                             "id": "f",
-                            "name": "f.txt",
+                            "name": "f.pdf",
                             "file": {},
                             "parentReference": {"id": ROOT},
                             "eTag": "e2",
@@ -189,7 +188,7 @@ async def test_delta_initial_pages_and_followup_change() -> None:
                 200,
                 json={
                     "id": "f",
-                    "name": "f.txt",
+                    "name": "f.pdf",
                     "file": {},
                     "parentReference": {"id": ROOT},
                     "eTag": "e2" if version == "c2" else "e1",
@@ -246,26 +245,11 @@ async def test_children_403_is_fatal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_extraction_failure_does_not_commit_or_call_offer_api(monkeypatch) -> None:
-    class FakeGraph:
-        drive_id = DRIVE
+async def test_sync_commits_discovery_before_processing_and_defaults_to_no_download(monkeypatch):
+    from dataclasses import replace
 
-        async def get_item(self, item_id):
-            return {"id": ROOT, "name": "root", "folder": {}}
-
-        async def list_children(self, folder_id):
-            return [
-                {
-                    "id": "f",
-                    "name": "f.txt",
-                    "file": {},
-                    "cTag": "c1",
-                    "webUrl": "https://example.sharepoint.com/f",
-                }
-            ]
-
-        async def download(self, item_id):
-            return b"hello"
+    from app.core.config import Settings
+    from app.sharepoint.changes import Enumeration
 
     class FakeSession:
         async def __aenter__(self):
@@ -274,36 +258,52 @@ async def test_sync_extraction_failure_does_not_commit_or_call_offer_api(monkeyp
         async def __aexit__(self, *args):
             pass
 
-    saved = []
+        async def scalar(self, *args):
+            return True
+
+    class FakeGraph:
+        drive_id = DRIVE
+
+        async def get_item(self, item_id):
+            return {"id": ROOT, "name": "root", "folder": {}}
+
+        async def download(self, *args, **kwargs):
+            raise AssertionError("Discovery must not download documents")
+
+    folder = replace(ROOT_ITEM, item_id="equipment", parent_id=ROOT)
+    document = replace(ROOT_ITEM, item_id="f", parent_id="equipment", is_folder=False, name="f.pdf")
+    events = []
 
     async def fake_load(*args):
         return SavedState({}, "snapshot", None)
 
-    async def fake_save(*args):
-        saved.append(args)
+    async def fake_enumeration(*args):
+        return Enumeration({ROOT: ROOT_ITEM, "equipment": folder, "f": document}, "snapshot", None)
 
-    async def broken_extract(*args):
-        raise RuntimeError("extractor failed")
+    async def fake_save(*args):
+        events.append("saved")
+
+    async def fake_process(*args, **kwargs):
+        assert events[-1] == "saved"
+        events.append("processed")
+        return {"processed": 0, "failed": 1}
+
+    async def fake_embed(*args, **kwargs):
+        return []
 
     monkeypatch.setattr(job, "async_session", FakeSession)
     monkeypatch.setattr(job, "load_state", fake_load)
+    monkeypatch.setattr(job, "choose_enumeration", fake_enumeration)
     monkeypatch.setattr(job, "save_success", fake_save)
-    with pytest.raises(RuntimeError, match="extractor failed"):
-        await job.sync(FakeGraph(), ROOT, extractor=broken_extract)
-    assert saved == []
-
-    async def good_extract(*args):
-        return NormalizedOfferUpsertV1(
-            source_version="smoke-v1",
-            source_url="https://example.sharepoint.com/f",
-            captured_at=NOW,
-            raw_request_text="Mock extraction for f.txt",
-            metadata={"extraction_status": "mock"},
-        )
-
-    result = await job.sync(FakeGraph(), ROOT, extractor=good_extract)
-    assert result["processed"] == 1
-    assert len(saved) == 1
+    monkeypatch.setattr(job, "process_pending", fake_process)
+    monkeypatch.setattr(job, "embed_pending", fake_embed)
+    settings = Settings(_env_file=None, sharepoint_equipment_folder_id="equipment")
+    result = await job.sync(FakeGraph(), ROOT, settings=settings)
+    assert result["processed"] == 0 and events == ["saved"]
+    settings.sharepoint_processing_enabled = True
+    result = await job.sync(FakeGraph(), ROOT, settings=settings)
+    assert result["cursor_updated"] and result["failed"] == 1
+    assert events == ["saved", "saved", "processed"]
 
 
 @pytest.mark.asyncio
@@ -321,7 +321,7 @@ async def test_offer_smoke_makes_one_put_with_stable_identity() -> None:
                     "value": [
                         {
                             "id": "f",
-                            "name": "f.txt",
+                            "name": "f.pdf",
                             "file": {},
                             "cTag": "c1",
                             "webUrl": "https://example.sharepoint.com/f",

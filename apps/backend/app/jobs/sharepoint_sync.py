@@ -1,6 +1,6 @@
-"""One-shot SharePoint folder test, sync, and single-call offer API smoke check.
+"""One-shot SharePoint discovery, real offer pipeline and legacy API smoke check.
 
-From apps/backend: uv run python -m app.jobs.sharepoint_sync test|sync|offer-smoke
+From apps/backend: uv run python -m app.jobs.sharepoint_sync inspect|sync|process-one --item-id ID
 """
 
 from __future__ import annotations
@@ -8,15 +8,23 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
+from sqlalchemy import text
 
+from app.catalog.embedding_factory import create_embedding_provider
 from app.core.config import Settings, get_settings
 from app.db.session import async_session, engine
-from app.offers.contracts import NormalizedOfferUpsertV1
+from app.offers.contracts import NormalizedOfferUpsertV1, SharePointOfferFileUpsertV1
+from app.offers.embeddings import process_file
+from app.offers.files import SharePointOfferFileService
 from app.sharepoint.changes import (
     DeltaUnavailable,
     Enumeration,
@@ -27,9 +35,17 @@ from app.sharepoint.changes import (
     compare,
     parse_item,
 )
-from app.sharepoint.extraction import DownloadedDocument, extract
+from app.sharepoint.extraction import EXTRACTION_VERSION, DownloadedDocument, extract, extract_mock
 from app.sharepoint.graph import GraphClient, GraphError, MsalTokenProvider
-from app.sharepoint.store import load_state, save_success
+from app.sharepoint.processing import enqueue, process_pending
+from app.sharepoint.scope import (
+    assign_domains,
+    content_version,
+    domain_folders,
+    resolve_item,
+    supported,
+)
+from app.sharepoint.store import file_version, load_state, save_success
 
 logger = logging.getLogger(__name__)
 Extractor = Callable[[SharePointChange, DownloadedDocument], Awaitable[NormalizedOfferUpsertV1]]
@@ -107,7 +123,8 @@ async def test_connection(graph: GraphClient, folder_id: str) -> dict[str, objec
     root = await root_item(graph, folder_id)
     enumeration = await FolderSnapshotChangeSource(graph).enumerate(root, {}, None)
     files = sorted(
-        (item for item in enumeration.items.values() if item.is_file), key=lambda item: item.item_id
+        (item for item in enumeration.items.values() if supported(item)),
+        key=lambda item: item.item_id,
     )
     folders = [item for item in enumeration.items.values() if item.is_folder]
     logger.info("Source drive=%s folder=%s name=%s", graph.drive_id, folder_id, root.name)
@@ -132,78 +149,235 @@ async def test_connection(graph: GraphClient, folder_id: str) -> dict[str, objec
     return result
 
 
-async def sync(
-    graph: GraphClient,
-    folder_id: str,
-    *,
-    extractor: Extractor = extract,
-) -> dict[str, object]:
-    logger.info("SharePoint sync started drive=%s folder=%s", graph.drive_id, folder_id)
-    processed = 0
-    try:
+async def embed_pending(graph, folder_id, settings, *, item_id=None) -> list[dict]:
+    provider = create_embedding_provider(settings)
+    if provider is None:
+        raise ValueError("Embedding provider must be configured for offer processing")
+    if item_id:
+        items = [item_id]
+    else:
         async with async_session() as session:
-            prior = await load_state(session, graph.drive_id, folder_id)
+            items = list(
+                (
+                    await session.execute(
+                        text("""
+                SELECT DISTINCT h.source_item_id FROM historical_offers h
+                LEFT JOIN offer_embeddings e ON e.offer_id=h.id AND e.model_id=:model
+                LEFT JOIN offer_embedding_jobs j ON j.offer_id=h.id AND j.model_id=:model
+                WHERE h.source_drive_id=:drive AND h.source_folder_id=:folder
+                    AND h.is_current AND h.active AND h.matching_eligible AND e.offer_id IS NULL
+                    AND (j.offer_id IS NULL OR (j.status IN ('pending','failed') AND
+                         j.attempts < :attempts AND
+                         (j.next_attempt_at IS NULL OR j.next_attempt_at <= now()))
+                         OR (j.status='running' AND j.lease_until < now()))
+                ORDER BY h.source_item_id LIMIT :limit
+            """),
+                        {
+                            "drive": graph.drive_id,
+                            "folder": folder_id,
+                            "model": provider.model_id,
+                            "attempts": settings.sharepoint_max_attempts,
+                            "limit": settings.sharepoint_max_documents_per_run,
+                        },
+                    )
+                ).scalars()
+            )
+    return [
+        await process_file(provider, async_session, settings, graph.drive_id, folder_id, item)
+        for item in items
+    ]
+
+
+async def sync(
+    graph: GraphClient, folder_id: str, *, settings: Settings | None = None, extractor=extract
+) -> dict[str, object]:
+    settings = settings or get_settings()
+    folders = domain_folders(settings)
+    async with async_session() as session:
+        locked = await session.scalar(
+            text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"sharepoint-discovery:{graph.drive_id}:{folder_id}"},
+        )
+        if not locked:
+            return {"skipped": "Another discovery is running", "processed": 0}
+        prior = await load_state(session, graph.drive_id, folder_id)
         root = await root_item(graph, folder_id)
-        logger.info("Source folder name=%s", root.name)
         enumeration = await choose_enumeration(
-            graph,
-            root,
-            prior.items,
-            prior.mode,
-            prior.delta_link,
+            graph, root, prior.items, prior.mode, prior.delta_link
+        )
+        enumeration = replace(
+            enumeration, items=assign_domains(enumeration.items, folder_id, folders)
         )
         changes = compare(prior.items, enumeration.items)
-        counts = {
-            kind: sum(change.kind == kind for change in changes)
-            for kind in ("new", "modified", "metadata", "deleted")
-        }
-        logger.info(
-            "Discovered changes=%d new=%d modified=%d metadata=%d deleted=%d mode=%s",
-            len(changes),
-            counts["new"],
-            counts["modified"],
-            counts["metadata"],
-            counts["deleted"],
-            enumeration.mode,
-        )
-        for change in changes:
-            if change.kind not in ("new", "modified"):
-                continue
-            content = await graph.download(change.item.item_id)
-            document = DownloadedDocument(
-                sharepoint_item_id=change.item.item_id,
-                filename=change.item.name,
-                mime_type=change.item.mime_type,
-                content=content,
-                modified_at=change.item.modified_at,
-            )
-            # The future extraction implementation receives this same change/document boundary.
-            result = await extractor(change, document)
-            if not isinstance(result, NormalizedOfferUpsertV1):
-                raise TypeError("SharePoint extractor must return NormalizedOfferUpsertV1")
-            processed += 1
-        async with async_session() as session:
-            await save_success(
-                session,
-                graph.drive_id,
-                folder_id,
-                enumeration,
-                prior,
-                changes,
-            )
-    except Exception:
-        logger.exception(
-            "SharePoint sync failed processed=%d failed=1 cursor_updated=no", processed
-        )
-        raise
-    logger.info("SharePoint sync finished processed=%d failed=0 cursor_updated=yes", processed)
-    return {
+        # The complete discovery and pending queue commit before any document download/model call.
+        await save_success(session, graph.drive_id, folder_id, enumeration, prior, changes)
+    result = {
         "mode": enumeration.mode,
         "changes": len(changes),
-        **counts,
-        "processed": processed,
+        "cursor_updated": True,
+        "processed": 0,
         "failed": 0,
+        "processing_enabled": settings.sharepoint_processing_enabled,
+        **{
+            kind: sum(c.kind == kind for c in changes)
+            for kind in ("new", "modified", "metadata", "deleted")
+        },
     }
+    if settings.sharepoint_processing_enabled:
+        result.update(
+            await process_pending(graph, folder_id, settings, async_session, extractor=extractor)
+        )
+        attempted = result.get("attempted_item_ids", [])
+        if attempted:
+            result["embeddings"] = []
+            for item in attempted:
+                result["embeddings"].extend(
+                    await embed_pending(graph, folder_id, settings, item_id=item)
+                )
+        else:
+            result["embeddings"] = await embed_pending(graph, folder_id, settings)
+    return result
+
+
+async def process_one(
+    graph, folder_id, item_id, settings, *, extractor=extract, retry_failed=False
+) -> dict:
+    started = time.perf_counter()
+    if not item_id:
+        raise ValueError("process-one requires --item-id; it never selects a file implicitly")
+    item = await resolve_item(graph, folder_id, item_id, domain_folders(settings))
+    async with async_session() as session:
+        await SharePointOfferFileService(session).upsert(
+            item.item_id,
+            SharePointOfferFileUpsertV1(
+                source_version=file_version(item),
+                source_url=item.web_url,
+                name=item.name,
+                captured_at=datetime.now(UTC),
+                modified_at=item.modified_at,
+                mime_type=item.mime_type,
+                size_bytes=item.size_bytes,
+                metadata={
+                    "drive_id": graph.drive_id,
+                    "folder_id": folder_id,
+                    "path": item.path,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                    "domain": item.domain,
+                    "content_version": content_version(item),
+                    "extraction_version": EXTRACTION_VERSION,
+                },
+            ),
+            commit=False,
+        )
+        await enqueue(session, graph.drive_id, folder_id, item)
+        if retry_failed:
+            await session.execute(
+                text("""
+                UPDATE sharepoint_offer_jobs SET status='pending',attempts=0,next_attempt_at=NULL
+                WHERE drive_id=:drive AND folder_id=:folder AND item_id=:item AND status='failed'
+            """),
+                {"drive": graph.drive_id, "folder": folder_id, "item": item.item_id},
+            )
+            await session.execute(
+                text("""
+                UPDATE offer_embedding_jobs j SET status='pending',attempts=0,next_attempt_at=NULL
+                FROM historical_offers h WHERE h.id=j.offer_id AND h.source_drive_id=:drive
+                    AND h.source_folder_id=:folder AND h.source_item_id=:item
+                    AND h.is_current AND h.active AND j.status='failed'
+            """),
+                {"drive": graph.drive_id, "folder": folder_id, "item": item.item_id},
+            )
+        await session.commit()
+    result = await process_pending(
+        graph,
+        folder_id,
+        settings,
+        async_session,
+        item_id=item.item_id,
+        extractor=extractor,
+    )
+    result["item_id"] = item.item_id
+    result["domain"] = item.domain
+    result["extraction_version"] = EXTRACTION_VERSION
+    result["llm_provider"] = settings.llm_provider
+    result["llm_deployment"] = settings.azure_openai_deployment
+    result["embeddings"] = await embed_pending(graph, folder_id, settings, item_id=item.item_id)
+    async with async_session() as session:
+        state = (
+            (
+                await session.execute(
+                    text("""
+            SELECT status,error,attempts,result_json FROM sharepoint_offer_jobs
+            WHERE drive_id=:drive AND folder_id=:folder AND item_id=:item
+        """),
+                    {"drive": graph.drive_id, "folder": folder_id, "item": item.item_id},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        result["status"] = state["status"]
+        result["error"] = state["error"]
+        result["warnings"] = (state["result_json"] or {}).get("warnings", [])
+        result["idempotent_replay"] = result["processed"] == 0 and state["status"] == "completed"
+    if result["status"] == "completed":
+        result["matching"] = await verify_matching(
+            graph.drive_id, folder_id, item.item_id, settings
+        )
+    result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+    return result
+
+
+async def verify_matching(drive_id, folder_id, item_id, settings) -> dict:
+    from uuid import uuid4
+
+    from app.matching.api import get_matching_service
+    from app.matching.contracts import InquiryLineV1, MatchRequestV1
+
+    async with async_session() as session:
+        row = (
+            (
+                await session.execute(
+                    text("""
+            SELECT h.id,h.offered_description,h.domain,s.source_type,s.document_id,s.captured_at,s.uri
+            FROM historical_offers h JOIN source_snapshots s ON s.id=h.source_snapshot_id
+            WHERE h.source_drive_id=:drive AND h.source_folder_id=:folder AND h.source_item_id=:item
+                AND h.is_current AND h.active AND h.matching_eligible ORDER BY h.id LIMIT 1
+        """),
+                    {"drive": drive_id, "folder": folder_id, "item": item_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            return {"verified": False, "reason": "No matching-eligible offers in document"}
+        line = InquiryLineV1(
+            inquiry_id=str(uuid4()),
+            line_id=str(uuid4()),
+            domain=row["domain"],
+            raw_description=row["offered_description"],
+            source={
+                "source_type": row["source_type"],
+                "document_id": row["document_id"],
+                "captured_at": row["captured_at"],
+                "uri": row["uri"],
+            },
+        )
+        service = get_matching_service(session)
+        response = await service.match(MatchRequestV1(inquiry_line=line, top_k=50))
+        candidates = [
+            c
+            for c in response.candidates
+            if c.candidate_type.value == "historical_offer"
+            and any(p.document_id == item_id for p in c.provenance)
+        ]
+        return {
+            "verified": bool(candidates),
+            "match_run_id": str(response.match_run_id),
+            "candidate_count": len(candidates),
+            "candidates": [c.model_dump(mode="json") for c in candidates],
+        }
 
 
 async def offer_smoke(
@@ -212,12 +386,13 @@ async def offer_smoke(
     api_url: str,
     client: httpx.AsyncClient,
     *,
-    extractor: Extractor = extract,
+    extractor: Extractor = extract_mock,
 ) -> dict[str, object]:
     root = await root_item(graph, folder_id)
     enumeration = await FolderSnapshotChangeSource(graph).enumerate(root, {}, None)
     files = sorted(
-        (item for item in enumeration.items.values() if item.is_file), key=lambda item: item.item_id
+        (item for item in enumeration.items.values() if supported(item)),
+        key=lambda item: item.item_id,
     )
     if not files:
         raise ValueError("No file in the configured folder is available for the offer smoke test")
@@ -258,7 +433,9 @@ async def offer_smoke(
     return {"external_id": external_id, "idempotent_replay": result.get("idempotent_replay")}
 
 
-async def run(command: str, api_url: str) -> dict[str, object]:
+async def run(
+    command: str, api_url: str, item_id: str | None = None, retry_failed=False
+) -> dict[str, object]:
     settings = get_settings()
     required_config(settings)
     token_provider = MsalTokenProvider(
@@ -272,7 +449,25 @@ async def run(command: str, api_url: str) -> dict[str, object]:
             if command == "test":
                 return await test_connection(graph, settings.sharepoint_root_folder_id)
             if command == "sync":
-                return await sync(graph, settings.sharepoint_root_folder_id)
+                return await sync(graph, settings.sharepoint_root_folder_id, settings=settings)
+            if command == "process-one":
+                return await process_one(
+                    graph,
+                    settings.sharepoint_root_folder_id,
+                    item_id,
+                    settings,
+                    retry_failed=retry_failed,
+                )
+            if command == "inspect":
+                root = await root_item(graph, settings.sharepoint_root_folder_id)
+                children = await graph.list_children(root.item_id)
+                return {
+                    "root_id": root.item_id,
+                    "children": [
+                        {"id": c["id"], "name": c.get("name"), "folder": "folder" in c}
+                        for c in children
+                    ],
+                }
             if command == "offer-smoke":
                 return await offer_smoke(
                     graph,
@@ -287,17 +482,35 @@ async def run(command: str, api_url: str) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("test", "sync", "offer-smoke"))
+    parser.add_argument(
+        "command", choices=("test", "sync", "offer-smoke", "process-one", "inspect")
+    )
     parser.add_argument(
         "--api-url",
         default="http://localhost:8000",
         help="Backend URL for the explicit offer-smoke command",
     )
+    parser.add_argument("--item-id", help="Explicit document for process-one")
+    parser.add_argument(
+        "--retry-failed", action="store_true", help="Reset only this file's failed jobs"
+    )
+    parser.add_argument("--output", type=Path, help="Write a JSON job report")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    # Preauthenticated content URLs and opaque delta queries must not enter HTTP request logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
-        result = asyncio.run(run(args.command, args.api_url))
-        logger.info("Job result: %s", result)
+        result = asyncio.run(run(args.command, args.api_url, args.item_id, args.retry_failed))
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+        logger.info("Job result: %s", {k: v for k, v in result.items() if k != "matching"})
+        if result.get("failed") or any(e.get("failed") for e in result.get("embeddings", [])):
+            raise SystemExit(1)
+        if args.command == "process-one" and (
+            result.get("status") != "completed" or not result.get("matching", {}).get("verified")
+        ):
+            raise SystemExit(1)
     except (ValueError, RuntimeError, httpx.HTTPError) as exc:
         logger.error("SharePoint job failed: %s", exc)
         raise SystemExit(1) from exc

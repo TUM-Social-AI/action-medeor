@@ -102,6 +102,35 @@ def test_complete_rows_are_split_with_repeated_headers_and_no_loss() -> None:
     assert rows == list(range(2, 82))
 
 
+def test_chunk_budget_rejects_document_before_any_model_call() -> None:
+    content = workbook_bytes(
+        {
+            "Offers": [["Supplier I", "Item offered"]]
+            + [["Supplier A", f"Needle {n}"] for n in range(80)]
+        }
+    )
+    result = extract_offers(
+        content,
+        "offers.xlsx",
+        max_chunks=1,
+        llm=lambda *_: pytest.fail("Oversized input must not call the model"),
+    )
+    assert result.failures and "chunks" in result.failures[0]
+    assert result.chunks_attempted == 0
+
+
+def test_cancelled_extraction_stops_before_another_model_call() -> None:
+    content = workbook_bytes({"Offers": [["Supplier I", "Item offered"], ["A", "Needle"]]})
+    result = extract_offers(
+        content,
+        "offers.xlsx",
+        should_stop=lambda: True,
+        llm=lambda *_: pytest.fail("Cancelled input must not call the model"),
+    )
+    assert result.failures and "cancelled" in result.failures[0]
+    assert result.chunks_attempted == 0
+
+
 def test_oversized_single_row_fails_without_silent_truncation_or_model_call() -> None:
     def unexpected(*args):
         pytest.fail("No LLM request should happen for incompletely readable input")

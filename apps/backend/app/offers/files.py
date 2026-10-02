@@ -14,6 +14,18 @@ from app.offers.contracts import (
     SharePointOfferFileUpsertV1,
 )
 
+# Successful empty batches also count as processed; legacy single-offer writes remain supported.
+_OUTPUT_AVAILABLE = """(
+    EXISTS (SELECT 1 FROM sharepoint_offer_jobs j
+        WHERE j.item_id=f.external_id AND j.drive_id=f.metadata_json->>'drive_id'
+          AND j.folder_id=f.metadata_json->>'folder_id' AND j.status='completed'
+          AND j.content_version=f.metadata_json->>'content_version')
+    OR EXISTS (SELECT 1 FROM historical_offers h
+        WHERE h.external_id=f.external_id AND h.source_item_id IS NULL
+          AND h.is_current AND h.active
+          AND COALESCE(h.metadata_json->>'extraction_status','') != 'mock')
+)"""
+
 
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
@@ -32,14 +44,9 @@ class SharePointOfferFileService:
     async def _current(self, external_id: str) -> dict[str, object] | None:
         result = await self._session.execute(
             text(
-                """
+                f"""
                 SELECT f.*, s.uri AS source_url,
-                       EXISTS (
-                           SELECT 1 FROM historical_offers h
-                           WHERE h.external_id = f.external_id
-                             AND h.is_current = TRUE AND h.active = TRUE
-                             AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
-                       ) AS structured_output_available
+                       {_OUTPUT_AVAILABLE} AS structured_output_available
                 FROM sharepoint_offer_files f
                 JOIN source_snapshots s ON s.id = f.source_snapshot_id
                 WHERE f.external_id = :external_id AND f.is_current = TRUE
@@ -223,25 +230,15 @@ class SharePointOfferFileService:
     ) -> list[SharePointOfferFileRecordV1]:
         result = await self._session.execute(
             text(
-                """
+                f"""
                 SELECT f.*, s.uri AS source_url,
-                       EXISTS (
-                           SELECT 1 FROM historical_offers h
-                           WHERE h.external_id = f.external_id
-                             AND h.is_current = TRUE AND h.active = TRUE
-                             AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
-                       ) AS structured_output_available
+                       {_OUTPUT_AVAILABLE} AS structured_output_available
                 FROM sharepoint_offer_files f
                 JOIN source_snapshots s ON s.id = f.source_snapshot_id
                 WHERE f.is_current = TRUE
                   AND (:active_only = FALSE OR f.active = TRUE)
                   AND (
-                      :needs_extraction = FALSE OR NOT EXISTS (
-                          SELECT 1 FROM historical_offers h
-                          WHERE h.external_id = f.external_id
-                            AND h.is_current = TRUE AND h.active = TRUE
-                            AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
-                      )
+                      :needs_extraction = FALSE OR NOT {_OUTPUT_AVAILABLE}
                   )
                 ORDER BY f.modified_at DESC NULLS LAST, f.updated_at DESC, f.external_id
                 LIMIT :limit

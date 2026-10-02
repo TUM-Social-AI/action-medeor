@@ -14,6 +14,9 @@ from app.offers.contracts import SharePointOfferFileUpsertV1
 from app.offers.files import SharePointOfferFileService
 from app.offers.service import OfferRepositoryService
 from app.sharepoint.changes import Enumeration, Item, SharePointChange
+from app.sharepoint.extraction import EXTRACTION_VERSION
+from app.sharepoint.processing import archive_file, enqueue
+from app.sharepoint.scope import content_version, supported
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,8 @@ async def load_state(session: AsyncSession, drive_id: str, folder_id: str) -> Sa
             is_deleted=row["is_deleted"],
             pending_extraction=row["pending_extraction"],
             last_processed_at=row["last_processed_at"],
+            created_at=row["created_at"],
+            domain=row["domain"],
         )
         for row in rows
     }
@@ -117,10 +122,10 @@ async def save_success(
     for item_id, item in final.items():
         change = changed.get(item_id)
         if change and change.kind in ("new", "modified"):
-            item = replace(item, pending_extraction=True, last_processed_at=now)
+            item = replace(item, pending_extraction=supported(item))
         if change and change.kind == "deleted":
             item = replace(item, is_deleted=True)
-        if change and change.kind != "deleted":
+        if change and change.kind != "deleted" and supported(item) and item.domain is not None:
             if not item.web_url:
                 raise ValueError(f"SharePoint file {item_id} has no webUrl")
             await files.upsert(
@@ -140,15 +145,20 @@ async def save_success(
                         "etag": item.etag,
                         "ctag": item.ctag,
                         "pending_extraction": item.pending_extraction,
+                        "created_at": item.created_at.isoformat() if item.created_at else None,
+                        "domain": item.domain,
+                        "content_version": content_version(item),
+                        "extraction_version": EXTRACTION_VERSION,
                     },
                 ),
                 commit=False,
             )
-        elif change and change.kind == "deleted":
+        elif change and (change.kind == "deleted" or not supported(item) or item.domain is None):
             try:
                 await files.archive(item_id, archived_at=now, commit=False)
             except LookupError:
                 pass
+            await archive_file(session, drive_id, folder_id, item_id)
             try:
                 await offers.archive(item_id, archived_at=now, commit=False)
             except LookupError:
@@ -189,4 +199,16 @@ async def save_success(
                 "last_processed_at": item.last_processed_at,
             },
         )
+        await session.execute(
+            text("""UPDATE sharepoint_sync_items SET created_at=:created_at,domain=:domain
+                WHERE drive_id=:drive_id AND folder_id=:folder_id AND item_id=:item_id"""),
+            {
+                "drive_id": drive_id,
+                "folder_id": folder_id,
+                "item_id": item_id,
+                "created_at": item.created_at,
+                "domain": item.domain,
+            },
+        )
+        await enqueue(session, drive_id, folder_id, item)
     await session.commit()

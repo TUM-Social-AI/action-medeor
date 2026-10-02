@@ -244,7 +244,7 @@ class PostgresHistoryRepository:
                        s.checksum, s.captured_at AS source_captured_at, s.locator
                 FROM historical_offers h
                 JOIN source_snapshots s ON s.id = h.source_snapshot_id
-                WHERE h.is_current = TRUE AND h.active = TRUE
+                WHERE h.is_current = TRUE AND h.active = TRUE AND h.matching_eligible
                   AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
                   AND (
                     CAST(:partner_id AS TEXT) IS NULL
@@ -259,8 +259,12 @@ class PostgresHistoryRepository:
             ),
             {"partner_id": partner_id, "country": destination_country, "limit": limit},
         )
+        return self._records(result.mappings())
+
+    @staticmethod
+    def _records(rows) -> list[HistoricalOfferV1]:
         offers: list[HistoricalOfferV1] = []
-        for row in result.mappings():
+        for row in rows:
             source = SourceReferenceV1(
                 source_type=row["source_type"],
                 document_id=row["document_id"],
@@ -268,7 +272,14 @@ class PostgresHistoryRepository:
                 uri=row["uri"],
                 checksum=row["checksum"],
                 captured_at=row["source_captured_at"],
-                locator=row["locator"] or {},
+                locator={
+                    **(row["locator"] or {}),
+                    **(
+                        {"source_id": row["metadata_json"]["source_id"]}
+                        if (row["metadata_json"] or {}).get("source_id")
+                        else {}
+                    ),
+                },
             )
             offers.append(
                 HistoricalOfferV1(
@@ -291,10 +302,91 @@ class PostgresHistoryRepository:
                     offer_date=row["offer_date"],
                     valid_until=row["valid_until"],
                     metadata=row["metadata_json"] or {},
+                    domain=row.get("domain"),
                     source=source,
                 )
             )
         return offers
+
+    async def search_offers(self, *, query, domain, limit, embedding=None, model_id=None):
+        from app.matching.domain import SearchRepresentation
+        from app.matching.representation import tokenize
+        from app.matching.retrieval.history import HistoryRetriever
+
+        params = {
+            "domain": domain.value,
+            "limit": limit,
+            "query": " OR ".join(sorted(tokenize(query))),
+        }
+        base = """
+            SELECT h.*,s.source_type,s.document_id,s.external_id,s.uri,s.checksum,
+                   s.captured_at AS source_captured_at,s.locator
+            FROM historical_offers h JOIN source_snapshots s ON s.id=h.source_snapshot_id
+        """
+        eligible = """h.is_current AND h.active AND h.matching_eligible AND h.domain=:domain
+            AND h.item_number IS NULL
+            AND COALESCE(h.metadata_json->>'extraction_status','') != 'mock'"""
+        document = (
+            "to_tsvector('simple',COALESCE(h.offered_description,'') || ' ' || h.raw_request_text)"
+        )
+        tsquery = "websearch_to_tsquery('simple',:query)"
+        lexical_rows = (
+            (
+                await self._session.execute(
+                    text(
+                        base
+                        + f"""
+            WHERE {eligible} AND {document} @@ {tsquery}
+            ORDER BY ts_rank_cd({document},{tsquery}) DESC,h.id LIMIT :limit
+        """
+                    ),
+                    params,
+                )
+            )
+            .mappings()
+            .all()
+        )
+        lexical = HistoryRetriever().search_standalone(
+            query=SearchRepresentation(
+                semantic_core=query, canonical_text=query, tokens=tokenize(query), content_hash=""
+            ),
+            offers=self._records(lexical_rows),
+            limit=limit,
+        )
+        vector = []
+        if embedding is not None and model_id:
+            dimensions = await self._session.scalar(
+                text("SELECT dimensions FROM embedding_models WHERE id=:id"), {"id": model_id}
+            )
+            if dimensions is None or dimensions != len(embedding):
+                raise ValueError("Unknown or dimension-incompatible offer embedding model")
+            params.update(model=model_id, embedding=_vector_literal(embedding))
+            rows = (
+                (
+                    await self._session.execute(
+                        text(
+                            base
+                            + f"""
+                JOIN offer_embeddings e ON e.offer_id=h.id AND e.model_id=:model
+                WHERE {eligible} AND 1-(e.embedding <=> CAST(:embedding AS vector)) >= 0.5
+                ORDER BY e.embedding <=> CAST(:embedding AS vector),h.id LIMIT :limit
+            """
+                        ),
+                        params,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            vector = self._records(rows)
+        by_id = {}
+        scores = {}
+        for offers in ([offer for offer, _ in lexical], vector):
+            for rank, offer in enumerate(offers, 1):
+                by_id[offer.record_id] = offer
+                scores[offer.record_id] = scores.get(offer.record_id, 0.0) + 1 / (60 + rank)
+        ordered = sorted(scores, key=lambda key: (-scores[key], key))[:limit]
+        return [(by_id[key], scores[key]) for key in ordered]
 
 
 class PostgresMatchRunRepository:

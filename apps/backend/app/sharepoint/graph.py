@@ -87,18 +87,35 @@ class GraphClient:
     def item_path(self, item_id: str) -> str:
         return f"drives/{quote(self.drive_id, safe='')}/items/{quote(item_id, safe='')}"
 
-    async def _request(self, path: str, *, follow_redirects: bool = False) -> httpx.Response:
+    async def _request(
+        self,
+        path: str,
+        *,
+        follow_redirects: bool = False,
+        stream: bool = False,
+    ) -> httpx.Response:
         url = _graph_url(path)
         token = await self._tokens.get_token()
         try:
-            response = await self._client.get(
-                url,
-                headers={"Authorization": f"Bearer {token}"},
-                follow_redirects=follow_redirects,
-            )
+            for attempt in range(3):
+                request = self._client.build_request(
+                    "GET", url, headers={"Authorization": f"Bearer {token}"}
+                )
+                response = await self._client.send(
+                    request, follow_redirects=follow_redirects, stream=stream
+                )
+                if response.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
+                    break
+                try:
+                    delay = float(response.headers.get("Retry-After", 2**attempt))
+                except ValueError:
+                    delay = 2**attempt
+                await response.aclose()
+                await asyncio.sleep(max(0, min(delay, 30)))
         except httpx.HTTPError as exc:
             raise RuntimeError(f"Graph request failed at {_safe_path(url)}: {exc}") from exc
         if response.status_code >= 400:
+            await response.aread()
             try:
                 payload = response.json().get("error", {})
             except (ValueError, AttributeError):
@@ -114,6 +131,7 @@ class GraphClient:
                 message,
                 body,
             )
+            await response.aclose()
             raise GraphError(response.status_code, _safe_path(url), code, message, body)
         return response
 
@@ -156,19 +174,35 @@ class GraphClient:
                 raise ValueError("Graph delta completed without a deltaLink")
             return changes, _graph_url(delta_link)
 
-    async def download(self, item_id: str) -> bytes:
-        response = await self._request(f"{self.item_path(item_id)}/content")
+    async def download(self, item_id: str, *, max_bytes: int | None = None) -> bytes:
+        response = await self._request(f"{self.item_path(item_id)}/content", stream=True)
         if response.status_code in (301, 302, 303, 307, 308):
             location = response.headers.get("location", "")
             parsed = urlparse(location)
             if parsed.scheme != "https" or not parsed.netloc:
+                await response.aclose()
                 raise ValueError("Graph returned an invalid content redirect")
             # The preauthenticated URL must not receive the Graph bearer token.
             try:
-                response = await self._client.get(location, follow_redirects=True)
+                await response.aclose()
+                response = await self._client.send(
+                    self._client.build_request("GET", location),
+                    follow_redirects=True,
+                    stream=True,
+                )
                 response.raise_for_status()
             except httpx.HTTPError as exc:
                 raise RuntimeError(
                     f"SharePoint content download failed for item {item_id}"
                 ) from exc
-        return response.content
+        chunks = []
+        total = 0
+        try:
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if max_bytes is not None and total > max_bytes:
+                    raise ValueError("Document exceeds configured byte limit during download")
+                chunks.append(chunk)
+            return b"".join(chunks)
+        finally:
+            await response.aclose()

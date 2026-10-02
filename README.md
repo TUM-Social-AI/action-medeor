@@ -341,42 +341,48 @@ boundaries are in [`apps/backend/app/offers/api.py`](apps/backend/app/offers/api
 
 ### Run the SharePoint folder sync job
 
-For local supplier-offer extraction experiments, see
-[`benchmarks/offer-extraction/README.md`](benchmarks/offer-extraction/README.md). The prototype
-reads the anonymized Excel files and generated invoice-style PDF quotations, preserves quoted
-price bases, and evaluates the configured GPT Luna deployment. It also supports extracting new
-local files without evaluation labels. This experiment does not change the scheduled sync job
-or write normalized offers to the database.
+The scheduled job now connects SharePoint discovery, Luna extraction, normalized offer storage,
+offer embeddings and Smart Matching. Its processing switch defaults to **disabled**. See the
+[operational runbook](docs/sharepoint-offer-pipeline.md) for configuration, retry procedures,
+one-document validation and the remaining production gates.
 
-The backend image contains a one-shot job for the configured action-medeor folder. Set
-`SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET`,
-`SHAREPOINT_DRIVE_ID`, and `SHAREPOINT_ROOT_FOLDER_ID` in the runtime environment. The empty
-entries are in `apps/backend/.env.example`; keep the client secret in an Azure Container Apps
-secret when deploying. Apply `uv run alembic upgrade head` before the first sync.
+Configure the Graph credentials, drive/root IDs and explicit domain-folder IDs from
+`apps/backend/.env.example`. At least one domain folder must be configured; medication can stay
+empty until uploaded. Configured domain folders must be immediate children of the permitted root.
+Partner-request example folders are excluded from offer processing. Only `.xlsx`, `.xls` and
+selectable-text `.pdf` files are eligible; `.eml`, Office temporary files and other formats are skipped.
 
 From `apps/backend`:
 
 ```bash
-uv run python -m app.jobs.sharepoint_sync test
+uv run alembic upgrade head
+uv run python -m app.jobs.sharepoint_sync inspect
+uv run python -m app.jobs.sharepoint_sync process-one --item-id DOCUMENT_ID --output ../../data/sharepoint-validation/one.json
 uv run python -m app.jobs.sharepoint_sync sync
-uv run python -m app.jobs.sharepoint_sync offer-smoke --api-url http://localhost:8000
 ```
 
-`test` reads the configured folder recursively, logs the visible file names and IDs, and verifies
-one download. `sync` runs once and exits; use the same backend image with the `sync` command in
-the existing scheduled Azure Container Apps Job. It writes file metadata and sync state to
-PostgreSQL, calls the temporary `extract(change, document)` method for new or content-changed
-files, and leaves those files pending for the later real extraction workstream. It does not write
-mock supplier offers. A full successful scan is required before missing files are archived or a
-new delta cursor is saved. Folder snapshots list the granted subtree on each run but download only
-new or content-changed files; concurrent SharePoint edits during a paged snapshot may require a
-later reconciliation run.
+`inspect` lists only the root's immediate metadata without downloading. `process-one` checks a
+selected document's ancestry, extracts and persists all supplier/item alternatives, embeds only
+that file's eligible offers, and records a real matching check. Repeating unchanged completed work
+skips another download/extraction and document-embedding call. It does not advance the discovery
+cursor or reconcile other files. `--retry-failed` explicitly resets this file's failed jobs.
 
-`offer-smoke` is an explicit check of the final supplier-offer HTTP boundary. It downloads one
-visible file and makes exactly one PUT with mock offer fields, real SharePoint link and metadata,
-and a stable smoke-only external ID/version. Repeating it replays the same offer version. Mock
-offers are marked in metadata, excluded from matching evidence, and do not satisfy the
-`needs_extraction` queue.
+`sync` runs once and exits; retain that command in the existing scheduled Azure Container Apps
+Job using the updated backend image. It commits complete discovery and durable pending work
+before processing. With `SHAREPOINT_PROCESSING_ENABLED=false`, it performs metadata discovery
+only. When enabled, the default processing limit is one document per run. Embedding failures retry
+independently and never activate/requeue the ERP catalog model. Expired quotes remain searchable
+supplier history with unconfirmed availability.
+
+Missing offer dates use SharePoint file creation, with an estimate label. Relative validity is
+calculated afterward from the resolved offer date; original validity wording, price amounts and
+price bases remain preserved. Ambiguous periods remain unresolved. Successful empty extraction
+batches count as processed, and incomplete extraction never replaces prior successful offers.
+
+The older `test` command performs recursive metadata discovery and one eligible download;
+`offer-smoke` performs one HTTP PUT with mock fields to test the public single-offer boundary.
+They are distinct from the real `process-one` pipeline, and mock offers are excluded from matching.
+For purely local experiments, see the [extraction benchmark](benchmarks/offer-extraction/README.md).
 
 The job tries `GET /v1.0/drives/{drive_id}/items/{folder_id}/delta` on its first sync. If Graph
 rejects or does not support this folder-scoped operation, it logs the endpoint, status, Graph code,
@@ -695,7 +701,7 @@ the backend.
 
 A cron job is simply a task triggered on a schedule. No always-running cron process is embedded in
 the web application. In Azure, a scheduled job should periodically read SharePoint through Microsoft
-Graph and register changed file metadata through the API; another scheduled or manual process can
+Graph and register changed file metadata and normalized offers using the shared database services; another scheduled or manual process can
 upload the latest ERP CSV pair. Separating scheduled work from the web container makes retries,
 credentials, and failures observable and prevents a long sync from blocking user requests.
 

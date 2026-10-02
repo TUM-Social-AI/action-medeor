@@ -42,6 +42,7 @@ async def test_sharepoint_state_replay_rename_and_archive() -> None:
         12,
         "application/pdf",
         False,
+        domain="equipment",
     )
     try:
         first = Enumeration({folder_id: root, item_id: file}, "snapshot", None)
@@ -114,6 +115,10 @@ async def test_sharepoint_state_replay_rename_and_archive() -> None:
             assert active is False
     finally:
         async with sessions() as session:
+            await session.execute(
+                text("DELETE FROM sharepoint_offer_jobs WHERE drive_id=:drive AND folder_id=:folder"),
+                {"drive": drive_id, "folder": folder_id},
+            )
             await session.execute(
                 text(
                     "DELETE FROM sharepoint_sync_sources WHERE drive_id = :drive AND folder_id = :folder"
