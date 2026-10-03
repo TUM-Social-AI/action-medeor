@@ -4,9 +4,13 @@ import {
   FileText, PackageSearch, RefreshCw, Search, X,
 } from 'lucide-react';
 import { getCatalogueArticles, type CatalogueArticle } from '../api/catalogue';
+import {
+  availableStatuses, categoryLabel, changeSource, DEFAULT_FILTERS, getCatalogueView,
+  selectStatus, statusOf, type CatalogueFilters, type Status,
+} from '../features/catalogue/filtering';
+import { berlinDay } from '../features/matching/offer-display';
+import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
 
-type SourceFilter = 'all' | 'erp' | 'sharepoint';
-type Status = 'in-stock' | 'out-of-stock' | 'valid' | 'expired' | 'unknown';
 type SortKey = 'name' | 'vendor' | 'category' | 'availability' | 'price';
 
 const STATUS_META: Record<Status, { label: string; dot: string }> = {
@@ -16,18 +20,6 @@ const STATUS_META: Record<Status, { label: string; dot: string }> = {
   expired: { label: 'Expired offer', dot: 'bg-rose-500' },
   unknown: { label: 'Availability unknown', dot: 'bg-gray-400' },
 };
-
-const categoryLabel = (category: string) =>
-  category === 'medicine' ? 'Medicine' : category === 'equipment' ? 'Equipment' : 'Other';
-
-function statusOf(article: CatalogueArticle): Status {
-  if (article.source === 'erp') {
-    if (article.stock === null) return 'unknown';
-    return Number(article.stock) > 0 ? 'in-stock' : 'out-of-stock';
-  }
-  if (!article.valid_until) return 'unknown';
-  return article.valid_until < new Date().toLocaleDateString('sv-SE') ? 'expired' : 'valid';
-}
 
 function formatPrice(price: string, currency: string | null): string {
   const amount = Number(price);
@@ -69,48 +61,35 @@ export function CatalogueScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
-  const [query, setQuery] = useState('');
-  const [source, setSource] = useState<SourceFilter>('all');
-  const [category, setCategory] = useState('all');
-  const [statuses, setStatuses] = useState<Set<Status>>(new Set());
+  const [filters, setFilters] = useState<CatalogueFilters>(DEFAULT_FILTERS);
+  const { query, source, category, status } = filters;
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 });
+  useOfferDateRefresh();
+  const today = berlinDay(new Date());
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
     void getCatalogueArticles(controller.signal)
-      .then(setArticles)
+      .then(data => { if (!controller.signal.aborted) setArticles(data); })
       .catch(caught => { if (!controller.signal.aborted) setError(caught instanceof Error ? caught.message : 'Could not load the catalogue.'); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [reload]);
 
-  const erpCount = articles.filter(article => article.source === 'erp').length;
-  const categories = [...new Set(articles.map(article => categoryLabel(article.category)))].sort();
-  const statusCounts = Object.fromEntries(
-    (Object.keys(STATUS_META) as Status[]).map(status => [status, articles.filter(article => statusOf(article) === status).length]),
-  ) as Record<Status, number>;
+  const view = useMemo(() => getCatalogueView(articles, filters, today), [articles, filters, today]);
+  const { sourceCounts, statusCounts, categoryCounts, categories, visibleSourceCounts } = view;
   const rows = useMemo(() => {
-    const term = query.trim().toLocaleLowerCase();
-    return articles.filter(article =>
-      (source === 'all' || article.source === source)
-      && (category === 'all' || categoryLabel(article.category) === category)
-      && (statuses.size === 0 || statuses.has(statusOf(article)))
-      && (!term || [article.name, article.vendor, article.reference, article.category]
-        .some(value => value?.toLocaleLowerCase().includes(term))),
-    ).sort((a, b) => {
+    return [...view.rows].sort((a, b) => {
       const difference = compareArticles(a, b, sort.key);
       return (Number.isNaN(difference) ? 0 : difference) * sort.dir || a.id.localeCompare(b.id);
     });
-  }, [articles, query, source, category, statuses, sort]);
-  const filtersActive = query !== '' || source !== 'all' || category !== 'all' || statuses.size > 0;
-  const resetFilters = () => { setQuery(''); setSource('all'); setCategory('all'); setStatuses(new Set()); };
-  const toggleStatus = (status: Status) => setStatuses(previous => {
-    const next = new Set(previous);
-    if (next.has(status)) next.delete(status); else next.add(status);
-    return next;
-  });
+  }, [view, sort]);
+  const filtersActive = query.trim() !== '' || source !== 'all' || category !== 'all' || status !== 'all';
+  const resetFilters = () => setFilters(DEFAULT_FILTERS);
+  const setQuery = (query: string) => setFilters(previous => ({ ...previous, query }));
+  const setCategory = (category: string) => setFilters(previous => ({ ...previous, category }));
   const onSort = (key: SortKey) => setSort(previous => ({ key, dir: previous.key === key && previous.dir === 1 ? -1 : 1 }));
 
   return <div className="flex min-h-full flex-col p-4 sm:p-6">
@@ -123,8 +102,8 @@ export function CatalogueScreen() {
         <button type="button" disabled title="Fetching new data is coming later" className="mr-1 inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-[#1B4E8A] px-3 py-1.5 font-semibold text-white opacity-50">
           <RefreshCw size={13} /> Fetch new data
         </button>
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 font-semibold text-blue-700"><Database size={11} /> {erpCount} ERP articles</span>
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-100 px-2.5 py-1 font-semibold text-violet-700"><FileText size={11} /> {articles.length - erpCount} supplier offers</span>
+        <span title="ERP articles matching the current filters" className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 font-semibold text-blue-700"><Database size={11} /> {visibleSourceCounts.erp} ERP articles</span>
+        <span title="Supplier offers matching the current filters" className="inline-flex items-center gap-1.5 rounded-full bg-violet-100 px-2.5 py-1 font-semibold text-violet-700"><FileText size={11} /> {visibleSourceCounts.sharepoint} supplier offers</span>
       </div>
     </div>
 
@@ -139,29 +118,30 @@ export function CatalogueScreen() {
           <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search name, supplier, ERP ID or offer file…" aria-label="Search articles" className="w-full rounded-lg border border-gray-200 bg-gray-50 py-2 pl-9 pr-8 text-sm focus:border-[#1B4E8A] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#1B4E8A]/20" />
           {query && <button type="button" aria-label="Clear search" onClick={() => setQuery('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700"><X size={14} /></button>}
         </div>
-        <div className="inline-flex rounded-lg bg-gray-100 p-0.5">
-          {([{ value: 'all', label: 'All', count: articles.length }, { value: 'erp', label: 'ERP', count: erpCount }, { value: 'sharepoint', label: 'Offers', count: articles.length - erpCount }] as const).map(option =>
-            <button key={option.value} type="button" aria-pressed={source === option.value} onClick={() => setSource(option.value)} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${source === option.value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
-              {option.label} <span className="ml-1 font-medium text-gray-400">{option.count}</span>
+        <div role="group" aria-label="Filter by source" className="inline-flex rounded-lg bg-gray-100 p-0.5">
+          {([{ value: 'all', label: 'All' }, { value: 'erp', label: 'ERP' }, { value: 'sharepoint', label: 'Offers' }] as const).map(option =>
+            <button key={option.value} type="button" aria-pressed={source === option.value} title="Counts match your search and category. Changing source resets status." onClick={() => setFilters(previous => changeSource(previous, option.value))} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${source === option.value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+              {option.label} <span className="ml-1 font-medium text-gray-400">{sourceCounts[option.value]}</span>
             </button>,
           )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          <button type="button" onClick={() => setCategory('all')} className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold underline-offset-4 ${category === 'all' ? 'text-[#1B4E8A] underline decoration-2' : 'text-gray-400 hover:text-gray-700'}`}>All categories</button>
-          {categories.map(value => <button key={value} type="button" aria-pressed={category === value} onClick={() => setCategory(category === value ? 'all' : value)} className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${category === value ? 'border-[#1B4E8A] bg-[#1B4E8A] text-white' : 'border-gray-200 text-gray-600 hover:border-gray-400'}`}>
-            {value} <span className={category === value ? 'text-white/70' : 'text-gray-400'}>{articles.filter(article => categoryLabel(article.category) === value).length}</span>
+          <button type="button" aria-pressed={category === 'all'} onClick={() => setCategory('all')} className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold underline-offset-4 ${category === 'all' ? 'text-[#1B4E8A] underline decoration-2' : 'text-gray-400 hover:text-gray-700'}`}>All categories <span className="text-gray-400">{categoryCounts.all}</span></button>
+          {categories.map(value => <button key={value} type="button" aria-pressed={category === value} disabled={categoryCounts[value] === 0 && category !== value} onClick={() => setCategory(category === value ? 'all' : value)} className={`rounded-full border px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40 ${category === value ? 'border-[#1B4E8A] bg-[#1B4E8A] text-white' : 'border-gray-200 text-gray-600 hover:border-gray-400'}`}>
+            {value} <span className={category === value ? 'text-white/70' : 'text-gray-400'}>{categoryCounts[value]}</span>
           </button>)}
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div role="group" aria-label="Filter by status" className="flex flex-wrap items-center gap-2">
         <span className="mr-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Status</span>
-        {(Object.keys(STATUS_META) as Status[]).filter(status => statusCounts[status] > 0).map(status => {
-          const selected = statuses.has(status);
-          return <button key={status} type="button" aria-pressed={selected} onClick={() => toggleStatus(status)} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${selected ? 'border-[#1B4E8A] bg-[#1B4E8A] text-white' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${selected ? 'bg-white' : STATUS_META[status].dot}`} /> {STATUS_META[status].label} <span className={selected ? 'text-white/70' : 'text-gray-400'}>{statusCounts[status]}</span>
+        <button type="button" aria-pressed={status === 'all'} onClick={() => setFilters(previous => selectStatus(previous, 'all'))} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${status === 'all' ? 'border-[#1B4E8A] bg-[#1B4E8A] text-white' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>All statuses <span className={status === 'all' ? 'text-white/70' : 'text-gray-400'}>{statusCounts.all}</span></button>
+        {availableStatuses(source).map(option => {
+          const selected = status === option;
+          return <button key={option} type="button" aria-pressed={selected} disabled={statusCounts[option] === 0 && !selected} onClick={() => setFilters(previous => selectStatus(previous, option))} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40 ${selected ? 'border-[#1B4E8A] bg-[#1B4E8A] text-white' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${selected ? 'bg-white' : STATUS_META[option].dot}`} /> {STATUS_META[option].label} <span className={selected ? 'text-white/70' : 'text-gray-400'}>{statusCounts[option]}</span>
           </button>;
         })}
-        <div className="ml-auto flex items-center gap-3 text-xs text-gray-500"><span><strong className="text-gray-900">{rows.length}</strong> of {articles.length} articles</span>{filtersActive && <button type="button" onClick={resetFilters} className="font-semibold text-[#1B4E8A] hover:underline">Clear filters</button>}</div>
+        <div className="ml-auto flex items-center gap-3 text-xs text-gray-500"><span><strong className="text-gray-900">{rows.length}</strong> matching articles</span>{filtersActive && <button type="button" onClick={resetFilters} className="font-semibold text-[#1B4E8A] hover:underline">Clear filters</button>}</div>
       </div>
     </div>
 
@@ -178,14 +158,15 @@ export function CatalogueScreen() {
         </tr></thead>
         <tbody>{rows.map(article => {
           const offer = article.source === 'sharepoint';
-          const expired = statusOf(article) === 'expired';
+          const articleStatus = statusOf(article, today);
+          const expired = articleStatus === 'expired';
           return <tr key={article.id} className={`border-b ${expired ? 'border-rose-100 bg-rose-50/30 hover:bg-rose-50/60' : offer ? 'border-violet-100 bg-violet-50/30 hover:bg-violet-50/70' : 'border-gray-100 hover:bg-gray-50'}`}>
             <td className={`border-l-[3px] px-4 py-3 ${expired ? 'border-l-rose-500' : offer ? 'border-l-violet-500' : 'border-l-transparent'}`}><span className={`text-sm font-semibold ${expired ? 'text-gray-500' : 'text-gray-900'}`}>{article.name}</span>{article.embedded && <span className="ml-2 whitespace-nowrap rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">Embedded</span>}</td>
             <td className="px-4 py-3">{offer ? <span className="inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-0.5 text-[11px] font-bold text-violet-700"><FileText size={10} /> OFFER</span> : <span className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-bold text-blue-700"><Database size={10} /> ERP</span>}</td>
             <td className="px-4 py-3 text-xs text-gray-600">{article.vendor || '—'}</td>
             <td className="px-4 py-3 text-xs text-gray-500">{categoryLabel(article.category)}</td>
             <td className="px-4 py-3">{offer && article.source_url ? <a href={article.source_url} target="_blank" rel="noopener noreferrer" title={`Open ${article.reference} in SharePoint`} className="inline-flex max-w-[200px] items-center gap-1.5 text-xs font-medium text-violet-800 hover:text-violet-950"><FileText size={12} className="shrink-0 text-violet-500" /><span className="truncate hover:underline">{article.reference}</span><ExternalLink size={10} className="shrink-0 opacity-60" /></a> : <span className="font-mono text-xs text-gray-500">{article.reference}</span>}</td>
-            <td className="whitespace-nowrap px-4 py-3 text-xs">{offer ? expired ? <span className="inline-flex items-center gap-1 font-semibold text-rose-600"><CalendarX2 size={11} /> Expired {article.valid_until}</span> : article.valid_until ? <span className="font-medium text-violet-700">Offer · valid to {article.valid_until}</span> : <span className="text-gray-500">Validity unknown</span> : article.stock === null ? <span className="text-gray-500">Stock unavailable</span> : <span className={Number(article.stock) > 0 ? 'font-semibold text-green-700' : 'font-semibold text-red-600'}>{Number(article.stock).toLocaleString()} {article.unit || 'units'}</span>}</td>
+            <td className="whitespace-nowrap px-4 py-3 text-xs">{offer ? expired ? <span className="inline-flex items-center gap-1 font-semibold text-rose-600"><CalendarX2 size={11} /> Expired {article.valid_until}</span> : articleStatus === 'valid' ? <span className="font-medium text-violet-700">Offer · valid to {article.valid_until}</span> : <span className="text-gray-500">Validity unknown</span> : articleStatus === 'unknown' ? <span className="text-gray-500">Stock unavailable</span> : <span className={articleStatus === 'in-stock' ? 'font-semibold text-green-700' : 'font-semibold text-red-600'}>{Number(article.stock).toLocaleString()} {article.unit || 'units'}</span>}</td>
             <td className="whitespace-nowrap px-4 py-3 text-right text-sm">{article.price === null ? <span className="text-xs italic text-gray-400">{offer ? 'On request' : '—'}</span> : <span className={`font-semibold ${expired ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{formatPrice(article.price, article.currency)}<span className="text-xs font-normal text-gray-400">{article.unit ? ` / ${article.unit}` : ''}</span></span>}</td>
           </tr>;
         })}</tbody>

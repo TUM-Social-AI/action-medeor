@@ -11,3 +11,14 @@ have a backend endpoint trigger the existing Azure scheduled job asynchronously 
 job/run identifier promptly. The frontend should poll or subscribe to that run's status.
 It should not run ERP sync, SharePoint scanning, extraction, or embedding work in the HTTP
 request, and it should not display simulated progress or success.
+
+## Filter counts
+
+Status is a single selection. Changing the source resets status to **All statuses**.
+Search applies to every count. Source counts also apply the category filter; category counts
+apply source and status; status counts apply source and category. Each filter therefore shows
+how many articles choosing an option would return, while keeping alternatives available.
+The header badges and the matching article count include all active filters.
+Zero-count categories and statuses stay visible but cannot be selected; a selected option
+remains enabled so it can always be cleared. Offer validity follows the Berlin calendar day
+and refreshes when the day changes or the browser tab resumes.
