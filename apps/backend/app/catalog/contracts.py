@@ -74,6 +74,12 @@ class CatalogueArticleV1(CatalogContract):
     stock: str | None = None
     unit: str | None = None
     valid_until: str | None = None
+    offer_date: str | None = None
+    offer_date_source: str | None = None
+    offer_validity_source: str | None = None
     price: str | None = None
+    price_basis: str | None = None
+    unit_price: str | None = None
+    unit_price_unit: str | None = None
     currency: str | None = None
     embedded: bool = False

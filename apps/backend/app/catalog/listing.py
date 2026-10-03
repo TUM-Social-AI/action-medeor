@@ -56,7 +56,8 @@ async def list_catalogue_articles(session: AsyncSession) -> list[CatalogueArticl
         text(
             """
             SELECT h.id, h.offered_description, h.raw_request_text, h.supplier,
-                   h.domain, h.valid_until, h.unit_price, h.unit_price_unit,
+                   h.domain, h.valid_until, h.offer_date, h.price, h.price_basis,
+                   h.unit_price, h.unit_price_unit,
                    h.currency, h.metadata_json, s.uri AS source_url, f.name AS file_name,
                    EXISTS (SELECT 1 FROM offer_embeddings e
                            WHERE e.offer_id = h.id) AS embedded
@@ -90,7 +91,13 @@ async def list_catalogue_articles(session: AsyncSession) -> list[CatalogueArticl
                 source_url=row["source_url"],
                 unit=row["unit_price_unit"],
                 valid_until=row["valid_until"].isoformat() if row["valid_until"] else None,
-                price=str(row["unit_price"]) if row["unit_price"] is not None else None,
+                offer_date=row["offer_date"].isoformat() if row["offer_date"] else None,
+                offer_date_source=metadata.get("offer_date_source"),
+                offer_validity_source=metadata.get("offer_validity_source"),
+                price=str(row["price"]) if row["price"] is not None else None,
+                price_basis=row["price_basis"],
+                unit_price=str(row["unit_price"]) if row["unit_price"] is not None else None,
+                unit_price_unit=row["unit_price_unit"],
                 currency=row["currency"],
                 embedded=bool(row["embedded"]),
             )

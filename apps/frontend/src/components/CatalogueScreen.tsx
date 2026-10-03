@@ -8,7 +8,7 @@ import {
   availableStatuses, categoryLabel, changeSource, DEFAULT_FILTERS, getCatalogueView,
   selectStatus, statusOf, type CatalogueFilters, type Status,
 } from '../features/catalogue/filtering';
-import { berlinDay } from '../features/matching/offer-display';
+import { berlinDay, formatOfferPrice, getOfferStatus } from '../features/matching/offer-display';
 import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
 
 type SortKey = 'name' | 'vendor' | 'category' | 'availability' | 'price';
@@ -21,18 +21,11 @@ const STATUS_META: Record<Status, { label: string; dot: string }> = {
   unknown: { label: 'Availability unknown', dot: 'bg-gray-400' },
 };
 
-function formatPrice(price: string, currency: string | null): string {
-  const amount = Number(price);
-  if (!currency || !/^[A-Z]{3}$/.test(currency)) return `${amount.toLocaleString()} ${currency || ''}`.trim();
-  try {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
-  } catch {
-    return `${amount.toLocaleString()} ${currency}`;
-  }
-}
-
 function compareArticles(a: CatalogueArticle, b: CatalogueArticle, key: SortKey): number {
-  if (key === 'price') return (a.price === null ? Infinity : Number(a.price)) - (b.price === null ? Infinity : Number(b.price));
+  if (key === 'price') {
+    const value = (article: CatalogueArticle) => article.unit_price ?? article.price;
+    return (value(a) == null ? Infinity : Number(value(a))) - (value(b) == null ? Infinity : Number(value(b)));
+  }
   if (key === 'availability') {
     const value = (article: CatalogueArticle) => article.source === 'erp'
       ? article.stock === null ? -Infinity : Number(article.stock) + 1e13
@@ -154,20 +147,35 @@ export function CatalogueScreen() {
           <SortHeader label="Category" sortKey="category" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
           <SortHeader label="ERP ID / Offer" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
           <SortHeader label="Availability" sortKey="availability" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
-          <SortHeader label="Unit price" sortKey="price" activeKey={sort.key} direction={sort.dir} onSort={onSort} align="right" />
+          <SortHeader label="Price" sortKey="price" activeKey={sort.key} direction={sort.dir} onSort={onSort} align="right" />
         </tr></thead>
         <tbody>{rows.map(article => {
           const offer = article.source === 'sharepoint';
           const articleStatus = statusOf(article, today);
           const expired = articleStatus === 'expired';
+          const offerStatus = offer ? getOfferStatus({
+            offer_valid_until: articleStatus === 'unknown' ? null : article.valid_until,
+            offer_date: article.offer_date,
+            offer_date_source: article.offer_date_source,
+            offer_validity_source: article.offer_validity_source,
+          }) : null;
+          const price = article.unit_price ?? article.price;
           return <tr key={article.id} className={`border-b ${expired ? 'border-rose-100 bg-rose-50/30 hover:bg-rose-50/60' : offer ? 'border-violet-100 bg-violet-50/30 hover:bg-violet-50/70' : 'border-gray-100 hover:bg-gray-50'}`}>
             <td className={`border-l-[3px] px-4 py-3 ${expired ? 'border-l-rose-500' : offer ? 'border-l-violet-500' : 'border-l-transparent'}`}><span className={`text-sm font-semibold ${expired ? 'text-gray-500' : 'text-gray-900'}`}>{article.name}</span>{article.embedded && <span className="ml-2 whitespace-nowrap rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">Embedded</span>}</td>
             <td className="px-4 py-3">{offer ? <span className="inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-0.5 text-[11px] font-bold text-violet-700"><FileText size={10} /> OFFER</span> : <span className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-bold text-blue-700"><Database size={10} /> ERP</span>}</td>
             <td className="px-4 py-3 text-xs text-gray-600">{article.vendor || '—'}</td>
             <td className="px-4 py-3 text-xs text-gray-500">{categoryLabel(article.category)}</td>
             <td className="px-4 py-3">{offer && article.source_url ? <a href={article.source_url} target="_blank" rel="noopener noreferrer" title={`Open ${article.reference} in SharePoint`} className="inline-flex max-w-[200px] items-center gap-1.5 text-xs font-medium text-violet-800 hover:text-violet-950"><FileText size={12} className="shrink-0 text-violet-500" /><span className="truncate hover:underline">{article.reference}</span><ExternalLink size={10} className="shrink-0 opacity-60" /></a> : <span className="font-mono text-xs text-gray-500">{article.reference}</span>}</td>
-            <td className="whitespace-nowrap px-4 py-3 text-xs">{offer ? expired ? <span className="inline-flex items-center gap-1 font-semibold text-rose-600"><CalendarX2 size={11} /> Expired {article.valid_until}</span> : articleStatus === 'valid' ? <span className="font-medium text-violet-700">Offer · valid to {article.valid_until}</span> : <span className="text-gray-500">Validity unknown</span> : articleStatus === 'unknown' ? <span className="text-gray-500">Stock unavailable</span> : <span className={articleStatus === 'in-stock' ? 'font-semibold text-green-700' : 'font-semibold text-red-600'}>{Number(article.stock).toLocaleString()} {article.unit || 'units'}</span>}</td>
-            <td className="whitespace-nowrap px-4 py-3 text-right text-sm">{article.price === null ? <span className="text-xs italic text-gray-400">{offer ? 'On request' : '—'}</span> : <span className={`font-semibold ${expired ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{formatPrice(article.price, article.currency)}<span className="text-xs font-normal text-gray-400">{article.unit ? ` / ${article.unit}` : ''}</span></span>}</td>
+            <td className="whitespace-nowrap px-4 py-3 text-xs">{offerStatus ? <>
+              <span className={`inline-flex items-center gap-1 font-medium ${offerStatus.warning ? 'text-rose-600' : 'text-violet-700'}`}>
+                {expired && <CalendarX2 size={11} />} {offerStatus.label}
+              </span>
+              {articleStatus === 'unknown' && <span className="mt-1 block text-gray-500">Validity unknown</span>}
+            </> : articleStatus === 'unknown' ? <span className="text-gray-500">Stock unavailable</span> : <span className={articleStatus === 'in-stock' ? 'font-semibold text-green-700' : 'font-semibold text-red-600'}>{Number(article.stock).toLocaleString()} {article.unit || 'units'}</span>}</td>
+            <td className="whitespace-nowrap px-4 py-3 text-right text-sm">{price == null ? <span className="text-xs italic text-gray-400">{offer ? 'On request' : '—'}</span> : <>
+              <span className={`font-semibold ${expired ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{formatOfferPrice(article.price, article.currency, article.price_basis, article.unit_price, article.unit_price_unit)}</span>
+              {offer && <span className="mt-1 block text-xs text-gray-500">{article.unit_price != null ? 'Unit price' : 'Offer price'}</span>}
+            </>}</td>
           </tr>;
         })}</tbody>
       </table>

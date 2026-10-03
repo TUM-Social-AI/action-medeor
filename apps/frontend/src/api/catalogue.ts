@@ -11,7 +11,13 @@ export type CatalogueArticle = {
   stock: string | null;
   unit: string | null;
   valid_until: string | null;
+  offer_date: string | null;
+  offer_date_source: string | null;
+  offer_validity_source: string | null;
   price: string | null;
+  price_basis: string | null;
+  unit_price: string | null;
+  unit_price_unit: string | null;
   currency: string | null;
   embedded: boolean;
 };

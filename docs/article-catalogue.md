@@ -4,6 +4,13 @@ The sidebar screen reads current ERP articles and active, normalized SharePoint 
 `GET /api/v1/catalogue/articles`. It shows whether each current article or offer has a stored
 embedding. The screen does not initiate imports or extraction.
 
+Supplier prices prefer an explicit unit price and its unit; otherwise they show the quoted
+offer price with its original basis (for example, `EUR 18.50 / 50 St.`). Missing currencies
+and units are not inferred. The price cell identifies whether it is a unit or offer price.
+Offers with no known expiry show their age from the offer date alongside **Validity unknown**.
+An issue date does not establish current availability or expiry. Estimated dates and calculated
+expiry dates keep the same provenance labels as Smart Matching.
+
 ## Deferred: Fetch new data
 
 The **Fetch new data** button is intentionally disabled. When this control is implemented,
