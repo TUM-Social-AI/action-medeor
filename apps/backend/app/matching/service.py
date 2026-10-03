@@ -17,11 +17,10 @@ from app.matching.contracts import (
     MatchRunResponseV1,
     MatchRunStatus,
     PackagingResult,
-    RetrievalEvidence,
     RuleOutcome,
     ValidationStatus,
 )
-from app.matching.domain import CandidateState
+from app.matching.domain import CandidateState, RetrievalHit
 from app.matching.packaging import calculate_packaging, observed_availability
 from app.matching.ports import (
     CatalogRepository,
@@ -41,7 +40,7 @@ from app.matching.retrieval.lexical import LexicalRetriever
 from app.matching.retrieval.vector import VectorRetriever
 from app.matching.validation import validate_inquiry
 
-ALGORITHM_VERSION = "allocura-matching-v1"
+ALGORITHM_VERSION = "allocura-matching-v2"
 
 
 class MatchingService:
@@ -139,8 +138,82 @@ class MatchingService:
                     )
                 )
 
+            standalone = (
+                await self._offer_search.search_offers(
+                    query=query.canonical_text,
+                    domain=request.inquiry_line.domain,
+                    limit=request.retrieval_limit,
+                    embedding=embedding,
+                    model_id=model_id,
+                )
+                if self._offer_search
+                else [
+                    (
+                        offer,
+                        [
+                            RetrievalHit(
+                                item_number=f"offer:{offer.record_id}",
+                                retriever="lexical",
+                                rank=rank,
+                                score=similarity,
+                                details={"record_id": offer.record_id},
+                            )
+                        ],
+                    )
+                    for rank, (offer, similarity) in enumerate(
+                        self._historical.search_standalone(
+                            query=query,
+                            offers=offers,
+                            limit=request.retrieval_limit,
+                        ),
+                        1,
+                    )
+                ]
+            )
+            # Compare raw channel scores across sources before fusing their ranks.
+            channels: dict[str, list[RetrievalHit]] = {}
+            for hits in [*result_sets, *(hits for _, hits in standalone)]:
+                for hit in hits:
+                    channels.setdefault(hit.retriever, []).append(hit)
+            shared_results = []
+            for hits in channels.values():
+                hits.sort(key=lambda hit: (-(hit.score or 0.0), hit.item_number))
+                ranks = {
+                    score: rank
+                    for rank, score in enumerate(
+                        sorted({hit.score or 0.0 for hit in hits}, reverse=True), 1
+                    )
+                }
+                shared_results.append(
+                    [
+                        RetrievalHit(
+                            hit.item_number,
+                            hit.retriever,
+                            ranks[hit.score or 0.0],
+                            hit.score,
+                            hit.details,
+                        )
+                        for hit in hits
+                    ]
+                )
+            # Exact/history evidence remains inspectable; both sources rank only
+            # on the shared lexical and vector channels.
+            fused = [
+                (
+                    key,
+                    sum(
+                        1 / (60 + hit.rank)
+                        for hit in hits
+                        if hit.retriever in {"lexical", "vector"}
+                    ),
+                    hits,
+                )
+                for key, _, hits in reciprocal_rank_fusion(shared_results)
+            ]
+            fused_by_key = {key: (score, hits) for key, score, hits in fused}
+
             states: list[CandidateState] = []
-            for item_number, fused_score, evidence in reciprocal_rank_fusion(result_sets):
+            for item_number, fused_score, evidence in fused:
                 item = item_by_number.get(item_number)
                 if item is None:
                     continue
@@ -200,22 +273,8 @@ class MatchingService:
                     )
                 )
 
-            standalone = (
-                await self._offer_search.search_offers(
-                    query=query.semantic_core,
-                    domain=request.inquiry_line.domain,
-                    limit=request.retrieval_limit,
-                    embedding=embedding,
-                    model_id=model_id,
-                )
-                if self._offer_search
-                else self._historical.search_standalone(
-                    query=query,
-                    offers=offers,
-                    limit=request.retrieval_limit,
-                )
-            )
-            for offer_rank, (offer, similarity) in enumerate(standalone, start=1):
+            for offer, _ in standalone:
+                fused_score, evidence = fused_by_key[f"offer:{offer.record_id}"]
                 description = offer.offered_description or offer.raw_request_text
                 candidate_rows.append(
                     (
@@ -240,17 +299,14 @@ class MatchingService:
                             descriptions=(description,),
                             review_status=RuleOutcome.REVIEW,
                             availability_status=AvailabilityStatus.UNKNOWN,
-                            retrieval_evidence=(
-                                RetrievalEvidence(
-                                    retriever="sharepoint_offer",
-                                    rank=offer_rank,
-                                    score=similarity,
-                                    details={"record_id": offer.record_id},
-                                ),
-                            ),
+                            retrieval_evidence=tuple(hit.as_evidence() for hit in evidence),
                             score_components={
-                                "rrf": 1 / (60 + offer_rank),
-                                "offer_similarity": similarity,
+                                "rrf": fused_score,
+                                **{
+                                    hit.retriever: hit.score
+                                    for hit in evidence
+                                    if hit.score is not None
+                                },
                                 "name_similarity": description_similarity(
                                     request.inquiry_line.raw_description, (description,)
                                 ),
@@ -285,22 +341,6 @@ class MatchingService:
             )
             candidate_rows.sort(key=lambda row: (-scores[row[0]], row[0]))
             visible_rows = candidate_rows[: request.top_k]
-            # A catalog-heavy result can otherwise hide every matching supplier
-            # offer, since unverified offers rank below confirmed catalog items.
-            if request.top_k > 1 and not any(
-                candidate.candidate_type is CandidateType.HISTORICAL_OFFER
-                for _, candidate in visible_rows
-            ):
-                best_offer = next(
-                    (
-                        row
-                        for row in candidate_rows
-                        if row[1].candidate_type is CandidateType.HISTORICAL_OFFER
-                    ),
-                    None,
-                )
-                if best_offer is not None:
-                    visible_rows = [*visible_rows[: request.top_k - 1], best_offer]
             candidates = tuple(
                 candidate.model_copy(
                     update={

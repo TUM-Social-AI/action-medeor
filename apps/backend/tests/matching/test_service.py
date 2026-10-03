@@ -201,11 +201,11 @@ async def test_supplier_offer_is_ranked_alongside_catalog_article() -> None:
 
 
 @pytest.mark.asyncio
-async def test_matching_supplier_offer_remains_visible_when_catalog_fills_top_k() -> None:
+async def test_lower_relevance_supplier_offer_does_not_displace_catalog_top_k() -> None:
     offer = historical_offer("410001001").model_copy(update={
         "record_id": "standalone-offer",
         "item_number": None,
-        "offered_description": "Foley urinary catheter sterile CH18",
+        "offered_description": "Foley catheter",
     })
     service = MatchingService(
         catalog_repository=InMemoryCatalogRepository([
@@ -220,8 +220,9 @@ async def test_matching_supplier_offer_remains_visible_when_catalog_fills_top_k(
     result = await service.match(MatchRequestV1(inquiry_line=line(), top_k=2))
 
     assert len(result.candidates) == 2
-    assert result.candidates[-1].candidate_type is CandidateType.HISTORICAL_OFFER
-    assert result.candidates[-1].item_number is None
+    assert [candidate.item_number for candidate in result.candidates] == [
+        "410001001", "410001002",
+    ]
 
 
 @pytest.mark.asyncio
@@ -359,3 +360,114 @@ async def test_old_supplier_offer_remains_matchable_and_selectable(valid_until: 
         candidate_id=candidate.candidate_id,
     ))
     assert decision.match_run_id == result.match_run_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("top_k", [1, 2, 10])
+async def test_better_offer_can_rank_first_on_lexical_and_vector_relevance(top_k) -> None:
+    from app.matching.domain import RetrievalHit
+    from app.matching.representation import (
+        represent_inquiry,
+        represent_inventory_item,
+        represent_offer,
+    )
+    from app.matching.retrieval.lexical import lexical_similarity
+
+    inquiry = line(description="Foley urinary catheter sterile CH18").model_copy(
+        update={"attributes": {}}
+    )
+    erp = item("410001001", "Foley urinary catheter sterile", on_hand=Decimal("500"))
+    offer = historical_offer(erp.item_number).model_copy(
+        update={
+            "record_id": "best-offer",
+            "item_number": None,
+            "offered_description": inquiry.raw_description,
+        }
+    )
+    query = represent_inquiry(inquiry)
+    assert lexical_similarity(query, represent_offer(offer)) > lexical_similarity(
+        query, represent_inventory_item(erp)
+    )
+
+    class Offers:
+        async def search_offers(self, **kwargs):
+            assert kwargs["embedding"] == (1.0, 0.0)
+            return [
+                (
+                    offer,
+                    [
+                        RetrievalHit(
+                            "offer:best-offer",
+                            "lexical",
+                            1,
+                            lexical_similarity(query, represent_offer(offer)),
+                        ),
+                        RetrievalHit("offer:best-offer", "vector", 1, 0.99),
+                    ],
+                )
+            ]
+
+    vectors = InMemoryVectorRepository()
+    vectors.add(
+        item_number=erp.item_number, model_id="model-v1", domain=erp.domain, embedding=(0.8, 0.6)
+    )
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([erp]),
+        history_repository=InMemoryHistoryRepository(),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(),
+        vector_repository=vectors,
+        offer_search_repository=Offers(),
+    )
+    result = await service.match(
+        MatchRequestV1(
+            inquiry_line=inquiry,
+            query_embedding=(1.0, 0.0),
+            embedding_model_id="model-v1",
+            top_k=top_k,
+        )
+    )
+    assert result.candidates[0].candidate_type is CandidateType.HISTORICAL_OFFER
+    assert result.candidates[0].review_status is RuleOutcome.REVIEW
+    assert {hit.retriever for hit in result.candidates[0].retrieval_evidence} == {
+        "lexical",
+        "vector",
+    }
+    assert all(hit.rank == 1 for hit in result.candidates[0].retrieval_evidence)
+    if top_k > 1:
+        assert result.candidates[1].candidate_type is CandidateType.CATALOG
+        assert all(hit.rank == 2 for hit in result.candidates[1].retrieval_evidence)
+        assert (
+            result.candidates[0].score_components["ranking_score"]
+            > (result.candidates[1].score_components["ranking_score"])
+        )
+
+
+@pytest.mark.asyncio
+async def test_identical_product_text_receives_equal_scores_for_erp_and_offer() -> None:
+    description = "Sterile Foley urinary catheter CH18"
+    inquiry = line(description=description).model_copy(update={"attributes": {}})
+    erp = item("410001001", description, on_hand=Decimal("500")).model_copy(update={
+        "manufacturer": None, "attributes": {},
+    })
+    offer = historical_offer(erp.item_number).model_copy(update={
+        "item_number": None, "offered_description": description,
+    })
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([erp]),
+        history_repository=InMemoryHistoryRepository([offer]),
+        run_repository=InMemoryMatchRunRepository(), policy=load_default_policy(),
+    )
+    result = await service.match(MatchRequestV1(inquiry_line=inquiry))
+    assert len(result.candidates) == 2
+    assert {candidate.candidate_type for candidate in result.candidates} == {
+        CandidateType.CATALOG, CandidateType.HISTORICAL_OFFER,
+    }
+    erp_candidate, offer_candidate = result.candidates
+    assert erp_candidate.review_status is RuleOutcome.PASS
+    assert offer_candidate.review_status is RuleOutcome.REVIEW
+    assert erp_candidate.score_components["lexical"] == offer_candidate.score_components["lexical"]
+    assert erp_candidate.score_components["rrf"] == offer_candidate.score_components["rrf"]
+    assert erp_candidate.score_components["ranking_score"] == (
+        offer_candidate.score_components["ranking_score"]
+    )

@@ -134,8 +134,12 @@ domain, without price/date. Unchanged text/model hashes reuse vectors across off
 registration validates provider/name/version/dimensions without activating models or touching ERP
 queues. Retrieval fuses relevance-ranked lexical and offer-vector results using the existing query
 embedding, filters by domain/current/active/eligible status, and preserves expired offers as supplier
-leads. Initial offer-vector search is exact cosine, with a 0.5 minimum similarity; tuning and indexing
-need a larger representative sample. Historic offers do not establish current stock or orderability.
+leads. Offer-vector search uses exact cosine similarity with the same retrieval limit and no
+source-specific minimum similarity, as for ERP vectors. Matching merges ERP and offer similarities
+within each lexical/vector channel before reciprocal rank fusion. Both sources use the same final
+relevance score; review status and stock do not affect ordering. No result slot is reserved for an
+offer. Tuning and indexing need a larger representative sample. Historic offers do not establish
+current stock or orderability.
 
 ## Before a production test or scheduled rollout
 

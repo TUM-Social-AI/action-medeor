@@ -263,20 +263,21 @@ number behind them is the calculated fulfillable quantity.
 **Responsible code:** [`ranking/features.py`](ranking/features.py) creates the inspectable ranking
 components and [`ranking/ranker.py`](ranking/ranker.py) applies the deterministic ordering.
 
-The current ordering is:
+ERP articles and standalone SharePoint offers share lexical and embedding score channels.
+Within each channel, raw similarity scores determine ranks across the combined pool; equal
+similarities receive equal ranks. Reciprocal rank fusion combines these ranks, and the final
+ranking score is normalized to 0–100. Candidate keys break ties deterministically.
 
-1. fully passing products before products requiring review;
-2. exact article-number matches;
-3. stronger structured-attribute agreement;
-4. combined search rank;
-5. comparable availability;
-6. article number as a stable final tie-breaker.
+Review status, attribute agreement and stock remain visible but do not boost or penalize ranking.
+Excluded ERP products are still removed. Exact and historical evidence remains inspectable but
+adds no ranking bonus. There is no reserved SharePoint slot: the best-scoring candidates fill
+`top_k`, regardless of source.
 
 Therefore, the result is:
 
 | Rank | Product | Outcome | Why |
 |---:|---|---|---|
-| 1 | `410001001` | Pass | CH18, sterile, active and enough stock |
+| 1 | `410001001` | Pass | Stronger combined lexical and vector retrieval |
 | 2 | `410001002` | Review | CH12 differs from requested CH18 |
 | — | `410001003` | Excluded | Article is inactive |
 

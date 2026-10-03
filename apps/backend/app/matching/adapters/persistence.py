@@ -310,7 +310,7 @@ class PostgresHistoryRepository:
 
     async def search_offers(self, *, query, domain, limit, embedding=None, model_id=None):
         from app.matching.domain import SearchRepresentation
-        from app.matching.representation import tokenize
+        from app.matching.representation import normalize_text, tokenize
         from app.matching.retrieval.history import HistoryRetriever
 
         params = {
@@ -348,7 +348,10 @@ class PostgresHistoryRepository:
         )
         lexical = HistoryRetriever().search_standalone(
             query=SearchRepresentation(
-                semantic_core=query, canonical_text=query, tokens=tokenize(query), content_hash=""
+                semantic_core=normalize_text(query),
+                canonical_text=normalize_text(query),
+                tokens=tokenize(query),
+                content_hash="",
             ),
             offers=self._records(lexical_rows),
             limit=limit,
@@ -365,10 +368,13 @@ class PostgresHistoryRepository:
                 (
                     await self._session.execute(
                         text(
-                            base
+                            base.replace(
+                                "SELECT h.*",
+                                "SELECT 1-(e.embedding <=> CAST(:embedding AS vector)) AS similarity,h.*",
+                            )
                             + f"""
                 JOIN offer_embeddings e ON e.offer_id=h.id AND e.model_id=:model
-                WHERE {eligible} AND 1-(e.embedding <=> CAST(:embedding AS vector)) >= 0.5
+                WHERE {eligible}
                 ORDER BY e.embedding <=> CAST(:embedding AS vector),h.id LIMIT :limit
             """
                         ),
@@ -378,15 +384,22 @@ class PostgresHistoryRepository:
                 .mappings()
                 .all()
             )
-            vector = self._records(rows)
+            vector = list(zip(self._records(rows), (float(row["similarity"]) for row in rows)))
         by_id = {}
-        scores = {}
-        for offers in ([offer for offer, _ in lexical], vector):
-            for rank, offer in enumerate(offers, 1):
+        evidence = {}
+        for retriever, results in (("lexical", lexical), ("vector", vector)):
+            for rank, (offer, score) in enumerate(results, 1):
                 by_id[offer.record_id] = offer
-                scores[offer.record_id] = scores.get(offer.record_id, 0.0) + 1 / (60 + rank)
-        ordered = sorted(scores, key=lambda key: (-scores[key], key))[:limit]
-        return [(by_id[key], scores[key]) for key in ordered]
+                evidence.setdefault(offer.record_id, []).append(
+                    RetrievalHit(
+                        item_number=f"offer:{offer.record_id}",
+                        retriever=retriever,
+                        rank=rank,
+                        score=score,
+                        details={"record_id": offer.record_id},
+                    )
+                )
+        return [(by_id[key], evidence[key]) for key in sorted(by_id)]
 
 
 class PostgresMatchRunRepository:
