@@ -56,6 +56,18 @@ class EmbeddingProvider(Protocol):
     async def embed_queries(self, texts: Sequence[str]) -> Sequence[Sequence[float]]: ...
 
 
+class OfferSearchRepository(Protocol):
+    async def search_offers(
+        self,
+        *,
+        query: str,
+        domain: ProductDomain,
+        limit: int,
+        embedding: Sequence[float] | None = None,
+        model_id: str | None = None,
+    ) -> Sequence[tuple[HistoricalOfferV1, Sequence[RetrievalHit]]]: ...
+
+
 class MatchRunRepository(Protocol):
     async def create_run(
         self,

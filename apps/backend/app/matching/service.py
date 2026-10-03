@@ -8,26 +8,30 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from app.matching.constraints.engine import ConstraintEngine, MatchingPolicy
 from app.matching.contracts import (
     AvailabilityStatus,
+    CandidateType,
+    ConstraintResult,
     MatchCandidateV1,
     MatchDecisionRequestV1,
     MatchDecisionResponseV1,
     MatchRequestV1,
     MatchRunResponseV1,
     MatchRunStatus,
+    PackagingResult,
     RuleOutcome,
     ValidationStatus,
 )
-from app.matching.domain import CandidateState
+from app.matching.domain import CandidateState, RetrievalHit
 from app.matching.packaging import calculate_packaging, observed_availability
 from app.matching.ports import (
     CatalogRepository,
     EmbeddingProvider,
     HistoryRepository,
     MatchRunRepository,
+    OfferSearchRepository,
     VectorRepository,
 )
 from app.matching.ranking.features import description_similarity
-from app.matching.ranking.ranker import rank_candidates
+from app.matching.ranking.ranker import calculate_ranking_scores, rank_candidates
 from app.matching.representation import represent_inquiry
 from app.matching.retrieval.exact import ExactRetriever
 from app.matching.retrieval.fusion import reciprocal_rank_fusion
@@ -36,7 +40,7 @@ from app.matching.retrieval.lexical import LexicalRetriever
 from app.matching.retrieval.vector import VectorRetriever
 from app.matching.validation import validate_inquiry
 
-ALGORITHM_VERSION = "allocura-matching-v1"
+ALGORITHM_VERSION = "allocura-matching-v2"
 
 
 class MatchingService:
@@ -49,6 +53,7 @@ class MatchingService:
         policy: MatchingPolicy,
         vector_repository: VectorRepository | None = None,
         embedding_provider: EmbeddingProvider | None = None,
+        offer_search_repository: OfferSearchRepository | None = None,
     ) -> None:
         self._catalog = catalog_repository
         self._history = history_repository
@@ -57,6 +62,7 @@ class MatchingService:
         self._policy = policy
         self._vectors = VectorRetriever(vector_repository) if vector_repository else None
         self._embedding_provider = embedding_provider
+        self._offer_search = offer_search_repository
         self._exact = ExactRetriever()
         self._lexical = LexicalRetriever()
         self._historical = HistoryRetriever()
@@ -104,6 +110,7 @@ class MatchingService:
                 destination_country=request.inquiry_line.destination_country,
                 limit=request.retrieval_limit,
             )
+            offers_by_id = {offer.record_id: offer for offer in offers}
             result_sets.append(
                 self._historical.search(
                     query=query,
@@ -131,8 +138,82 @@ class MatchingService:
                     )
                 )
 
+            standalone = (
+                await self._offer_search.search_offers(
+                    query=query.canonical_text,
+                    domain=request.inquiry_line.domain,
+                    limit=request.retrieval_limit,
+                    embedding=embedding,
+                    model_id=model_id,
+                )
+                if self._offer_search
+                else [
+                    (
+                        offer,
+                        [
+                            RetrievalHit(
+                                item_number=f"offer:{offer.record_id}",
+                                retriever="lexical",
+                                rank=rank,
+                                score=similarity,
+                                details={"record_id": offer.record_id},
+                            )
+                        ],
+                    )
+                    for rank, (offer, similarity) in enumerate(
+                        self._historical.search_standalone(
+                            query=query,
+                            offers=offers,
+                            limit=request.retrieval_limit,
+                        ),
+                        1,
+                    )
+                ]
+            )
+            # Compare raw channel scores across sources before fusing their ranks.
+            channels: dict[str, list[RetrievalHit]] = {}
+            for hits in [*result_sets, *(hits for _, hits in standalone)]:
+                for hit in hits:
+                    channels.setdefault(hit.retriever, []).append(hit)
+            shared_results = []
+            for hits in channels.values():
+                hits.sort(key=lambda hit: (-(hit.score or 0.0), hit.item_number))
+                ranks = {
+                    score: rank
+                    for rank, score in enumerate(
+                        sorted({hit.score or 0.0 for hit in hits}, reverse=True), 1
+                    )
+                }
+                shared_results.append(
+                    [
+                        RetrievalHit(
+                            hit.item_number,
+                            hit.retriever,
+                            ranks[hit.score or 0.0],
+                            hit.score,
+                            hit.details,
+                        )
+                        for hit in hits
+                    ]
+                )
+            # Exact/history evidence remains inspectable; both sources rank only
+            # on the shared lexical and vector channels.
+            fused = [
+                (
+                    key,
+                    sum(
+                        1 / (60 + hit.rank)
+                        for hit in hits
+                        if hit.retriever in {"lexical", "vector"}
+                    ),
+                    hits,
+                )
+                for key, _, hits in reciprocal_rank_fusion(shared_results)
+            ]
+            fused_by_key = {key: (score, hits) for key, score, hits in fused}
+
             states: list[CandidateState] = []
-            for item_number, fused_score, evidence in reciprocal_rank_fusion(result_sets):
+            for item_number, fused_score, evidence in fused:
                 item = item_by_number.get(item_number)
                 if item is None:
                     continue
@@ -152,32 +233,126 @@ class MatchingService:
                 if warning:
                     state.warnings.append(warning)
 
-            ranked = rank_candidates(states, availability)[: request.top_k]
-            candidates = tuple(
-                MatchCandidateV1(
-                    candidate_id=uuid5(
-                        NAMESPACE_URL, f"allocura:{run_id}:{state.item.item_number}"
-                    ),
-                    item_number=state.item.item_number,
-                    rank=rank,
-                    descriptions=state.item.descriptions,
-                    manufacturer=state.item.manufacturer,
-                    review_status=state.review_status,
-                    availability_status=availability[state.item.item_number],
-                    retrieval_evidence=tuple(hit.as_evidence() for hit in state.evidence),
-                    score_components={
-                        **state.score_components,
-                        "name_similarity": description_similarity(
-                            request.inquiry_line.raw_description, state.item.descriptions
+            ranked_catalog = rank_candidates(states, availability)
+            candidate_rows: list[tuple[str, MatchCandidateV1]] = []
+            for state in ranked_catalog:
+                candidate_rows.append(
+                    (
+                        state.item.item_number,
+                        MatchCandidateV1(
+                            candidate_id=uuid5(
+                                NAMESPACE_URL, f"allocura:{run_id}:{state.item.item_number}"
+                            ),
+                            item_number=state.item.item_number,
+                            rank=1,
+                            descriptions=state.item.descriptions,
+                            manufacturer=state.item.manufacturer,
+                            review_status=state.review_status,
+                            availability_status=availability[state.item.item_number],
+                            retrieval_evidence=tuple(hit.as_evidence() for hit in state.evidence),
+                            score_components={
+                                **state.score_components,
+                                "name_similarity": description_similarity(
+                                    request.inquiry_line.raw_description, state.item.descriptions
+                                ),
+                            },
+                            constraints=tuple(state.constraints),
+                            packaging=state.packaging,
+                            warnings=tuple(dict.fromkeys(state.warnings)),
+                            provenance=(
+                                state.item.source,
+                                *(
+                                    offers_by_id[record_id].source
+                                    for hit in state.evidence
+                                    if hit.retriever == "history"
+                                    for record_id in [hit.details.get("record_id")]
+                                    if isinstance(record_id, str) and record_id in offers_by_id
+                                ),
+                            ),
                         ),
-                    },
-                    constraints=tuple(state.constraints),
-                    packaging=state.packaging,
-                    warnings=tuple(dict.fromkeys(state.warnings)),
-                    provenance=(state.item.source,),
+                    )
                 )
-                for rank, state in enumerate(ranked, start=1)
-                if state.review_status is not RuleOutcome.EXCLUDE
+
+            for offer, _ in standalone:
+                fused_score, evidence = fused_by_key[f"offer:{offer.record_id}"]
+                description = offer.offered_description or offer.raw_request_text
+                candidate_rows.append(
+                    (
+                        f"offer:{offer.record_id}",
+                        MatchCandidateV1(
+                            candidate_id=uuid5(
+                                NAMESPACE_URL, f"allocura:{run_id}:offer:{offer.record_id}"
+                            ),
+                            item_number=None,
+                            candidate_type=CandidateType.HISTORICAL_OFFER,
+                            supplier=offer.supplier,
+                            price=offer.price,
+                            currency=offer.currency,
+                            price_basis=offer.price_basis,
+                            unit_price=offer.unit_price,
+                            unit_price_unit=offer.unit_price_unit,
+                            offer_valid_until=offer.valid_until,
+                            offer_date=offer.offer_date,
+                            offer_date_source=offer.metadata.get("offer_date_source"),
+                            offer_validity_source=offer.metadata.get("offer_validity_source"),
+                            rank=1,
+                            descriptions=(description,),
+                            review_status=RuleOutcome.REVIEW,
+                            availability_status=AvailabilityStatus.UNKNOWN,
+                            retrieval_evidence=tuple(hit.as_evidence() for hit in evidence),
+                            score_components={
+                                "rrf": fused_score,
+                                **{
+                                    hit.retriever: hit.score
+                                    for hit in evidence
+                                    if hit.score is not None
+                                },
+                                "name_similarity": description_similarity(
+                                    request.inquiry_line.raw_description, (description,)
+                                ),
+                            },
+                            constraints=(
+                                ConstraintResult(
+                                    code="supplier_offer_unverified",
+                                    outcome=RuleOutcome.REVIEW,
+                                    message="Supplier offer details require review; product attributes and stock are not verified.",
+                                ),
+                            ),
+                            packaging=PackagingResult(status="unknown"),
+                            warnings=(
+                                "Supplier offer availability is not confirmed.",
+                                *offer.metadata.get("warnings", []),
+                            ),
+                            provenance=(offer.source,),
+                        ),
+                    )
+                )
+
+            scores = calculate_ranking_scores(
+                [
+                    (
+                        key,
+                        candidate.review_status,
+                        candidate.availability_status,
+                        candidate.score_components,
+                    )
+                    for key, candidate in candidate_rows
+                ]
+            )
+            candidate_rows.sort(key=lambda row: (-scores[row[0]], row[0]))
+            visible_rows = candidate_rows[: request.top_k]
+            candidates = tuple(
+                candidate.model_copy(
+                    update={
+                        "rank": rank,
+                        "score_components": {
+                            **candidate.score_components,
+                            "ranking_score": scores[key],
+                            "ranking_score_normalized": 1.0,
+                        },
+                    }
+                )
+                for rank, (key, candidate) in enumerate(visible_rows, start=1)
             )
             completed_at = datetime.now(UTC)
             result = MatchRunResponseV1(

@@ -104,7 +104,7 @@ async def matching_state(session: AsyncSession, request_id: str) -> RequestMatch
                 # Reconstruct the same sort key from their saved matching evidence.
                 scores = calculate_ranking_scores([
                     (
-                        candidate.item_number,
+                        candidate.item_number or f"offer:{candidate.candidate_id}",
                         candidate.review_status,
                         candidate.availability_status,
                         candidate.score_components,
@@ -121,7 +121,7 @@ async def matching_state(session: AsyncSession, request_id: str) -> RequestMatch
                     # need their score reconstructed from their saved candidates.
                     if candidate["score_components"].get("ranking_score_normalized") != 1.0:
                         candidate["score_components"]["ranking_score"] = scores[
-                            candidate["item_number"]
+                            candidate["item_number"] or f"offer:{candidate['candidate_id']}"
                         ]
                         candidate["score_components"]["ranking_score_normalized"] = 1.0
             decision = (

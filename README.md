@@ -314,8 +314,9 @@ is connected, matching falls back to exact, lexical and historical retrieval unl
 
 ### 7. Register a SharePoint file, hand it to extraction and store the result
 
-The repository does not parse SharePoint documents. A separate read-only Microsoft Graph job must
-discover each file and send its stable drive-item ID, version and live URL to:
+The repository does not yet parse SharePoint documents. The read-only Microsoft Graph job below
+discovers each file and records its stable drive-item ID, version and live URL through the same
+service exposed at:
 
 ```text
 PUT /api/v1/sharepoint-offer-files/{graph-drive-item-id}
@@ -337,6 +338,66 @@ File metadata behavior is implemented in
 [`apps/backend/app/offers/files.py`](apps/backend/app/offers/files.py); normalized offer versioning is
 implemented in [`apps/backend/app/offers/service.py`](apps/backend/app/offers/service.py); both HTTP
 boundaries are in [`apps/backend/app/offers/api.py`](apps/backend/app/offers/api.py).
+
+### Run the SharePoint folder sync job
+
+The scheduled job now connects SharePoint discovery, Luna extraction, normalized offer storage,
+offer embeddings and Smart Matching. Its processing switch defaults to **disabled**. See the
+[operational runbook](docs/sharepoint-offer-pipeline.md) for configuration, retry procedures,
+one-document validation and the remaining production gates.
+
+Configure the Graph credentials, drive/root IDs and explicit domain-folder IDs from
+`apps/backend/.env.example`. At least one domain folder must be configured; medication can stay
+empty until uploaded. Configured domain folders must be immediate children of the permitted root.
+Partner-request example folders are excluded from offer processing. Only `.xlsx`, `.xls` and
+selectable-text `.pdf` files are eligible; `.eml`, Office temporary files and other formats are skipped.
+
+From `apps/backend`:
+
+```bash
+uv run alembic upgrade head
+uv run python -m app.jobs.sharepoint_sync inspect
+uv run python -m app.jobs.sharepoint_sync inspect --folder-id FOLDER_ID
+uv run python -m app.jobs.sharepoint_sync process-one --item-id DOCUMENT_ID --output ../../data/sharepoint-validation/one.json
+uv run python -m app.jobs.sharepoint_sync sync
+```
+
+`inspect` lists one folder's immediate children without downloading; use `--folder-id` with a
+folder ID from its output to browse deeper within the configured root. `process-one` checks a
+selected document's ancestry, extracts and persists all supplier/item alternatives, embeds only
+that file's eligible offers, and records a real matching check. Repeating unchanged completed work
+skips another download/extraction and document-embedding call. It does not advance the discovery
+cursor or reconcile other files. `--retry-failed` explicitly resets this file's failed jobs.
+The JSON report lists each direct offer-repository write and its payload. It also reports zero
+Catalog API HTTP calls, since this job uses the same database services as the API. A successfully
+extracted document with no offers exits successfully, reports `no_offers_detected: true`, and skips
+offer embedding and matching. See the runbook for Azure one-file execution and report details.
+
+`sync` runs once and exits; retain that command in the existing scheduled Azure Container Apps
+Job using the updated backend image. It commits complete discovery and durable pending work
+before processing. With `SHAREPOINT_PROCESSING_ENABLED=false`, it performs metadata discovery
+only. When enabled, the default processing limit is one document per run. Embedding failures retry
+independently and never activate/requeue the ERP catalog model. Expired quotes remain searchable
+supplier history with unconfirmed availability.
+
+Missing offer dates use SharePoint file creation, with an estimate label. Relative validity is
+calculated afterward from the resolved offer date; original validity wording, price amounts and
+price bases remain preserved. Ambiguous periods remain unresolved. Successful empty extraction
+batches count as processed, and incomplete extraction never replaces prior successful offers.
+
+The older `test` command performs recursive metadata discovery and one eligible download;
+`offer-smoke` performs one HTTP PUT with mock fields to test the public single-offer boundary.
+They are distinct from the real `process-one` pipeline, and mock offers are excluded from matching.
+For purely local experiments, see the [extraction benchmark](benchmarks/offer-extraction/README.md).
+
+The job tries `GET /v1.0/drives/{drive_id}/items/{folder_id}/delta` on its first sync. If Graph
+rejects or does not support this folder-scoped operation, it logs the endpoint, status, Graph code,
+message, and response, then uses recursive `children` listing for the configured folder. Microsoft
+currently documents `Files.Read.All` as the least privileged **application** permission for the
+[driveItem delta endpoint](https://learn.microsoft.com/en-us/graph/api/driveitem-delta?view=graph-rest-1.0);
+this job does not request it or any site-wide permission. A 403 on folder metadata, listing, or
+file content fails the run with a selected-folder permission error. This behavior lets the live
+`Files.SelectedOperations.Selected` grant determine which operations actually work.
 
 ### 8. Run and record a match
 
@@ -478,15 +539,31 @@ PUT /api/v1/offers/{same-graph-drive-item-id}
   "source_url": "https://medeor.sharepoint.com/sites/TheLabworks/.../offer.xlsx",
   "captured_at": "2026-08-19T10:10:00Z",
   "raw_request_text": "Sterile Foley catheter CH18, 50 pieces",
-  "item_number": "401234567",
+  "offered_description": "Sterile Foley catheter CH18",
   "supplier": "Example supplier",
-  "price": "12.50",
-  "currency": "EUR"
+  "currency": "EUR",
+  "unit_price": "0.42",
+  "unit_price_unit": "piece",
+  "valid_until": "2026-12-31"
 }
 ```
 
 The shared external ID connects the file catalogue with its structured result without either service
 having to infer identity from a filename.
+
+To check a supplier offer that is absent from the ERP catalog, submit it through
+`PUT /api/v1/offers/{id}` and omit `item_number`. Use the real SharePoint document URL,
+`offered_description`, and text that overlaps the requested item. The file metadata endpoint
+is optional for this manual check and does not feed matching on its own. Run matching again:
+the offer appears as a separate candidate with **Offer from SharePoint** and an **Open document**
+link. It can be selected without an ERP SKU. Its product attributes and stock need human review.
+Standalone offers currently use text retrieval, not offer embeddings. A matching offer retains one
+slot in the returned suggestions even when catalog articles fill the other slots. Optional
+`valid_until` is an ISO date (`YYYY-MM-DD`); expired offers are excluded from new matches.
+Optional `unit_price` requires `unit_price_unit` and `currency`, and is displayed as a per-unit
+quote without assuming a total order value. To revise an existing offer, send a new
+`source_version`; replaying the same version leaves the saved fields unchanged. Older saved
+match runs need a new run to include updated offer details.
 
 ### ERP import behavior
 
@@ -630,7 +707,7 @@ the backend.
 
 A cron job is simply a task triggered on a schedule. No always-running cron process is embedded in
 the web application. In Azure, a scheduled job should periodically read SharePoint through Microsoft
-Graph and register changed file metadata through the API; another scheduled or manual process can
+Graph and register changed file metadata and normalized offers using the shared database services; another scheduled or manual process can
 upload the latest ERP CSV pair. Separating scheduled work from the web container makes retries,
 credentials, and failures observable and prevents a long sync from blocking user requests.
 

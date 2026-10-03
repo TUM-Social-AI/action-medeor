@@ -8,6 +8,7 @@ where a fact came from.
 from __future__ import annotations
 
 import math
+from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Self
@@ -200,8 +201,12 @@ class HistoricalOfferV1(ContractModel):
     price: Decimal | None = Field(default=None, ge=0)
     currency: str | None = None
     price_basis: str | None = None
+    unit_price: Decimal | None = Field(default=None, ge=0)
+    unit_price_unit: str | None = None
     offer_date: AwareDatetime | None = None
+    valid_until: date | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    domain: ProductDomain | None = None
     source: SourceReferenceV1
 
 
@@ -264,8 +269,18 @@ class PackagingResult(ContractModel):
 
 class MatchCandidateV1(ContractModel):
     candidate_id: UUID
-    item_number: str
+    item_number: str | None
     candidate_type: CandidateType = CandidateType.CATALOG
+    supplier: str | None = None
+    price: Decimal | None = None
+    currency: str | None = None
+    price_basis: str | None = None
+    unit_price: Decimal | None = None
+    unit_price_unit: str | None = None
+    offer_valid_until: date | None = None
+    offer_date: AwareDatetime | None = None
+    offer_date_source: str | None = None
+    offer_validity_source: str | None = None
     rank: int = Field(ge=1)
     descriptions: tuple[str, ...]
     manufacturer: str | None = None
@@ -309,13 +324,13 @@ class MatchDecisionRequestV1(ContractModel):
 
     @model_validator(mode="after")
     def validate_selected_item(self) -> Self:
-        needs_item = self.decision_type in {
+        if self.decision_type is DecisionType.MANUAL_MATCH and not self.selected_item_number:
+            raise ValueError("selected_item_number is required for a manual product selection")
+        if self.decision_type in {
             DecisionType.ACCEPT_SUGGESTION,
             DecisionType.SELECT_ALTERNATIVE,
-            DecisionType.MANUAL_MATCH,
-        }
-        if needs_item and not self.selected_item_number:
-            raise ValueError("selected_item_number is required for a product selection")
+        } and not (self.candidate_id or self.selected_item_number):
+            raise ValueError("candidate_id or selected_item_number is required for a selection")
         return self
 
 

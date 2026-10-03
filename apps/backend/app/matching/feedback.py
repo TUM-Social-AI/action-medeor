@@ -27,8 +27,13 @@ def validate_decision_against_run(
         (
             candidate
             for candidate in run.candidates
-            if candidate.item_number == decision.selected_item_number
-            and (decision.candidate_id is None or candidate.candidate_id == decision.candidate_id)
+            if (
+                candidate.candidate_id == decision.candidate_id
+                if decision.candidate_id is not None
+                else candidate.item_number is not None
+                and candidate.item_number == decision.selected_item_number
+            )
+            and candidate.item_number == decision.selected_item_number
         ),
         None,
     )

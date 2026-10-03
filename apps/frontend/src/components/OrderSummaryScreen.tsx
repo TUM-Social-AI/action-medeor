@@ -1,12 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { AlertCircle, ArrowLeft, CheckCircle2, FileDown, Maximize2, Package, Pencil, Users, Warehouse, X } from 'lucide-react';
 import { getRequestSummary, type SavedSummary } from '../api/workflow';
 import { fetchRequestResults, saveRequestResults } from '../api/export/client';
 import { confirmPartner, updatePartner } from '../api/client';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { formatRankingScore } from '../features/matching/format-ranking-score';
+import { formatOfferPrice, getOfferStatus } from '../features/matching/offer-display';
+import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
 import { WorkflowStepper } from './WorkflowStepper';
 import { ProcessingProgress } from './ProcessingScreen';
+import { SharePointOfferSource } from './SharePointOfferSource';
 
 type Props = { requestId: string; onBack: () => Promise<void> };
 
@@ -30,6 +33,7 @@ function MetricCard({ icon, label, value, sub }: { icon: ReactNode; label: strin
 }
 
 export function OrderSummaryScreen({ requestId, onBack }: Props) {
+  useOfferDateRefresh();
   const [data, setData] = useState<SavedSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [returning, setReturning] = useState(false);
@@ -44,7 +48,6 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   const [savingPartner, setSavingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState({ partner: '', region: '', contact: '' });
   const [tableExpanded, setTableExpanded] = useState(false);
-  const [canExpandTable, setCanExpandTable] = useState(false);
   const tableExpandRef = useRef<HTMLButtonElement>(null);
   const tableCloseRef = useRef<HTMLButtonElement>(null);
   const tableRegionRef = useRef<HTMLDivElement>(null);
@@ -125,29 +128,6 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
     }
   };
 
-  useLayoutEffect(() => {
-    if (tableExpanded) return;
-    const region = tableRegionRef.current;
-    const table = region?.querySelector('table');
-    const rows = Array.from(table?.tBodies[0]?.rows ?? []).slice(0, 4);
-    if (!region || !table || rows.length < 4) {
-      setCanExpandTable(false);
-      return;
-    }
-
-    const measureVisibleRows = () => {
-      const headerHeight = table.tHead?.getBoundingClientRect().height ?? 0;
-      const fourRowsHeight = rows.reduce((height, row) => height + row.getBoundingClientRect().height, 0);
-      setCanExpandTable(region.clientHeight - headerHeight + 1 < fourRowsHeight);
-    };
-    measureVisibleRows();
-    const observer = new ResizeObserver(measureVisibleRows);
-    observer.observe(region);
-    if (table.tHead) observer.observe(table.tHead);
-    rows.forEach(row => observer.observe(row));
-    return () => observer.disconnect();
-  }, [data?.items, tableExpanded]);
-
   useEffect(() => {
     if (!tableExpanded) return;
     tableCloseRef.current?.focus();
@@ -212,7 +192,14 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   if (!data && !error) return <div className="p-6"><LoadingPanel label="Loading saved summary" /></div>;
   if (!data) return <div className="p-6"><ErrorPanel message={error ?? 'Summary unavailable'} /></div>;
 
-  const availabilityConfirmed = data.items.filter(item => item.availability === 'on_hand_sufficient').length;
+  const availabilityConfirmed = data.items.filter(item => item.candidateType !== 'historical_offer' && item.availability === 'on_hand_sufficient').length;
+  const supplierOffers = data.items.filter(item => item.candidateType === 'historical_offer');
+  const offersWithoutPrice = supplierOffers.filter(item => item.unitPrice == null && item.price == null).length;
+  const expiredOffers = supplierOffers.filter(item => getOfferStatus({ offer_valid_until: item.offerValidUntil }).expired).length;
+  const oldOffers = supplierOffers.filter(item => {
+    const status = getOfferStatus({ offer_valid_until: item.offerValidUntil, offer_date: item.offerDate });
+    return status.muted && !status.expired;
+  }).length;
   return <div className="px-6 py-4 max-w-7xl mx-auto min-w-0">
     <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 mb-5"><WorkflowStepper currentStep="summary" /></div>
     {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
@@ -271,8 +258,8 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
     </div>}
 
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-      <MetricCard icon={<Package size={18} />} label="Total line items" value={String(data.items.length)} sub="From the uploaded request" />
-      <MetricCard icon={<CheckCircle2 size={18} />} label="Selected articles" value={String(data.matchedCount)} sub="Saved catalog decisions" />
+      <MetricCard icon={<Package size={18} />} label="Total line items" value={String(data.items.length)} sub={supplierOffers.length ? `${data.items.length - supplierOffers.length} other lines · ${supplierOffers.length} supplier offers` : 'From the uploaded request'} />
+      <MetricCard icon={<CheckCircle2 size={18} />} label="Selected matches" value={String(data.matchedCount)} sub="Saved article and offer decisions" />
       <MetricCard icon={<AlertCircle size={18} />} label="Unmatched lines" value={String(data.unmatchedCount)} sub="Explicitly marked unmatched" />
       <MetricCard icon={<Warehouse size={18} />} label="Stock confirmed" value={String(availabilityConfirmed)} sub="Availability sufficient for request" />
     </div>
@@ -285,31 +272,52 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
             <div id="summary-table-title" className="text-sm text-gray-900 font-bold truncate">Matched Items · {data.sourceFile}</div>
             <div className="flex flex-shrink-0 items-center gap-3">
               <div className="hidden sm:block text-xs text-gray-400 whitespace-nowrap">Request ID: {data.requestId}</div>
-              {tableExpanded ? <button ref={tableCloseRef} type="button" onClick={closeTable} aria-label="Close expanded table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><X size={14} /> Close</button> : canExpandTable && <button ref={tableExpandRef} type="button" onClick={() => setTableExpanded(true)} aria-label="Expand matched items table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Maximize2 size={14} /> Expand</button>}
+              {tableExpanded ? <button ref={tableCloseRef} type="button" onClick={closeTable} aria-label="Close expanded table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><X size={14} /> Close</button> : <button ref={tableExpandRef} type="button" onClick={() => setTableExpanded(true)} aria-label="Expand matched items table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Maximize2 size={14} /> Expand</button>}
             </div>
           </div>
           <div ref={tableRegionRef} role="region" aria-label="Matched items table" tabIndex={0} className={'max-w-full overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A] ' + (tableExpanded ? 'min-h-0 flex-1' : 'max-h-[max(14rem,calc(100dvh-28rem))]')}>
-            <table className="w-full min-w-[940px] text-sm text-gray-700">
+            <table className="w-full min-w-[1120px] text-sm text-gray-700">
               <thead className="sticky top-0 z-10 bg-gray-50"><tr className="border-b border-gray-200">
-                {['#', 'Requested Item', 'ERP Product', 'SKU', 'Qty', 'Ranking Score', 'Availability'].map(label => <th key={label} className="px-4 py-3 text-xs text-gray-500 text-left uppercase tracking-wide font-semibold whitespace-nowrap">{label}</th>)}
+                {['#', 'Requested Item', 'Matched Product', 'ERP SKU / Offer', 'Qty', 'Ranking Score', 'Availability', 'Offer price'].map(label => <th key={label} className="px-4 py-3 text-xs text-gray-500 text-left uppercase tracking-wide font-semibold whitespace-nowrap">{label}</th>)}
               </tr></thead>
-              <tbody>{data.items.map((item, index) => <tr key={item.itemId} className={'border-b border-gray-100 hover:bg-gray-50/60 ' + (!item.itemNumber ? 'bg-amber-50/40' : '')}>
-                <td className="px-4 py-2.5 text-gray-500 tabular-nums">{index + 1}</td>
-                <td className="px-4 py-2.5 text-gray-800">{item.requested}</td>
-                <td className="px-4 py-2.5 text-gray-900 font-medium">{item.product || <span className="text-amber-700">Marked unmatched</span>}</td>
-                <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{item.itemNumber || '—'}</td>
-                <td className="px-4 py-2.5 text-gray-900 whitespace-nowrap tabular-nums">{item.quantity?.toLocaleString() ?? '—'} <span className="text-gray-500">{item.unit}</span></td>
-                <td className="px-4 py-2.5 font-semibold text-gray-700 whitespace-nowrap tabular-nums">{typeof item.rankingScore === 'number' ? formatRankingScore(item.rankingScore) + '/100' : '—'}</td>
-                <td className="px-4 py-2.5 text-gray-700">{item.availability?.replace(/_/g, ' ') ?? '—'}</td>
-              </tr>)}</tbody>
+              <tbody>{data.items.map((item, index) => {
+                const isOffer = item.candidateType === 'historical_offer';
+                const offerStatus = isOffer ? getOfferStatus({ offer_valid_until: item.offerValidUntil, offer_date: item.offerDate }) : null;
+                return <tr key={item.itemId} className={'border-b transition-colors ' + (isOffer
+                  ? offerStatus?.muted ? 'border-rose-200 bg-rose-50 hover:bg-rose-100/70' : 'border-violet-100 bg-violet-50/50 hover:bg-violet-50'
+                  : item.decision === 'no_match' ? 'border-gray-100 bg-amber-50/40 hover:bg-amber-50/60'
+                    : 'border-gray-100 hover:bg-gray-50/60')}>
+                  <td className={'border-l-[3px] px-4 py-3 text-gray-500 tabular-nums ' + (offerStatus?.muted ? 'border-l-rose-500' : isOffer ? 'border-l-violet-500' : 'border-l-transparent')}>{index + 1}{offerStatus?.muted && <span className="sr-only">, {offerStatus.expired ? 'expired' : 'six months or older'} supplier offer</span>}</td>
+                  <td className="px-4 py-3 text-gray-800">{item.requested}</td>
+                  <td className="px-4 py-3 text-gray-900">
+                    <div className="font-semibold">{item.product || <span className="text-amber-700">Marked unmatched</span>}</div>
+                    {isOffer ? <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-violet-700">
+                      {item.supplier && <span>{item.supplier}</span>}
+                    </div> : <SharePointOfferSource provenance={item.provenance ?? []} candidateType={item.candidateType} className="mt-1" />}
+                  </td>
+                  <td className="max-w-[180px] px-4 py-3">
+                    {isOffer ? <SharePointOfferSource provenance={item.provenance ?? []} candidateType={item.candidateType} variant="compact" />
+                      : <span className="font-mono text-xs text-gray-600">{item.itemNumber || '—'}</span>}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-gray-900 tabular-nums">{item.quantity?.toLocaleString() ?? '—'} <span className="text-gray-500">{item.unit}</span></td>
+                  <td className="whitespace-nowrap px-4 py-3 font-semibold text-gray-700 tabular-nums">{typeof item.rankingScore === 'number' ? formatRankingScore(item.rankingScore) + '/100' : '—'}</td>
+                  <td className="px-4 py-3">{isOffer ? <span className="text-gray-400">—</span>
+                    : <span className="text-gray-700">{item.availability?.replace(/_/g, ' ') ?? '—'}</span>}</td>
+                  <td className="px-4 py-3 text-xs">{isOffer ? <span><span className={offerStatus?.muted ? 'text-gray-400 line-through' : item.unitPrice == null && item.price == null ? 'italic text-gray-400' : 'font-semibold text-violet-800'}>{formatOfferPrice(item.price, item.currency, item.priceBasis, item.unitPrice, item.unitPriceUnit)}</span><span className="text-gray-400"> · </span><span className={offerStatus?.warning ? 'font-semibold text-red-700' : 'text-gray-700'}>{offerStatus?.label}</span></span> : <span className="text-gray-400">—</span>}</td>
+                </tr>;
+              })}</tbody>
             </table>
           </div>
           </div>
         </div>
-        <p className="text-xs text-gray-500 mt-3">Ranking scores come from the matching evidence used to sort candidates. The best option for each item scores 100; compare scores only within the same requested item. Pricing and offer generation are not available yet.</p>
+        <p className="text-xs text-gray-500 mt-3">Ranking scores come from the matching evidence used to sort candidates. The best option for each item scores 100; compare scores only within the same requested item. Offer prices are shown when they are recorded; quote generation is not available yet.</p>
       </div>
 
       <aside className="w-full lg:w-64 flex-shrink-0">
+        {supplierOffers.length > 0 && <div className="mb-4 flex items-start gap-2 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs leading-snug text-violet-900">
+          <AlertCircle size={16} className="mt-0.5 shrink-0 text-violet-600" />
+          <p><span className="font-bold">{supplierOffers.length} supplier {supplierOffers.length === 1 ? 'offer' : 'offers'} selected.</span>{expiredOffers > 0 && ` ${expiredOffers} expired.`}{oldOffers > 0 && ` ${oldOffers} at least six months old without an expiry date.`} Check terms with the supplier before ordering.{offersWithoutPrice > 0 && ` ${offersWithoutPrice} without a recorded price.`}</p>
+        </div>}
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <div className="flex items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2"><Users size={15} className="text-gray-400" /><h2 className="text-sm text-gray-900 font-semibold">Partner & Request Details</h2></div>

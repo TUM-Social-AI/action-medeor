@@ -15,6 +15,7 @@ from app.db.models import RequestItemRow
 from app.matching.api import get_matching_service
 from app.matching.contracts import (
     AvailabilityStatus,
+    CandidateType,
     DecisionType,
     MatchCandidateV1,
     MatchDecisionRequestV1,
@@ -65,6 +66,8 @@ def automatic_candidate(
     best = candidates[0]
     if (
         best.rank != 1
+        or best.candidate_type is not CandidateType.CATALOG
+        or best.item_number is None
         or best.review_status is not RuleOutcome.PASS
         or best.availability_status is AvailabilityStatus.NOT_ALLOWED
     ):

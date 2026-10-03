@@ -12,12 +12,21 @@ from app.catalog.contracts import (
     CatalogImportResponseV1,
     CatalogImportValidationError,
     CatalogItemViewV1,
+    CatalogueArticleV1,
 )
+from app.catalog.listing import list_catalogue_articles
 from app.catalog.service import CatalogImportService
 from app.db.session import get_session
 
 router = APIRouter(prefix="/api/v1", tags=["catalog"])
 MAX_CSV_BYTES = 25 * 1024 * 1024
+
+
+@router.get("/catalogue/articles", response_model=list[CatalogueArticleV1])
+async def get_catalogue_articles(
+    session: AsyncSession = Depends(get_session),
+) -> list[CatalogueArticleV1]:
+    return await list_catalogue_articles(session)
 
 
 def get_catalog_import_service(

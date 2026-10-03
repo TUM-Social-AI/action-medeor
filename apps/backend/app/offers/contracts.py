@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
 
 from app.matching.contracts import ProductPackage, QuantityValue
 
@@ -38,10 +46,21 @@ class NormalizedOfferUpsertV1(OfferContract):
     price: Decimal | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, max_length=10)
     price_basis: str | None = None
+    unit_price: Decimal | None = Field(default=None, ge=0)
+    unit_price_unit: str | None = Field(default=None, min_length=1, max_length=100)
     offer_date: AwareDatetime | None = None
+    valid_until: date | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
 
     _sharepoint_source = field_validator("source_url")(_validated_sharepoint_url)
+
+    @model_validator(mode="after")
+    def validate_unit_price(self) -> "NormalizedOfferUpsertV1":
+        if self.unit_price is not None and (not self.unit_price_unit or not self.currency):
+            raise ValueError("unit_price requires unit_price_unit and currency")
+        if self.unit_price is None and self.unit_price_unit is not None:
+            raise ValueError("unit_price_unit requires unit_price")
+        return self
 
 
 class OfferArchiveRequestV1(OfferContract):
@@ -102,7 +121,10 @@ class OfferRecordV1(OfferContract):
     price: Decimal | None = None
     currency: str | None = None
     price_basis: str | None = None
+    unit_price: Decimal | None = None
+    unit_price_unit: str | None = None
     offer_date: datetime | None = None
+    valid_until: date | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
     archived_at: datetime | None = None
     updated_at: datetime

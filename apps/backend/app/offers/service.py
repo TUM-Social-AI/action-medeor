@@ -60,7 +60,10 @@ class OfferRepositoryService:
             price=row["price"],
             currency=row["currency"],
             price_basis=row["price_basis"],
+            unit_price=row["unit_price"],
+            unit_price_unit=row["unit_price_unit"],
             offer_date=row["offer_date"],
+            valid_until=row["valid_until"],
             metadata=row["metadata_json"] or {},
             archived_at=row["archived_at"],
             updated_at=row["updated_at"],
@@ -75,7 +78,9 @@ class OfferRepositoryService:
         source_url: str,
         captured_at: datetime,
         metadata: dict[str, object],
+        document_id: str | None = None,
     ) -> UUID:
+        document_id = document_id or external_id
         existing = await self._session.scalar(
             text(
                 """
@@ -84,7 +89,7 @@ class OfferRepositoryService:
                   AND checksum = :source_version
                 """
             ),
-            {"external_id": external_id, "source_version": source_version},
+            {"external_id": document_id, "source_version": source_version},
         )
         if existing:
             return existing
@@ -103,7 +108,7 @@ class OfferRepositoryService:
             ),
             {
                 "id": snapshot_id,
-                "external_id": external_id,
+                "external_id": document_id,
                 "source_url": source_url,
                 "source_version": source_version,
                 "captured_at": captured_at,
@@ -113,16 +118,18 @@ class OfferRepositoryService:
         return snapshot_id
 
     async def upsert(
-        self, external_id: str, payload: NormalizedOfferUpsertV1
+        self,
+        external_id: str,
+        payload: NormalizedOfferUpsertV1,
+        *,
+        commit: bool = True,
+        source_document_id: str | None = None,
     ) -> OfferRecordV1:
         await self._lock(external_id)
         current = await self._current(external_id)
-        if (
-            current
-            and current["external_version"] == payload.source_version
-            and current["active"]
-        ):
-            await self._session.rollback()
+        if current and current["external_version"] == payload.source_version and current["active"]:
+            if commit:
+                await self._session.rollback()
             return self._record(current, replay=True)
 
         try:
@@ -132,6 +139,7 @@ class OfferRepositoryService:
                 source_url=str(payload.source_url),
                 captured_at=payload.captured_at,
                 metadata=payload.metadata,
+                document_id=source_document_id,
             )
             reported_item_number = payload.item_number
             item_number = None
@@ -145,9 +153,7 @@ class OfferRepositoryService:
                 metadata["reported_item_number"] = reported_item_number
             if current:
                 await self._session.execute(
-                    text(
-                        "UPDATE historical_offers SET is_current = FALSE WHERE id = :current_id"
-                    ),
+                    text("UPDATE historical_offers SET is_current = FALSE WHERE id = :current_id"),
                     {"current_id": current["id"]},
                 )
             offer_id = uuid4()
@@ -159,14 +165,16 @@ class OfferRepositoryService:
                         id, source_snapshot_id, external_id, external_version,
                         is_current, active, raw_request_text, item_number,
                         offered_description, partner_id, destination_country, supplier,
-                        quantity, package, price, currency, price_basis, offer_date,
-                        metadata_json, created_at, updated_at
+                        quantity, package, price, currency, price_basis, unit_price,
+                        unit_price_unit, offer_date, valid_until, metadata_json,
+                        created_at, updated_at
                     ) VALUES (
                         :id, :source_id, :external_id, :external_version, TRUE, TRUE,
                         :raw_request_text, :item_number, :offered_description, :partner_id,
                         :destination_country, :supplier, CAST(:quantity AS jsonb),
-                        CAST(:package AS jsonb), :price, :currency, :price_basis, :offer_date,
-                        CAST(:metadata AS jsonb), :created_at, :updated_at
+                        CAST(:package AS jsonb), :price, :currency, :price_basis, :unit_price,
+                        :unit_price_unit, :offer_date, :valid_until, CAST(:metadata AS jsonb),
+                        :created_at, :updated_at
                     )
                     """
                 ),
@@ -190,18 +198,23 @@ class OfferRepositoryService:
                     "price": payload.price,
                     "currency": payload.currency,
                     "price_basis": payload.price_basis,
+                    "unit_price": payload.unit_price,
+                    "unit_price_unit": payload.unit_price_unit,
                     "offer_date": payload.offer_date,
+                    "valid_until": payload.valid_until,
                     "metadata": _json(metadata),
                     "created_at": updated_at,
                     "updated_at": updated_at,
                 },
             )
-            await self._session.commit()
+            if commit:
+                await self._session.commit()
             row = await self._current(external_id)
             assert row is not None
             return self._record(row)
         except Exception:
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             raise
 
     async def archive(
@@ -210,13 +223,15 @@ class OfferRepositoryService:
         *,
         source_version: str | None = None,
         archived_at: datetime | None = None,
+        commit: bool = True,
     ) -> OfferRecordV1:
         await self._lock(external_id)
         current = await self._current(external_id)
         if current is None:
             raise LookupError("Offer not found")
         if not current["active"]:
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             return self._record(current, replay=True)
         archived_at = archived_at or datetime.now(UTC)
         archive_version = source_version or f"archive:{archived_at.isoformat()}"
@@ -240,13 +255,15 @@ class OfferRepositoryService:
                         id, source_snapshot_id, external_id, external_version, is_current,
                         active, archived_at, raw_request_text, item_number, offered_description,
                         partner_id, destination_country, supplier, quantity, package, price,
-                        currency, price_basis, offer_date, metadata_json, created_at, updated_at
+                        currency, price_basis, unit_price, unit_price_unit, offer_date,
+                        valid_until, metadata_json, created_at, updated_at
                     ) VALUES (
                         :new_id, :source_id, :external_id, :external_version, TRUE,
                         FALSE, :archived_at, :raw_request_text, :item_number,
                         :offered_description, :partner_id, :destination_country, :supplier,
                         CAST(:quantity AS jsonb), CAST(:package AS jsonb), :price, :currency,
-                        :price_basis, :offer_date, CAST(:metadata AS jsonb), :created_at, :updated_at
+                        :price_basis, :unit_price, :unit_price_unit, :offer_date,
+                        :valid_until, CAST(:metadata AS jsonb), :created_at, :updated_at
                     )
                     """
                 ),
@@ -267,21 +284,28 @@ class OfferRepositoryService:
                     "price": current["price"],
                     "currency": current["currency"],
                     "price_basis": current["price_basis"],
+                    "unit_price": current["unit_price"],
+                    "unit_price_unit": current["unit_price_unit"],
                     "offer_date": current["offer_date"],
+                    "valid_until": current["valid_until"],
                     "metadata": _json(current["metadata_json"] or {}),
                     "created_at": archived_at,
                     "updated_at": archived_at,
                 },
             )
-            await self._session.commit()
+            if commit:
+                await self._session.commit()
             row = await self._current(external_id)
             assert row is not None
             return self._record(row)
         except Exception:
-            await self._session.rollback()
+            if commit:
+                await self._session.rollback()
             raise
 
-    async def list_current(self, *, active_only: bool = True, limit: int = 200) -> list[OfferRecordV1]:
+    async def list_current(
+        self, *, active_only: bool = True, limit: int = 200
+    ) -> list[OfferRecordV1]:
         result = await self._session.execute(
             text(
                 """

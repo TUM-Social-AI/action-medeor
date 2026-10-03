@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -12,6 +12,7 @@ from app.catalog.contracts import CatalogImportResponseV1, CatalogImportStatus
 from app.main import app
 from app.offers.api import get_offer_file_service, get_offer_service
 from app.offers.contracts import (
+    NormalizedOfferUpsertV1,
     OfferRecordV1,
     SharePointOfferFileRecordV1,
     SharePointOfferFileUpsertV1,
@@ -28,6 +29,25 @@ def test_sharepoint_file_contract_rejects_non_sharepoint_links() -> None:
             name="offer.xlsx",
             captured_at=NOW,
         )
+
+
+def test_offer_contract_accepts_validity_and_explicit_unit_price() -> None:
+    payload = NormalizedOfferUpsertV1(
+        source_version="etag-price-1",
+        source_url="https://medeor.sharepoint.com/sites/TheLabworks/offer.pdf",
+        captured_at=NOW,
+        raw_request_text="ECOJECT Spritze 2 ml",
+        currency="EUR",
+        unit_price=Decimal("0.42"),
+        unit_price_unit="piece",
+        valid_until=date(2026, 12, 31),
+    )
+    assert payload.item_number is None
+    assert payload.unit_price == Decimal("0.42")
+    assert payload.valid_until == date(2026, 12, 31)
+
+    with pytest.raises(ValidationError, match="unit_price requires"):
+        NormalizedOfferUpsertV1.model_validate({**payload.model_dump(), "unit_price_unit": None})
 
 
 class FakeCatalogService:

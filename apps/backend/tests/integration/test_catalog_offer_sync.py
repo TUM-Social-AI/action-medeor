@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -9,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.catalog.service import CatalogImportService
+from app.matching.adapters.persistence import PostgresHistoryRepository
 from app.offers.contracts import NormalizedOfferUpsertV1, SharePointOfferFileUpsertV1
 from app.offers.files import SharePointOfferFileService
 from app.offers.service import OfferRepositoryService
@@ -245,6 +247,10 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
             captured_at=captured_at,
             raw_request_text="Foley catheter CH18",
             item_number=item_one,
+            currency="EUR",
+            unit_price=Decimal("0.42"),
+            unit_price_unit="piece",
+            valid_until=date(2026, 12, 31),
         )
         file_payload = SharePointOfferFileUpsertV1(
             source_version=long_source_version,
@@ -268,6 +274,9 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
             inserted = await offers.upsert(offer_external_id, offer_payload)
             replayed = await offers.upsert(offer_external_id, offer_payload)
             assert inserted.active is True
+            assert inserted.unit_price == Decimal("0.42")
+            assert inserted.unit_price_unit == "piece"
+            assert inserted.valid_until == date(2026, 12, 31)
             assert replayed.idempotent_replay is True
 
         async with sessions() as session:
@@ -284,6 +293,8 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
                 offer_external_id, source_version="etag-2"
             )
             assert archived.active is False
+            assert archived.unit_price == Decimal("0.42")
+            assert archived.valid_until == date(2026, 12, 31)
 
         async with sessions() as session:
             files = SharePointOfferFileService(session)
@@ -348,6 +359,70 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
                     """
                 ),
                 {"marker": f"{source_marker}%", "offer_id": offer_external_id},
+            )
+            await session.commit()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid_until", [date(2026, 12, 31), date(2020, 1, 1), None])
+async def test_standalone_offer_validity_and_unit_price_round_trip(valid_until: date | None) -> None:
+    database_url = os.getenv("MATCHING_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("MATCHING_TEST_DATABASE_URL is not configured")
+
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    external_id = f"test-standalone-offer-{uuid4().hex[:12]}"
+    payload = NormalizedOfferUpsertV1(
+        source_version="price-v1",
+        source_url=f"https://medeor.sharepoint.com/sites/TheLabworks/{external_id}.pdf",
+        captured_at=datetime.now(UTC),
+        raw_request_text="ECOJECT Spritze 2 ml",
+        offered_description="ECOJECT Spritze 2 ml, Luer",
+        supplier="Test supplier",
+        currency="EUR",
+        unit_price=Decimal("0.42"),
+        unit_price_unit="piece",
+        valid_until=valid_until,
+        offer_date=datetime(2019, 12, 1, tzinfo=UTC),
+    )
+    try:
+        async with sessions() as session:
+            service = OfferRepositoryService(session)
+            inserted = await service.upsert(external_id, payload)
+            replayed = await service.upsert(external_id, payload)
+            assert inserted.item_number is None
+            assert inserted.unit_price == Decimal("0.42")
+            assert inserted.unit_price_unit == "piece"
+            assert inserted.valid_until == valid_until
+            assert replayed.idempotent_replay is True
+            assert replayed.offer_id == inserted.offer_id
+
+        async with sessions() as session:
+            offers = await PostgresHistoryRepository(session).list_offers(
+                partner_id=None, destination_country=None, limit=1000
+            )
+            stored = next(offer for offer in offers if offer.source.document_id == external_id)
+            assert stored.item_number is None
+            assert stored.unit_price == Decimal("0.42")
+            assert stored.valid_until == valid_until
+            assert stored.offer_date == datetime(2019, 12, 1, tzinfo=UTC)
+
+        async with sessions() as session:
+            archived = await OfferRepositoryService(session).archive(external_id)
+            assert archived.active is False
+            assert archived.unit_price == Decimal("0.42")
+            assert archived.valid_until == valid_until
+    finally:
+        async with sessions() as session:
+            await session.execute(
+                text("DELETE FROM historical_offers WHERE external_id = :external_id"),
+                {"external_id": external_id},
+            )
+            await session.execute(
+                text("DELETE FROM source_snapshots WHERE source_type = 'sharepoint' AND document_id = :external_id"),
+                {"external_id": external_id},
             )
             await session.commit()
         await engine.dispose()

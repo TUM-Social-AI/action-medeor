@@ -42,7 +42,7 @@ def test_workbook_contains_source_fields_and_all_saved_decisions() -> None:
     headers = {cell.value: cell.column for cell in sheet[1]}
     assert sheet.max_row == 3
     assert sheet.freeze_panes == "E2"
-    assert sheet.auto_filter.ref == "A1:P3"
+    assert sheet.auto_filter.ref == "A1:R3"
     assert sheet.cell(2, headers["Requested item number"]).value == "AM500-001"
     assert sheet.cell(2, headers["Desired shelf life"]).value == "24 months"
     assert sheet.cell(2, headers["ERP SKU"]).value == "AM500-CAP-500"
@@ -57,3 +57,28 @@ def test_workbook_contains_source_fields_and_all_saved_decisions() -> None:
     assert details["Contact"] == "'=DANGEROUS()"
     assert details["Unmatched lines"] == 1
     assert results_filename("IMP/123") == "matched-results-IMP-123.xlsx"
+
+
+def test_workbook_links_selected_supplier_offer_without_erp_sku() -> None:
+    url = "https://medeor.sharepoint.com/sites/test/offer.pdf"
+    summary = {
+        "requestId": "IMP-124", "sourceFile": "request.xlsx", "status": "complete",
+        "partner": "", "region": "", "contact": "", "requestDate": None,
+        "matchedCount": 1, "unmatchedCount": 0,
+        "items": [{
+            "itemId": 1, "requested": "Foley catheter CH18", "quantity": 50,
+            "unit": "piece", "domain": "equipment", "decision": "accept_suggestion",
+            "product": "Foley catheter CH18", "itemNumber": None,
+            "candidateType": "historical_offer", "rankingScore": 100,
+            "availability": "unknown", "warnings": [], "retrievalMethods": ["sharepoint_offer"],
+            "provenance": [{"source_type": "sharepoint", "uri": url}],
+        }],
+    }
+    workbook = load_workbook(BytesIO(build_matched_results_workbook(summary)))
+    sheet = workbook["Matched results"]
+    headers = {cell.value: cell.column for cell in sheet[1]}
+    assert sheet.cell(2, headers["ERP SKU"]).value is None
+    assert sheet.cell(2, headers["Match source"]).value == "SharePoint offer"
+    link = sheet.cell(2, headers["SharePoint document"])
+    assert link.value == url
+    assert link.hyperlink.target == url

@@ -7,7 +7,7 @@ import json
 import re
 import unicodedata
 
-from app.matching.contracts import AttributeValue, InquiryLineV1, InventoryItemV1
+from app.matching.contracts import AttributeValue, HistoricalOfferV1, InquiryLineV1, InventoryItemV1
 from app.matching.domain import SearchRepresentation
 
 TOKEN_PATTERN = re.compile(r"[\wµ%./+-]+", flags=re.UNICODE)
@@ -55,6 +55,10 @@ def represent_inventory_item(item: InventoryItemV1) -> SearchRepresentation:
         [*item.descriptions, item.manufacturer or "", item.brand or ""],
         item.attributes,
     )
+
+
+def represent_offer(offer: HistoricalOfferV1) -> SearchRepresentation:
+    return _build([offer.offered_description or offer.raw_request_text], {})
 
 
 def stable_json_hash(value: object) -> str:

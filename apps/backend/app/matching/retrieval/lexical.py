@@ -7,14 +7,21 @@ from difflib import SequenceMatcher
 
 from app.matching.contracts import InventoryItemV1
 from app.matching.domain import RetrievalHit, SearchRepresentation
-from app.matching.representation import represent_inventory_item
+from app.matching.representation import normalize_text, represent_inventory_item
 
 
 def lexical_similarity(query: SearchRepresentation, candidate: SearchRepresentation) -> float:
-    if not query.canonical_text or not candidate.canonical_text:
+    if (
+        not query.canonical_text
+        or not candidate.canonical_text
+        or not query.tokens & candidate.tokens
+    ):
         return 0.0
     character_score = SequenceMatcher(
-        None, query.canonical_text, candidate.canonical_text, autojunk=False
+        None,
+        normalize_text(query.canonical_text),
+        normalize_text(candidate.canonical_text),
+        autojunk=False,
     ).ratio()
     union = query.tokens | candidate.tokens
     token_score = len(query.tokens & candidate.tokens) / len(union) if union else 0.0

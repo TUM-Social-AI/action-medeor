@@ -28,6 +28,30 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 32
     azure_foundry_endpoint: str = ""
     azure_foundry_api_key: str = ""
+    sharepoint_tenant_id: str = ""
+    sharepoint_client_id: str = ""
+    sharepoint_client_secret: str = ""
+    sharepoint_drive_id: str = ""
+    sharepoint_root_folder_id: str = ""
+    sharepoint_medication_folder_id: str = ""
+    sharepoint_equipment_folder_id: str = ""
+    sharepoint_processing_enabled: bool = False
+    sharepoint_max_documents_per_run: int = 1
+    sharepoint_max_document_bytes: int = 20_000_000
+    sharepoint_max_extraction_chunks: int = 32
+    sharepoint_document_timeout_seconds: int = 600
+    sharepoint_max_attempts: int = 3
+
+    @field_validator(
+        "sharepoint_max_documents_per_run", "sharepoint_max_document_bytes",
+        "sharepoint_max_extraction_chunks", "sharepoint_document_timeout_seconds",
+        "sharepoint_max_attempts",
+    )
+    @classmethod
+    def positive_sharepoint_limits(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("SharePoint processing limits must be positive")
+        return value
 
     # Fallback extractor for documents whose layout isn't a clean, heuristically-parseable table
     # (free-form PDF pages, Word documents). Left unset in most environments; extraction

@@ -6,7 +6,8 @@ from collections.abc import Sequence
 
 from app.matching.contracts import HistoricalOfferV1
 from app.matching.domain import RetrievalHit, SearchRepresentation
-from app.matching.representation import normalize_text, tokenize
+from app.matching.representation import normalize_text, represent_offer, tokenize
+from app.matching.retrieval.lexical import lexical_similarity
 
 
 def _history_score(query: SearchRepresentation, offer: HistoricalOfferV1) -> float:
@@ -17,6 +18,24 @@ def _history_score(query: SearchRepresentation, offer: HistoricalOfferV1) -> flo
 
 class HistoryRetriever:
     name = "history"
+
+    def search_standalone(
+        self,
+        *,
+        query: SearchRepresentation,
+        offers: Sequence[HistoricalOfferV1],
+        limit: int,
+    ) -> list[tuple[HistoricalOfferV1, float]]:
+        """Find supplier offers that have no corresponding ERP article."""
+        matches: list[tuple[HistoricalOfferV1, float]] = []
+        for offer in offers:
+            if offer.item_number:
+                continue
+            score = lexical_similarity(query, represent_offer(offer))
+            if score > 0:
+                matches.append((offer, score))
+        matches.sort(key=lambda value: (-value[1], value[0].record_id))
+        return matches[:limit]
 
     def search(
         self,

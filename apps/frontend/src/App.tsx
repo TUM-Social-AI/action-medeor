@@ -20,6 +20,7 @@ import { ProcessingScreen } from './components/ProcessingScreen';
 import { ReviewItemsScreen } from './components/ReviewItemsScreen';
 import { SmartMatchingScreen } from './components/SmartMatchingScreen';
 import { TrendDashboard } from './components/TrendDashboard';
+import { CatalogueScreen } from './components/CatalogueScreen';
 
 function screenFor(request: SavedRequest): Screen {
   if (request.status === 'draft') return 'ingestion';
@@ -29,7 +30,7 @@ function screenFor(request: SavedRequest): Screen {
 }
 
 const WORKFLOW_SCREENS: Screen[] = ['ingestion', 'review', 'matching', 'summary'];
-const GENERAL_SCREENS: Screen[] = ['home', 'history', 'dashboard', 'settings', 'help'];
+const GENERAL_SCREENS: Screen[] = ['home', 'history', 'dashboard', 'catalogue', 'settings', 'help'];
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
@@ -187,6 +188,7 @@ export default function App() {
       {currentScreen === 'settings' && <SettingsScreen />}
       {currentScreen === 'help' && <HelpScreen onViewHistory={() => navigate('history')} />}
       {currentScreen === 'dashboard' && <TrendDashboard />}
+      {currentScreen === 'catalogue' && <CatalogueScreen />}
       {currentScreen === 'ingestion' && <IngestionScreen
         onContinue={file => void handleImport(file)} error={workflowError} onOpenRequest={openRequest}
       />}

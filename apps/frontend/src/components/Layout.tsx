@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import {
   ChevronRight,
   Clock,
+  Database,
   FileText,
   HelpCircle,
   Home,
@@ -26,6 +27,7 @@ const SCREEN_LABELS: Record<Screen, string> = {
   home: 'Home',
   history: 'Request History',
   dashboard: 'Trend Dashboard',
+  catalogue: 'Article Catalogue',
   ingestion: 'Import Request',
   review: 'Review Items',
   matching: 'Smart Matching',
@@ -162,6 +164,7 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
           />
 
           <NavGroup label="Management" collapsed={!sidebarExpanded} />
+          <NavItem icon={<Database size={15} />} label="Article Catalogue" active={currentScreen === 'catalogue'} collapsed={!sidebarExpanded} onClick={() => navigate('catalogue')} />
           <NavItem icon={<Clock size={15} />} label="Request History" active={currentScreen === 'history'} collapsed={!sidebarExpanded} onClick={() => navigate('history')} />
           <NavItem icon={<Settings size={15} />} label="Settings" active={currentScreen === 'settings'} collapsed={!sidebarExpanded} onClick={() => navigate('settings')} />
           <NavItem icon={<HelpCircle size={15} />} label="Help & Support" active={currentScreen === 'help'} collapsed={!sidebarExpanded} onClick={() => navigate('help')} />
@@ -303,4 +306,3 @@ function NavItem({
     </button>
   );
 }
-

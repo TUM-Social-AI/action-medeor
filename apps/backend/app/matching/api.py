@@ -37,6 +37,7 @@ def get_matching_service(session: AsyncSession = Depends(get_session)) -> Matchi
         run_repository=PostgresMatchRunRepository(session),
         vector_repository=PgVectorRepository(session),
         embedding_provider=embedding_provider,
+        offer_search_repository=PostgresHistoryRepository(session),
         policy=load_default_policy(),
     )
 
