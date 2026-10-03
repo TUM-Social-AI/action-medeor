@@ -111,6 +111,10 @@ async def test_single_document_pipeline_replay_versions_failures_and_matching(mo
     try:
         first = await job.process_one(graph, root, file_id, settings, extractor=extractor)
         assert first["processed"] == 1 and first["offers"] == 3
+        assert first["catalog_api_call_count"] == 0
+        assert first["offer_repository_write_count"] == 3
+        assert len(first["offer_repository_writes"]) == 3
+        assert first["offer_repository_writes"][0]["payload"]["supplier"] == "Supplier A"
         assert first["matching"]["verified"]
         candidate = first["matching"]["candidates"][0]
         assert candidate["offer_date_source"] == "sharepoint_created"
@@ -192,6 +196,12 @@ async def test_single_document_pipeline_replay_versions_failures_and_matching(mo
         rows = []
         empty = await job.process_one(graph, root, file_id, settings, extractor=extractor)
         assert empty["processed"] == 1 and empty["offers"] == 0
+        assert empty["no_offers_detected"]
+        assert empty["catalog_api_call_count"] == 0
+        assert empty["offer_repository_write_count"] == 0
+        assert empty["offer_repository_writes"] == []
+        assert empty["embeddings"] == []
+        assert empty["matching"]["skipped"]
         async with sessions() as session:
             assert not await session.scalar(
                 text(

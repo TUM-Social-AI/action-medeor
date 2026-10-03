@@ -43,6 +43,16 @@ def source_params(drive_id: str, folder_id: str, item_id: str) -> dict:
     return {"drive": drive_id, "folder": folder_id, "item": item_id}
 
 
+def offer_external_id(job: dict, offer) -> str:
+    identity = [
+        job["drive_id"],
+        job["item_id"],
+        offer.metadata["source_id"],
+        offer.metadata["alternative_index"],
+    ]
+    return "sharepoint-offer-" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
 async def enqueue(session, drive_id: str, folder_id: str, item: Item) -> None:
     if not supported(item) or item.domain is None:
         return
@@ -171,15 +181,7 @@ async def publish(session, job: dict, batch: OfferBatch) -> list[str]:
     for offer in batch.offers:
         if offer.source_version != f"{job['content_version']}:{job['extraction_version']}":
             raise ValueError("Extracted offer version does not match its processing job")
-        identity = [
-            job["drive_id"],
-            job["item_id"],
-            offer.metadata["source_id"],
-            offer.metadata["alternative_index"],
-        ]
-        external_id = (
-            "sharepoint-offer-" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
-        )
+        external_id = offer_external_id(job, offer)
         if external_id in external_ids:
             raise ValueError("Extraction returned duplicate source/alternative identity")
         external_ids.append(external_id)
@@ -275,6 +277,11 @@ async def process_pending(
         "failed": 0,
         "offers": 0,
         "offer_ids": [],
+        "offer_repository_writes": [],
+        "offer_repository_write_count": 0,
+        "catalog_api_call_count": 0,
+        "no_offer_item_ids": [],
+        "successful_offer_item_ids": [],
         "failures": [],
         "attempted_item_ids": [],
     }
@@ -325,6 +332,30 @@ async def process_pending(
                 result["processed"] += 1
                 result["offers"] += len(ids)
                 result["offer_ids"].extend(ids)
+                if not ids:
+                    result["no_offer_item_ids"].append(item.item_id)
+                else:
+                    result["successful_offer_item_ids"].append(item.item_id)
+                result["offer_repository_writes"].extend(
+                    {
+                        "item_id": item.item_id,
+                        "external_id": offer_external_id(job, offer),
+                        "offer_id": offer_id,
+                        "source_document_id": item.item_id,
+                        "payload": offer.model_copy(
+                            update={
+                                "metadata": {
+                                    **offer.metadata,
+                                    "sharepoint_item_id": item.item_id,
+                                    "sharepoint_drive_id": graph.drive_id,
+                                    "path": job["item_json"]["path"],
+                                }
+                            }
+                        ).model_dump(mode="json"),
+                    }
+                    for offer, offer_id in zip(batch.offers, ids, strict=True)
+                )
+                result["offer_repository_write_count"] += len(ids)
         except Exception as exc:
             logger.exception("Offer extraction failed item=%s", item.item_id)
             async with sessions() as session:

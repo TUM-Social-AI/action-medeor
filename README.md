@@ -357,15 +357,21 @@ From `apps/backend`:
 ```bash
 uv run alembic upgrade head
 uv run python -m app.jobs.sharepoint_sync inspect
+uv run python -m app.jobs.sharepoint_sync inspect --folder-id FOLDER_ID
 uv run python -m app.jobs.sharepoint_sync process-one --item-id DOCUMENT_ID --output ../../data/sharepoint-validation/one.json
 uv run python -m app.jobs.sharepoint_sync sync
 ```
 
-`inspect` lists only the root's immediate metadata without downloading. `process-one` checks a
+`inspect` lists one folder's immediate children without downloading; use `--folder-id` with a
+folder ID from its output to browse deeper within the configured root. `process-one` checks a
 selected document's ancestry, extracts and persists all supplier/item alternatives, embeds only
 that file's eligible offers, and records a real matching check. Repeating unchanged completed work
 skips another download/extraction and document-embedding call. It does not advance the discovery
 cursor or reconcile other files. `--retry-failed` explicitly resets this file's failed jobs.
+The JSON report lists each direct offer-repository write and its payload. It also reports zero
+Catalog API HTTP calls, since this job uses the same database services as the API. A successfully
+extracted document with no offers exits successfully, reports `no_offers_detected: true`, and skips
+offer embedding and matching. See the runbook for Azure one-file execution and report details.
 
 `sync` runs once and exits; retain that command in the existing scheduled Azure Container Apps
 Job using the updated backend image. It commits complete discovery and durable pending work

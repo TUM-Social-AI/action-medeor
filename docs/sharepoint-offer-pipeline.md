@@ -42,15 +42,50 @@ Run from `apps/backend` after setting configuration:
 ```bash
 uv run alembic upgrade head
 uv run python -m app.jobs.sharepoint_sync inspect
+uv run python -m app.jobs.sharepoint_sync inspect --folder-id FOLDER_ID
 uv run python -m app.jobs.sharepoint_sync process-one --item-id DOCUMENT_ID --output ../../data/sharepoint-validation/one.json
 ```
 
-`inspect` reads immediate root metadata only. `process-one` checks folder ancestry before content
-access and again after extraction. It does not crawl other documents, change the discovery cursor,
+`inspect` lists the immediate children of the configured root by default. Its output includes
+each child's ID and whether it is a folder. Use `inspect --folder-id FOLDER_ID` with a folder ID
+from that output to list the next level; repeat for deeper folders. It verifies the selected
+folder is inside the configured root and reads metadata only, without downloading or processing
+files. `--item-id` is for `process-one`, not `inspect`. `process-one` checks folder ancestry before
+content access and again after extraction. It does not crawl other documents, change the discovery cursor,
 archive unrelated files or invoke the catalog embedding worker. Repeating a completed unchanged
 file skips downloading, extraction and document embedding, but performs a new matching query check.
-Empty or entirely review-only batches complete extraction but cannot pass the matching smoke check;
-the command exits nonzero and records that reason. Private JSON reports belong under ignored `data/`.
+An unchanged file with no offers also skips that matching check. Private JSON reports belong under
+ignored `data/`.
+
+The report contains `processed`, `offers_in_document`, `no_offers_detected`,
+`offer_repository_write_count` and `offer_repository_writes`. Each write includes the offer ID,
+stable external ID and the exact payload passed to the offer repository. The real pipeline uses
+the backend's repository and database transaction directly: `catalog_api_call_count` is always
+`0` because it makes no HTTP Catalog API requests. A document with several offers has one
+repository write per extracted offer. A successful LLM result with no offers records
+`no_offers_detected: true`, no writes and no embedding or matching calls; `process-one` exits
+successfully. An unreadable document or failed model call is an error, not a no-offer result.
+For offers retained only for review, the matching check can still fail and exits nonzero.
+The one-file command logs the summary and each write payload, so the same information is visible
+in Azure execution logs even when its JSON output file is ephemeral.
+
+The same command runs inside the deployed Azure Container Apps Job image. Start a separate
+one-off execution with its command set to `python -m app.jobs.sharepoint_sync process-one
+--item-id DOCUMENT_ID`; keep the scheduled job's normal `sync` command. For an Azure Container
+Apps Job, copy its existing template and change only the target container's `command` and `args`:
+
+```bash
+az containerapp job show --name JOB_NAME --resource-group RESOURCE_GROUP \
+  --query properties.template --output yaml > one-file-template.yaml
+# In one-file-template.yaml, set the target container's command to [python]
+# and args to [-m, app.jobs.sharepoint_sync, process-one, --item-id, DOCUMENT_ID].
+az containerapp job start --name JOB_NAME --resource-group RESOURCE_GROUP \
+  --yaml one-file-template.yaml
+```
+
+This overrides only that execution, using the same job environment and secrets. Inspect its
+execution logs for the summary and individual offer writes. Azure documents this
+[per-execution template override](https://learn.microsoft.com/en-us/azure/container-apps/jobs#override-the-job-configuration-for-an-execution).
 
 Transient failures are retried with bounded backoff. Unsupported files are not automatically retried.
 After fixing a terminal failure, explicitly retry this document:
@@ -90,6 +125,9 @@ while uncertain price/date information remains visible with warnings.
 Each successful batch atomically updates its file's current offer set, retains historical versions,
 archives removed offers and records successful empty results. Source-file deletion or a move outside
 the permitted domain folders archives the linked set. Customer grouping is not a retrieval restriction.
+When a sync run processes an empty document, it skips embeddings for that document and continues
+to the next pending document if the configured per-run limit allows it. With the default limit of
+one, the next scheduled run takes the next pending document.
 
 Offer vectors have their own durable jobs and tables. Their text contains product description and
 domain, without price/date. Unchanged text/model hashes reuse vectors across offer versions. Model

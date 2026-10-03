@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -7,6 +9,7 @@ import httpx
 import pytest
 
 from app.jobs import sharepoint_sync as job
+from app.sharepoint import processing
 from app.sharepoint.changes import (
     FolderSnapshotChangeSource,
     GraphDeltaChangeSource,
@@ -51,6 +54,158 @@ def item(
 
 
 ROOT_ITEM = replace(item(ROOT, None, folder=True), path="")
+
+
+@pytest.mark.asyncio
+async def test_inspect_lists_selected_nested_folder_without_crawling() -> None:
+    class Graph:
+        requested = []
+
+        async def get_item(self, item_id):
+            self.requested.append(item_id)
+            parents = {ROOT: None, "equipment": ROOT, "nested": "equipment"}
+            return {
+                "id": item_id,
+                "name": item_id,
+                "folder": {},
+                "parentReference": {"id": parents[item_id]} if parents[item_id] else {},
+            }
+
+        async def list_children(self, folder_id):
+            assert folder_id == "nested"
+            return [
+                {"id": "offer", "name": "offer.pdf", "file": {}},
+                {"id": "deeper", "name": "deeper", "folder": {}},
+            ]
+
+    graph = Graph()
+    result = await job.inspect_folder(graph, ROOT, "nested")
+    assert result["path"] == "equipment/nested"
+    assert result["children"] == [
+        {"id": "offer", "name": "offer.pdf", "folder": False},
+        {"id": "deeper", "name": "deeper", "folder": True},
+    ]
+    assert graph.requested == [ROOT, "nested", "equipment"]
+
+
+@pytest.mark.asyncio
+async def test_inspect_rejects_folder_outside_root_before_listing() -> None:
+    class Graph:
+        async def get_item(self, item_id):
+            parents = {ROOT: None, "outside": "other-root", "other-root": None}
+            return {
+                "id": item_id,
+                "name": item_id,
+                "folder": {},
+                "parentReference": {"id": parents[item_id]} if parents[item_id] else {},
+            }
+
+        async def list_children(self, folder_id):
+            raise AssertionError("Outside folder must not be listed")
+
+    with pytest.raises(ValueError, match="outside the permitted"):
+        await job.inspect_folder(Graph(), ROOT, "outside")
+
+
+def test_process_one_empty_report_exits_successfully(monkeypatch, tmp_path) -> None:
+    async def run(*args):
+        assert args[0] == "process-one"
+        return {
+            "status": "completed",
+            "processed": 1,
+            "failed": 0,
+            "offers_in_document": 0,
+            "no_offers_detected": True,
+            "catalog_api_call_count": 0,
+            "offer_repository_write_count": 0,
+            "offer_repository_writes": [],
+            "embeddings": [],
+            "matching": {"verified": False, "skipped": True},
+        }
+
+    report = tmp_path / "one.json"
+    monkeypatch.setattr(job, "run", run)
+    monkeypatch.setattr(
+        sys, "argv", ["sharepoint_sync", "process-one", "--item-id", "f", "--output", str(report)]
+    )
+    job.main()
+    saved = json.loads(report.read_text())
+    assert saved["no_offers_detected"]
+    assert saved["catalog_api_call_count"] == 0
+    assert saved["offer_repository_writes"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offer_count", [0, 2])
+async def test_processing_report_lists_each_offer_write(monkeypatch, offer_count) -> None:
+    from app.core.config import Settings
+    from app.offers.contracts import NormalizedOfferUpsertV1
+    from app.offers.extraction import OfferExtraction
+    from app.sharepoint.extraction import OfferBatch
+    from app.sharepoint.scope import content_version
+
+    source = replace(item("f", "equipment", name="f.pdf"), domain="equipment")
+    source = replace(source, mime_type="application/pdf")
+    record = {
+        "drive_id": DRIVE,
+        "folder_id": ROOT,
+        "item_id": "f",
+        "content_version": content_version(source),
+        "item_json": json.loads(processing.item_json(source)),
+    }
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class Graph:
+        drive_id = DRIVE
+
+        async def download(self, item_id, *, max_bytes):
+            assert item_id == "f"
+            return b"example"
+
+    async def claim(*args):
+        return record
+
+    async def resolve(*args):
+        return source
+
+    async def extract(*args, **kwargs):
+        offers = [
+            NormalizedOfferUpsertV1(
+                source_version="v1",
+                source_url=source.web_url,
+                captured_at=NOW,
+                raw_request_text=f"Product {number}",
+                supplier="Supplier A",
+                metadata={"source_id": f"Sheet!A{number}", "alternative_index": 1},
+            )
+            for number in range(offer_count)
+        ]
+        return OfferBatch(offers, OfferExtraction(chunks_succeeded=1))
+
+    async def publish(session, job, batch):
+        return [f"offer-{number}" for number in range(len(batch.offers))]
+
+    monkeypatch.setattr(processing, "claim", claim)
+    monkeypatch.setattr(processing, "resolve_item", resolve)
+    monkeypatch.setattr(processing, "publish", publish)
+    settings = Settings(_env_file=None, sharepoint_equipment_folder_id="equipment")
+    report = await processing.process_pending(
+        Graph(), ROOT, settings, Session, item_id="f", extractor=extract
+    )
+    assert report["processed"] == 1
+    assert report["catalog_api_call_count"] == 0
+    assert report["offer_repository_write_count"] == offer_count
+    assert len(report["offer_repository_writes"]) == offer_count
+    assert [
+        write["payload"]["raw_request_text"] for write in report["offer_repository_writes"]
+    ] == [f"Product {number}" for number in range(offer_count)]
+    assert report["no_offer_item_ids"] == (["f"] if offer_count == 0 else [])
 
 
 @pytest.mark.asyncio
@@ -304,6 +459,25 @@ async def test_sync_commits_discovery_before_processing_and_defaults_to_no_downl
     result = await job.sync(FakeGraph(), ROOT, settings=settings)
     assert result["cursor_updated"] and result["failed"] == 1
     assert events == ["saved", "saved", "processed"]
+
+    async def empty_document(*args, **kwargs):
+        return {
+            "processed": 1,
+            "failed": 0,
+            "offers": 0,
+            "attempted_item_ids": ["f"],
+            "successful_offer_item_ids": [],
+            "no_offer_item_ids": ["f"],
+        }
+
+    async def no_embedding(*args, **kwargs):
+        raise AssertionError("An empty document must not start embeddings")
+
+    monkeypatch.setattr(job, "process_pending", empty_document)
+    monkeypatch.setattr(job, "embed_pending", no_embedding)
+    result = await job.sync(FakeGraph(), ROOT, settings=settings)
+    assert result["no_offer_item_ids"] == ["f"]
+    assert result["embeddings"] == []
 
 
 @pytest.mark.asyncio

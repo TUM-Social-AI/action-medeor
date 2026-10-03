@@ -71,6 +71,42 @@ async def root_item(graph: GraphClient, folder_id: str) -> Item:
     return replace(root, parent_id=None, path="")
 
 
+async def inspect_folder(graph: GraphClient, root_id: str, folder_id: str | None = None) -> dict:
+    """List one folder after confirming its ancestry stays below the configured root."""
+    root = await root_item(graph, root_id)
+    selected = (
+        root
+        if folder_id is None or folder_id == root_id
+        else parse_item(await graph.get_item(folder_id))
+    )
+    if not selected.is_folder:
+        raise ValueError("Selected SharePoint item is not a folder")
+    names = []
+    seen = set()
+    ancestor = selected
+    while ancestor.item_id != root_id:
+        if ancestor.item_id in seen or not ancestor.parent_id:
+            raise ValueError("Selected folder is outside the permitted SharePoint root")
+        seen.add(ancestor.item_id)
+        names.append(ancestor.name)
+        ancestor = (
+            root
+            if ancestor.parent_id == root_id
+            else parse_item(await graph.get_item(ancestor.parent_id))
+        )
+    children = await graph.list_children(selected.item_id)
+    return {
+        "root_id": root_id,
+        "folder_id": selected.item_id,
+        "folder_name": selected.name,
+        "path": "/".join(reversed(names)),
+        "children": [
+            {"id": child["id"], "name": child.get("name"), "folder": "folder" in child}
+            for child in children
+        ],
+    }
+
+
 async def choose_enumeration(
     graph: GraphClient,
     root: Item,
@@ -217,6 +253,10 @@ async def sync(
         "cursor_updated": True,
         "processed": 0,
         "failed": 0,
+        "catalog_api_call_count": 0,
+        "offer_repository_write_count": 0,
+        "offer_repository_writes": [],
+        "no_offer_item_ids": [],
         "processing_enabled": settings.sharepoint_processing_enabled,
         **{
             kind: sum(c.kind == kind for c in changes)
@@ -230,7 +270,7 @@ async def sync(
         attempted = result.get("attempted_item_ids", [])
         if attempted:
             result["embeddings"] = []
-            for item in attempted:
+            for item in result.get("successful_offer_item_ids", []):
                 result["embeddings"].extend(
                     await embed_pending(graph, folder_id, settings, item_id=item)
                 )
@@ -301,7 +341,6 @@ async def process_one(
     result["extraction_version"] = EXTRACTION_VERSION
     result["llm_provider"] = settings.llm_provider
     result["llm_deployment"] = settings.azure_openai_deployment
-    result["embeddings"] = await embed_pending(graph, folder_id, settings, item_id=item.item_id)
     async with async_session() as session:
         state = (
             (
@@ -320,10 +359,22 @@ async def process_one(
         result["error"] = state["error"]
         result["warnings"] = (state["result_json"] or {}).get("warnings", [])
         result["idempotent_replay"] = result["processed"] == 0 and state["status"] == "completed"
-    if result["status"] == "completed":
+        result["offers_in_document"] = len((state["result_json"] or {}).get("offers", []))
+    result["no_offers_detected"] = (
+        result["status"] == "completed" and result["offers_in_document"] == 0
+    )
+    result["embeddings"] = []
+    if result["status"] == "completed" and not result["no_offers_detected"]:
+        result["embeddings"] = await embed_pending(graph, folder_id, settings, item_id=item.item_id)
         result["matching"] = await verify_matching(
             graph.drive_id, folder_id, item.item_id, settings
         )
+    elif result["no_offers_detected"]:
+        result["matching"] = {
+            "verified": False,
+            "skipped": True,
+            "reason": "No offers detected in document",
+        }
     result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
     return result
 
@@ -434,8 +485,16 @@ async def offer_smoke(
 
 
 async def run(
-    command: str, api_url: str, item_id: str | None = None, retry_failed=False
+    command: str,
+    api_url: str,
+    item_id: str | None = None,
+    retry_failed=False,
+    folder_id: str | None = None,
 ) -> dict[str, object]:
+    if folder_id and command != "inspect":
+        raise ValueError("--folder-id is only valid with inspect")
+    if item_id and command != "process-one":
+        raise ValueError("--item-id is only valid with process-one")
     settings = get_settings()
     required_config(settings)
     token_provider = MsalTokenProvider(
@@ -459,15 +518,7 @@ async def run(
                     retry_failed=retry_failed,
                 )
             if command == "inspect":
-                root = await root_item(graph, settings.sharepoint_root_folder_id)
-                children = await graph.list_children(root.item_id)
-                return {
-                    "root_id": root.item_id,
-                    "children": [
-                        {"id": c["id"], "name": c.get("name"), "folder": "folder" in c}
-                        for c in children
-                    ],
-                }
+                return await inspect_folder(graph, settings.sharepoint_root_folder_id, folder_id)
             if command == "offer-smoke":
                 return await offer_smoke(
                     graph,
@@ -492,6 +543,9 @@ def main() -> None:
     )
     parser.add_argument("--item-id", help="Explicit document for process-one")
     parser.add_argument(
+        "--folder-id", help="Folder to list with inspect; defaults to the configured root"
+    )
+    parser.add_argument(
         "--retry-failed", action="store_true", help="Reset only this file's failed jobs"
     )
     parser.add_argument("--output", type=Path, help="Write a JSON job report")
@@ -500,15 +554,28 @@ def main() -> None:
     # Preauthenticated content URLs and opaque delta queries must not enter HTTP request logs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
-        result = asyncio.run(run(args.command, args.api_url, args.item_id, args.retry_failed))
+        result = asyncio.run(
+            run(args.command, args.api_url, args.item_id, args.retry_failed, args.folder_id)
+        )
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-        logger.info("Job result: %s", {k: v for k, v in result.items() if k != "matching"})
+        logger.info(
+            "Job result: %s",
+            {k: v for k, v in result.items() if k not in ("matching", "offer_repository_writes")},
+        )
+        for write in result.get("offer_repository_writes", []):
+            logger.info("Offer repository write: %s", json.dumps(write, default=str))
+        if args.output:
+            logger.info("Full job report: %s", args.output)
         if result.get("failed") or any(e.get("failed") for e in result.get("embeddings", [])):
             raise SystemExit(1)
         if args.command == "process-one" and (
-            result.get("status") != "completed" or not result.get("matching", {}).get("verified")
+            result.get("status") != "completed"
+            or (
+                not result.get("no_offers_detected")
+                and not result.get("matching", {}).get("verified")
+            )
         ):
             raise SystemExit(1)
     except (ValueError, RuntimeError, httpx.HTTPError) as exc:
