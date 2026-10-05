@@ -19,6 +19,7 @@ from app.api.schemas import (
     HomeResponse,
     ItemUpdate,
     ManualItemCreate,
+    ManualRequestCreate,
     MatchingResponse,
     MatchSelection,
     MatchSelectionResponse,
@@ -134,6 +135,15 @@ async def create_request(
         session, manual=payload is not None and payload.mode == "manual"
     )
     return request_state(request)
+
+
+@router.post("/requests/manual", status_code=201)
+async def create_manual_request(
+    payload: ManualRequestCreate,
+    session: AsyncSession = Depends(get_session),
+) -> ReviewResponse:
+    request = await repository.create_manual_request(session, payload)
+    return repository.to_review_response(request)
 
 
 @router.get("/requests")

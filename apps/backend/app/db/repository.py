@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.api.schemas import (
     ExtractedItem,
     ManualItemCreate,
+    ManualRequestCreate,
     PartnerDetails,
     PartnerUpdate,
     ReviewCounts,
@@ -373,8 +374,8 @@ async def create_draft_request(session: AsyncSession, *, manual: bool = False) -
     return saved
 
 
-async def add_manual_item(
-    session: AsyncSession, request: ImportRequestRow, payload: ManualItemCreate
+def append_manual_item(
+    request: ImportRequestRow, payload: ManualItemCreate
 ) -> RequestItemRow:
     fields = payload.model_dump()
     item = RequestItemRow(
@@ -385,6 +386,31 @@ async def add_manual_item(
     )
     item.name = item.name.strip()
     request.items.append(item)
+    return item
+
+
+async def create_manual_request(
+    session: AsyncSession, payload: ManualRequestCreate
+) -> ImportRequestRow:
+    """Save the request and its first item together, without creating an empty request."""
+    request = ImportRequestRow(
+        request_id=generate_request_id(), source_file_name="", workflow_status="review",
+        request_date=dt.date.today().isoformat(), partner=payload.partner,
+        region=payload.region, contact=payload.contact, confirmed=payload.confirmed,
+        column_labels=payload.columnLabels,
+    )
+    append_manual_item(request, payload.item)
+    session.add(request)
+    await session.commit()
+    saved = await get_request_by_id(session, request.request_id)
+    assert saved is not None
+    return saved
+
+
+async def add_manual_item(
+    session: AsyncSession, request: ImportRequestRow, payload: ManualItemCreate
+) -> RequestItemRow:
+    item = append_manual_item(request, payload)
     await session.commit()
     await session.refresh(item)
     return item

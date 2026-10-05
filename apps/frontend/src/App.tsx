@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import type { LoadingType, ReviewResponse, Screen } from './api/types';
+import type { LoadingType, ManualItemCreate, PartnerDetails, ReviewResponse, Screen } from './api/types';
 import { createImport } from './api/client';
 import { getAvatar, getCurrentUser, saveAvatar, type AvatarId } from './api/identity';
 import {
-  createRequest,
+  createManualRequest,
   finalizeRequest,
   getRequest,
   reopenRequestMatching,
@@ -33,6 +33,16 @@ function screenFor(request: SavedRequest): Screen {
 const WORKFLOW_SCREENS: Screen[] = ['ingestion', 'review', 'matching', 'summary'];
 const GENERAL_SCREENS: Screen[] = ['home', 'history', 'dashboard', 'catalogue', 'settings', 'help'];
 
+function emptyManualReview(): ReviewResponse {
+  return {
+    requestId: '', source: { fileName: '', rowsDetected: 0, partner: '' },
+    partner: { partner: '', region: '', requestId: '', contact: '', confirmed: false },
+    items: [], sourceReferences: [],
+    counts: { total: 0, verified: 0, needsReview: 0, lowConfidence: 0, missing: 0 },
+    attributeColumns: [], columnLabels: {}, availableColumns: [],
+  };
+}
+
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
   const [displayName, setDisplayName] = useState('Local User');
@@ -41,7 +51,7 @@ export default function App() {
   const [requestId, setRequestId] = useState<string | null>(null);
   const [reviewData, setReviewData] = useState<ReviewResponse | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
-  const [isStartingManual, setIsStartingManual] = useState(false);
+  const [manualDraft, setManualDraft] = useState(false);
 
   const navigationVersion = useRef(0);
 
@@ -61,12 +71,14 @@ export default function App() {
     setAvatarId(saved.avatarId);
   };
 
-  const navigate = (screen: Screen, id = requestId) => {
+  const navigate = (screen: Screen, id = requestId, isManualDraft = false) => {
     navigationVersion.current += 1;
     setLoadingType(null);
     setWorkflowError(null);
     setCurrentScreen(screen);
+    setManualDraft(isManualDraft);
     const url = new URL(window.location.href);
+    url.searchParams.delete('mode');
     if (id && WORKFLOW_SCREENS.includes(screen)) {
       url.searchParams.delete('screen');
       url.searchParams.set('request', id);
@@ -75,6 +87,7 @@ export default function App() {
       url.searchParams.delete('request');
       url.searchParams.delete('step');
       url.searchParams.set('screen', screen);
+      if (isManualDraft) url.searchParams.set('mode', 'manual');
     }
     window.history.pushState({}, '', url);
   };
@@ -88,8 +101,15 @@ export default function App() {
       setWorkflowError(null);
       setReviewData(null);
       setRequestId(null);
+      setManualDraft(false);
       if (!id) {
         const screen = params.get('screen') as Screen | null;
+        if (screen === 'review' && params.get('mode') === 'manual') {
+          setReviewData(emptyManualReview());
+          setManualDraft(true);
+          setCurrentScreen('review');
+          return;
+        }
         setCurrentScreen(screen && (GENERAL_SCREENS.includes(screen) || screen === 'ingestion') ? screen : 'home');
         return;
       }
@@ -156,24 +176,23 @@ export default function App() {
     }
   };
 
-  const handleStartManual = async () => {
-    if (isStartingManual) return;
+  const handleStartManual = () => {
+    setRequestId(null);
+    setReviewData(emptyManualReview());
+    navigate('review', null, true);
+  };
+
+  const handleCreateManual = async (
+    item: ManualItemCreate, partner: PartnerDetails, columnLabels: Record<string, string>,
+  ) => {
     const version = navigationVersion.current;
-    setWorkflowError(null);
-    setIsStartingManual(true);
-    try {
-      const request = await createRequest('manual');
-      if (version !== navigationVersion.current) return;
-      setRequestId(request.requestId);
-      setReviewData(null);
-      navigate('review', request.requestId);
-    } catch (caught) {
-      if (version === navigationVersion.current) {
-        setWorkflowError(caught instanceof Error ? caught.message : 'Unable to create manual request');
-      }
-    } finally {
-      setIsStartingManual(false);
+    const response = await createManualRequest(item, partner, columnLabels);
+    if (version === navigationVersion.current) {
+      setRequestId(response.requestId);
+      setReviewData(response);
+      navigate('review', response.requestId);
     }
+    return response;
   };
 
   const finalizeAndOpenSummary = async () => {
@@ -213,10 +232,11 @@ export default function App() {
       {currentScreen === 'catalogue' && <CatalogueScreen />}
       {currentScreen === 'ingestion' && <IngestionScreen
         onContinue={file => void handleImport(file)} error={workflowError} onOpenRequest={openRequest}
-        onStartManual={() => void handleStartManual()} isStartingManual={isStartingManual}
+        onStartManual={handleStartManual}
       />}
-      {currentScreen === 'review' && requestId && <ReviewItemsScreen
-        key={requestId} requestId={requestId} initialData={reviewData}
+      {currentScreen === 'review' && (requestId || manualDraft) && <ReviewItemsScreen
+        key={requestId ?? 'manual-draft'} requestId={requestId} initialData={reviewData}
+        onCreateManual={handleCreateManual}
         onContinue={() => void handleStartMatching()}
       />}
       {currentScreen === 'matching' && requestId && <SmartMatchingScreen

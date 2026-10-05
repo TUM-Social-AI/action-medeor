@@ -154,6 +154,15 @@ class RequestCreate(BaseModel):
     mode: Literal["upload", "manual"] = "upload"
 
 
+class ManualRequestCreate(BaseModel):
+    item: ManualItemCreate
+    partner: str = ""
+    region: str = ""
+    contact: str = ""
+    confirmed: bool = False
+    columnLabels: dict[str, str] = Field(default_factory=dict)
+
+
 class PartnerUpdate(BaseModel):
     partner: str
     region: str

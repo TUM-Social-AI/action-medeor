@@ -16,6 +16,78 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
+async def test_first_manual_item_creates_request_and_invalid_items_save_nothing() -> None:
+    if not os.getenv("MATCHING_TEST_DATABASE_URL"):
+        pytest.skip("MATCHING_TEST_DATABASE_URL is not configured")
+
+    request_id = None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        async with async_session() as session:
+            before = await session.scalar(text("SELECT count(*) FROM import_requests"))
+        try:
+            for payload in (
+                {}, {"item": {}},
+                {"item": {"name": "Catheter", "quantity": 0, "domain": "equipment"}},
+            ):
+                invalid = await client.post("/api/requests/manual", json=payload)
+                assert invalid.status_code == 422, invalid.text
+            async with async_session() as session:
+                assert await session.scalar(text("SELECT count(*) FROM import_requests")) == before
+
+            created = await client.post("/api/requests/manual", json={
+                "item": {"name": "Catheter", "quantity": 2, "domain": "equipment"},
+                "partner": "Partner clinic", "region": "Test region", "contact": "Contact",
+                "confirmed": True, "columnLabels": {"name": "Product"},
+            })
+            assert created.status_code == 201, created.text
+            review = created.json()
+            request_id = review["requestId"]
+            assert review["counts"]["total"] == review["counts"]["verified"] == 1
+            assert review["items"][0]["manual"] is True
+            assert review["partner"]["partner"] == "Partner clinic"
+            assert review["partner"]["region"] == "Test region"
+            assert review["partner"]["contact"] == "Contact"
+            assert review["partner"]["confirmed"] is True
+            assert review["columnLabels"] == {"name": "Product"}
+            restored = await client.get(f"/api/requests/{request_id}/review")
+            assert restored.json() == review
+            saved = await client.get(f"/api/requests/{request_id}")
+            assert saved.json()["status"] == "review"
+            assert saved.json()["itemCount"] == 1
+        finally:
+            if request_id:
+                assert (await client.delete(f"/api/requests/{request_id}")).status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_first_item_database_failure_leaves_no_empty_request() -> None:
+    if not os.getenv("MATCHING_TEST_DATABASE_URL"):
+        pytest.skip("MATCHING_TEST_DATABASE_URL is not configured")
+
+    from sqlalchemy import event
+
+    from app.api.schemas import ManualRequestCreate
+    from app.db.models import RequestItemRow
+    from app.db.repository import create_manual_request
+
+    def fail_insert(*_args):
+        raise RuntimeError("First item could not be saved")
+
+    async with async_session() as session:
+        before = await session.scalar(text("SELECT count(*) FROM import_requests"))
+        event.listen(RequestItemRow, "before_insert", fail_insert)
+        try:
+            with pytest.raises(RuntimeError, match="First item could not be saved"):
+                await create_manual_request(session, ManualRequestCreate.model_validate({
+                    "item": {"name": "Catheter", "quantity": 2, "domain": "equipment"},
+                }))
+            await session.rollback()
+            assert await session.scalar(text("SELECT count(*) FROM import_requests")) == before
+        finally:
+            event.remove(RequestItemRow, "before_insert", fail_insert)
+
+
+@pytest.mark.asyncio
 async def test_manual_request_and_uploaded_additions_survive_reload() -> None:
     if not os.getenv("MATCHING_TEST_DATABASE_URL"):
         pytest.skip("MATCHING_TEST_DATABASE_URL is not configured")

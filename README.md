@@ -456,7 +456,9 @@ decisions. Pricing and offer creation are not available in this workflow.
 
 Apply the current migrations with `uv run alembic upgrade head` before using this workflow.
 Requests can also start with **Create request manually**, which opens an empty review without
-uploading or extracting a file. **Add item manually** is available below the review table for
+uploading or extracting a file. Nothing is saved until the first item is added; leaving an empty
+manual request discards it. The request, first item and any entered details are saved together.
+**Add item manually** is available below the review table for
 both manual and uploaded requests. Manual items require a name, positive whole-number quantity,
 and Medicine/Equipment type; they are saved as verified, marked **Manual**, and can be edited or
 removed until matching starts. Manual requests remain available in request history.
@@ -468,6 +470,7 @@ empty, exact and lexical retrieval still run.
 
 ```text
 POST /api/requests                        create draft, or {"mode":"manual"} for review
+POST /api/requests/manual                 save a manual request with its first item
 POST /api/requests/{id}/file              upload and extract
 GET  /api/requests                        list saved requests
 GET  /api/requests/{id}/review            reopen extraction and review

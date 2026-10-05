@@ -31,6 +31,7 @@ import {
 import type {
   ExtractedItem,
   ItemStatus,
+  ManualItemCreate,
   PartnerDetails,
   Priority,
   ReviewResponse,
@@ -40,9 +41,12 @@ import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { WorkflowStepper } from './WorkflowStepper';
 
 type ReviewItemsScreenProps = {
-  requestId: string;
+  requestId: string | null;
   initialData?: ReviewResponse | null;
   onContinue: () => void;
+  onCreateManual?: (
+    item: ManualItemCreate, partner: PartnerDetails, columnLabels: Record<string, string>,
+  ) => Promise<ReviewResponse>;
 };
 
 const PRIORITY_CFG: Record<Priority, { label: string; color: string; bg: string }> = {
@@ -141,7 +145,7 @@ function EditableLabel({ value, onSave }: { value: string; onSave: (next: string
   );
 }
 
-export function ReviewItemsScreen({ requestId, initialData, onContinue }: ReviewItemsScreenProps) {
+export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreateManual }: ReviewItemsScreenProps) {
   const [data, setData] = useState<ReviewResponse | null>(initialData ?? null);
   const [items, setItems] = useState<ExtractedItem[]>(initialData?.items ?? []);
   const [partnerDetails, setPartnerDetails] = useState<PartnerDetails | null>(
@@ -173,6 +177,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   // back to its old text while the request is in flight, then reconciles with the server's copy.
   const renameColumn = (key: string, label: string) => {
     setColumnLabels(previous => ({ ...previous, [key]: label }));
+    if (!requestId) return;
     updateColumnLabel(requestId, key, label)
       .then(setColumnLabels)
       .catch(caught => {
@@ -192,6 +197,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   // free) or typed freely by the user, in which case it still guides the LLM fallback match the
   // same way a hint would - see CustomColumnRequest / app.parsing.custom_columns.
   const submitNewColumn = async () => {
+    if (!requestId) return;
     const trimmed = newColumnName.trim();
     if (!trimmed || isAddingColumn || isSavingItem || removingItemId !== null || existingColumnLabels.has(trimmed.toLowerCase())) {
       return;
@@ -240,6 +246,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
     }
 
     let mounted = true;
+    if (!requestId) {
+      setIsLoading(false);
+      return;
+    }
     setIsLoading(true);
     getReview(requestId)
       .then(response => {
@@ -357,6 +367,14 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
         priority: editValues.priority ?? 'medium',
         domain: editValues.domain!,
       };
+      if (!requestId) {
+        if (!isNewItem || !onCreateManual || !partnerDetails) return;
+        await onCreateManual(
+          payload, editingPartner && partnerDraft ? partnerDraft : partnerDetails, columnLabels,
+        );
+        setEditingItem(null);
+        return;
+      }
       const updated = isNewItem
         ? await addManualItem(requestId, payload)
         : await updateItem(requestId, editingItem.id, payload);
@@ -371,7 +389,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   };
 
   const removeItem = async (id: number) => {
-    if (itemMutationPending) return;
+    if (!requestId || itemMutationPending) return;
     setRemovingItemId(id);
     try {
       await removeManualItem(requestId, id);
@@ -390,6 +408,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   };
 
   const markVerified = async (id: number) => {
+    if (!requestId) return;
     const item = items.find(value => value.id === id);
     if (item && !item.domain) {
       openEdit(item);
@@ -417,12 +436,12 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
     }
 
     try {
-      const updated = await updatePartner(requestId, {
+      const updated = requestId ? await updatePartner(requestId, {
         partner: partnerDraft.partner,
         region: partnerDraft.region,
         requestId: partnerDraft.requestId,
         contact: partnerDraft.contact,
-      });
+      }) : partnerDraft;
       setPartnerDetails({
         ...partnerDraft,
         ...updated,
@@ -438,7 +457,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
 
   const confirmPartnerDetails = async () => {
     try {
-      const updated = await confirmPartner(requestId);
+      const updated = requestId ? await confirmPartner(requestId) : { confirmed: true };
       setPartnerDetails(details => details && { ...details, ...updated });
       setError(null);
     } catch (caught) {
@@ -925,7 +944,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     />
                   </div>
                 ))}
-                <div className="text-xs text-gray-500">System request ID: <span className="font-mono text-gray-700">{partnerDetails.requestId}</span></div>
+                <div className="text-xs text-gray-500">{requestId ? <>System request ID: <span className="font-mono text-gray-700">{partnerDetails.requestId}</span></> : 'Request saved when you add the first item.'}</div>
                 <div className="flex gap-2 pt-1">
                   <button
                     onClick={() => setEditingPartner(false)}
@@ -949,7 +968,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                   {[
                     { label: 'Partner', value: partnerDetails.partner },
                     { label: 'Region', value: partnerDetails.region },
-                    { label: 'Request ID', value: partnerDetails.requestId },
+                    { label: 'Request ID', value: partnerDetails.requestId || 'Assigned when the first item is added' },
                     { label: 'Contact', value: partnerDetails.contact },
                   ].map(row => (
                     <div key={row.label}>
