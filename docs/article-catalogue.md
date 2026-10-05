@@ -71,6 +71,12 @@ status label. The number is green for sufficient stock, orange when sufficient s
 110% of the requested quantity, and red for insufficient stock. This margin uses the request
 expressed in the ERP stock unit, including confirmed package conversions. Unknown comparisons
 stay grey, with an explanation on hover and for screen readers.
+ERP matching cards show the article number, pack size, and availability without an empty manufacturer
+row: the ERP exports do not supply a manufacturer. Pack size uses confirmed package metadata,
+for example **24 rolls / PAKET**, and shows **Not recorded** when unavailable. It remains visible
+even when the request unit cannot be converted. Older saved matches load package metadata from
+their original catalogue snapshot without rewriting results. Supplier information remains visible
+for offers.
 
 Unambiguous unit aliases such as `PAKET`/packs, `STÜCK`/pcs, `FLASCHE`/bottles, `PAAR`/pairs,
 `ROLLE`/rolls and `TUBE`/tubes compare directly. Matching does not require a package size when the

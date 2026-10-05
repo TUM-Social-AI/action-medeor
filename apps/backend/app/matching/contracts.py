@@ -297,6 +297,7 @@ class MatchCandidateV1(ContractModel):
     retrieval_evidence: tuple[RetrievalEvidence, ...]
     score_components: dict[str, float]
     constraints: tuple[ConstraintResult, ...]
+    package: ProductPackage | None = None
     packaging: PackagingResult
     warnings: tuple[str, ...]
     provenance: tuple[SourceReferenceV1, ...]

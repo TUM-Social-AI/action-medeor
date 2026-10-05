@@ -152,6 +152,7 @@ export type MatchCandidateV1 = {
   retrieval_evidence: RetrievalEvidence[];
   score_components: Record<string, number>;
   constraints: ConstraintResult[];
+  package?: ProductPackage | null;
   packaging: PackagingResult;
   warnings: string[];
   provenance: SourceReferenceV1[];

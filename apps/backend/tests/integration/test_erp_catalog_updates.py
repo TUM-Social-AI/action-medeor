@@ -103,12 +103,12 @@ async def test_legacy_stock_display_uses_historical_inventory_without_rewriting_
     assert result.candidates[0].available_quantity == 50
     legacy = result.model_dump(mode="json")
     for candidate in legacy["candidates"]:
-        for field in ("available_quantity", "stock_unit", "required_stock_quantity"):
+        for field in ("available_quantity", "stock_unit", "required_stock_quantity", "package"):
             candidate.pop(field)
     await session.execute(text(
         "UPDATE match_runs SET result_payload = CAST(:payload AS jsonb) WHERE id = :id"
     ), {"id": result.match_run_id, "payload": json.dumps(legacy)})
-    newer = await upload(session, [row.replace(";60;15;5;", ";999;0;0;")])
+    newer = await upload(session, [row.replace(";60;15;5;", ";999;0;0;").replace("24 Rollen", "48 Rollen")])
     # The rollback transaction fixes CURRENT_TIMESTAMP; simulate the later
     # import's completion as it would be in independent transactions.
     await session.execute(text("UPDATE catalog_imports SET completed_at = :later WHERE id = :id"),
@@ -118,6 +118,9 @@ async def test_legacy_stock_display_uses_historical_inventory_without_rewriting_
     assert candidate.available_quantity == 50
     assert candidate.stock_unit == "PAKET"
     assert candidate.required_stock_quantity == 50
+    assert candidate.package.units_per_package == 24
+    assert candidate.package.unit == "roll"
+    assert candidate.package.stock_unit == "PAKET"
     assert candidate.availability_status == result.candidates[0].availability_status
     assert candidate.rank == result.candidates[0].rank
     assert candidate.candidate_id == result.candidates[0].candidate_id

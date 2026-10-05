@@ -11,6 +11,7 @@ import {
 } from '../api/workflow';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { formatRankingScore } from '../features/matching/format-ranking-score';
+import { getCandidatePackSize } from '../features/matching/pack-size-display';
 import { formatOfferPrice, getOfferStatus } from '../features/matching/offer-display';
 import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
 import { WorkflowStepper } from './WorkflowStepper';
@@ -74,6 +75,7 @@ function CandidateCard({
   const name = candidate.descriptions[0] || candidate.item_number || 'Supplier offer';
   const firstWarning = offer ? undefined : candidate.constraints.find(value => value.outcome !== 'pass')?.message;
   const rankingScore = candidate.score_components.ranking_score;
+  const packSize = getCandidatePackSize(candidate);
   return <div className={'relative flex h-full flex-col overflow-hidden rounded-xl border-2 transition-colors ' + (muted
     ? (selected ? 'border-[#1B4E8A] shadow-sm ' : 'border-dashed border-gray-300 hover:border-gray-400 ') + 'bg-[repeating-linear-gradient(135deg,#f9fafb_0_8px,#f3f4f6_8px_16px)]'
     : selected ? 'border-[#1B4E8A] bg-blue-50/40 shadow-sm'
@@ -100,7 +102,7 @@ function CandidateCard({
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">{candidate.unit_price != null ? 'UNIT PRICE' : 'PRICE'}</span><OfferPriceAndValidity candidate={candidate} /></div>
       </div> : <div className="space-y-1.5 text-xs">
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">ERP ID</span><span className="text-gray-700">{candidate.item_number || 'Not specified'}</span></div>
-        <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">MFR</span><span className="text-gray-700">{candidate.manufacturer || 'Not specified'}</span></div>
+        <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">PACK SIZE</span><span className={packSize ? 'text-gray-700' : 'text-gray-400'} title={candidate.package?.package_label || candidate.packaging.basis || undefined}>{packSize || 'Not recorded'}</span></div>
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">AVAIL.</span><CandidateAvailability candidate={candidate} /></div>
       </div>}
       {firstWarning && <p className="mt-3 line-clamp-2 text-xs leading-snug text-amber-700">{firstWarning}</p>}
@@ -120,6 +122,7 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
   const status = getOfferStatus(candidate);
   const muted = offer && status.muted;
   const name = candidate.descriptions[0] || candidate.item_number || 'Supplier offer';
+  const packSize = getCandidatePackSize(candidate);
   return <div className={"flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border-2 border-[#1B4E8A] px-4 py-3 " + (muted ? "bg-gray-100" : "bg-blue-50/40")}>
     <div className="order-1 flex shrink-0 items-center gap-2">
       <span className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-[#1B4E8A] bg-[#1B4E8A]"><span className="h-2 w-2 rounded-full bg-white" /></span>
@@ -135,7 +138,7 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
           <SharePointOfferSource provenance={candidate.provenance} candidateType={candidate.candidate_type} variant="compact" />
         </> : <>
           <span><span className="mr-1.5 font-semibold text-gray-400">ERP ID</span><span className="text-gray-700">{candidate.item_number || 'Not specified'}</span></span>
-          <span><span className="mr-1.5 font-semibold text-gray-400">MFR</span><span className="text-gray-700">{candidate.manufacturer || 'Not specified'}</span></span>
+          <span><span className="mr-1.5 font-semibold text-gray-400">PACK SIZE</span><span className={packSize ? 'text-gray-700' : 'text-gray-400'} title={candidate.package?.package_label || candidate.packaging.basis || undefined}>{packSize || 'Not recorded'}</span></span>
           <span className="inline-flex gap-1.5"><span className="font-semibold text-gray-400">AVAIL.</span><CandidateAvailability candidate={candidate} /></span>
         </>}
       </div>
@@ -304,7 +307,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
     <div className="mb-5">
       <h1>Smart Matching</h1>
       <p className="text-gray-500 text-sm mt-0.5">
-        Search finished for {data.completed} of {data.total} items. Review suggestions and choose an article or supplier offer, or mark each item unmatched. The ranking score is calculated from the matching evidence before candidates are sorted. The best option scores 100; the others are scaled against it. Scores are only comparable within one item and are not confidence percentages. Your decisions are saved. Expired offers and offers at least six months old without an expiry date remain selectable; contact the supplier to receive a new offer.
+        Review the suggestions and choose an article or supplier offer for each item, or mark it unmatched.
       </p>
     </div>
     {error && <div className="mb-4"><ErrorPanel message={error} /></div>}

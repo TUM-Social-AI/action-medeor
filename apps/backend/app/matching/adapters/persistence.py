@@ -538,7 +538,7 @@ class PostgresMatchRunRepository:
         if not row or not row["result_payload"]:
             return None
         result = MatchRunResponseV1.model_validate(row["result_payload"])
-        # Older saved runs have coverage statuses but lack quantity display fields.
+        # Older saved runs lack quantity or package display fields.
         # Enrich the response only; saved rankings, decisions, and payloads stay intact.
         missing = {
             candidate.item_number for candidate, payload in zip(
@@ -546,7 +546,7 @@ class PostgresMatchRunRepository:
             )
             if candidate.candidate_type.value == "catalog" and candidate.item_number
             and any(field not in payload for field in (
-                "available_quantity", "stock_unit", "required_stock_quantity"
+                "available_quantity", "stock_unit", "required_stock_quantity", "package"
             ))
         }
         if not missing:
@@ -572,6 +572,8 @@ class PostgresMatchRunRepository:
         for candidate in result.candidates:
             item = items.get(candidate.item_number)
             updates = {}
+            if candidate.item_number in missing and item and candidate.package is None:
+                updates["package"] = item.package
             if candidate.item_number in missing and item and item.stock:
                 if candidate.available_quantity is None:
                     updates["available_quantity"] = item.stock.fulfillable_quantity
