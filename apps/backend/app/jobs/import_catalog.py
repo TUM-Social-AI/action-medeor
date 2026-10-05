@@ -20,8 +20,8 @@ import httpx
 from app.catalog.parser import ARTICLE_HEADERS, TRANSLATION_HEADERS
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_ARTICLES = REPOSITORY_ROOT / "data" / "Artikeldaten.csv"
-DEFAULT_TRANSLATIONS = REPOSITORY_ROOT / "data" / "Artikeluebersetzungen.csv"
+DEFAULT_ARTICLES = REPOSITORY_ROOT / "data" / "Artikeldaten (2).csv"
+DEFAULT_TRANSLATIONS = REPOSITORY_ROOT / "data" / "Artikeluebersetzungen (2).csv"
 DEFAULT_API_URL = "http://localhost:8000"
 
 

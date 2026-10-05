@@ -30,13 +30,9 @@ class CatalogEmbeddingProvider(Protocol):
 
     async def spec(self) -> EmbeddingModelSpec: ...
 
-    async def embed_documents(
-        self, texts: Sequence[str]
-    ) -> Sequence[Sequence[float]]: ...
+    async def embed_documents(self, texts: Sequence[str]) -> Sequence[Sequence[float]]: ...
 
-    async def embed_queries(
-        self, texts: Sequence[str]
-    ) -> Sequence[Sequence[float]]: ...
+    async def embed_queries(self, texts: Sequence[str]) -> Sequence[Sequence[float]]: ...
 
 
 class SentenceTransformerEmbeddingProvider:
@@ -136,9 +132,29 @@ class CatalogEmbeddingJobService:
         self._session = session
 
     async def register_and_activate(
-        self, provider: CatalogEmbeddingProvider
+        self, provider: CatalogEmbeddingProvider, *, preserve_active: bool = False
     ) -> tuple[EmbeddingModelSpec, int]:
         spec = await provider.spec()
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('allocura-catalog-import-v1'))")
+        )
+        if preserve_active:
+            active = (
+                (
+                    await self._session.execute(
+                        text("SELECT id, dimensions FROM embedding_models WHERE active = TRUE")
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if active and (
+                len(active) != 1
+                or active[0]["id"] != spec.model_id
+                or active[0]["dimensions"] != spec.dimensions
+            ):
+                await self._session.rollback()
+                raise ValueError("Configured embedding provider does not match the active model")
         await self._session.execute(text("UPDATE embedding_models SET active = FALSE"))
         await self._session.execute(
             text(
@@ -176,6 +192,8 @@ class CatalogEmbeddingJobService:
                             WHERE c.active = TRUE
                               AND c.matching_eligible = TRUE
                               AND c.source_missing = FALSE
+                              AND NOT (RIGHT(v.item_number, 2) = '00'
+                                       AND COALESCE(TRIM(v.family_id), '') = '')
                             ORDER BY v.item_number, v.version_sequence DESC
                         ), missing AS (
                             SELECT lv.id
@@ -189,6 +207,13 @@ class CatalogEmbeddingJobService:
                         )
                         SELECT gen_random_uuid(), missing.id, :model_id, 'pending'
                         FROM missing
+                        """
+                        + (
+                            """
+                        ON CONFLICT (catalog_item_version_id, model_id) DO NOTHING
+                        """
+                            if preserve_active
+                            else """
                         ON CONFLICT (catalog_item_version_id, model_id) DO UPDATE SET
                             status = CASE
                                 WHEN catalog_embedding_jobs.status = 'completed'
@@ -196,8 +221,9 @@ class CatalogEmbeddingJobService:
                                 ELSE 'pending'
                             END,
                             error = NULL
-                        RETURNING id
                         """
+                        )
+                        + " RETURNING id"
                     ),
                     {"model_id": spec.model_id},
                 )
@@ -205,6 +231,22 @@ class CatalogEmbeddingJobService:
         )
         await self._session.commit()
         return spec, len(job_ids)
+
+    async def configuration_error(self, provider: CatalogEmbeddingProvider | None) -> str | None:
+        if provider is None:
+            return "No embedding provider is configured."
+        active = list(
+            (
+                await self._session.scalars(
+                    text("SELECT id FROM embedding_models WHERE active = TRUE ORDER BY id")
+                )
+            ).all()
+        )
+        if not active:
+            return "No active embedding model is registered yet."
+        if active != [provider.model_id]:
+            return "Configured embedding provider does not match the active model."
+        return None
 
     async def process_pending(
         self,
@@ -262,21 +304,44 @@ class CatalogEmbeddingJobService:
             await self._session.commit()
 
             try:
-                vectors = list(
-                    await provider.embed_documents([row["canonical_text"] for row in rows])
+                # Metadata versions and recovered jobs can share already embedded text.
+                existing = await self._session.execute(
+                    text("""SELECT DISTINCT ON (content_hash) content_hash, embedding::text AS vector
+                            FROM product_embeddings
+                            WHERE model_id = :model_id
+                              AND content_hash = ANY(CAST(:hashes AS text[]))
+                            ORDER BY content_hash, catalog_item_version_id"""),
+                    {"model_id": spec.model_id, "hashes": [row["content_hash"] for row in rows]},
                 )
-                if len(vectors) != len(rows):
+                by_hash = {row["content_hash"]: row["vector"] for row in existing.mappings()}
+                missing_texts = {
+                    row["content_hash"]: row["canonical_text"]
+                    for row in rows
+                    if row["content_hash"] not in by_hash
+                }
+                vectors = (
+                    list(await provider.embed_documents(list(missing_texts.values())))
+                    if missing_texts
+                    else []
+                )
+                if len(vectors) != len(missing_texts):
                     raise ValueError("Embedding provider returned an unexpected batch size")
                 if any(len(vector) != spec.dimensions for vector in vectors):
                     raise ValueError("Embedding provider returned an unexpected vector dimension")
+                by_hash.update(
+                    {
+                        key: _vector_literal(vector)
+                        for key, vector in zip(missing_texts, vectors, strict=True)
+                    }
+                )
                 embedding_rows = [
                     {
                         "version_id": row["catalog_item_version_id"],
                         "model_id": spec.model_id,
                         "content_hash": row["content_hash"],
-                        "embedding": _vector_literal(vector),
+                        "embedding": by_hash[row["content_hash"]],
                     }
-                    for row, vector in zip(rows, vectors, strict=True)
+                    for row in rows
                 ]
                 await self._session.execute(
                     text(

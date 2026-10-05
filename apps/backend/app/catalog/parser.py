@@ -23,6 +23,9 @@ ARTICLE_HEADERS = {
     "Menge in Bestellung",
     "Menge in Auftrag",
     "Wiederbeschaffungsverfahren",
+    "Gesperrt",
+    "Verkauf gesperrt",
+    "Einkauf gesperrt",
 }
 TRANSLATION_HEADERS = {"Artikelnr.", "Sprachcode", "Beschreibung", "Beschreibung 2"}
 LANGUAGE_MAP = {"ENU": "en", "ENG": "en", "FRA": "fr", "FRS": "fr"}
@@ -53,6 +56,9 @@ class ParsedCatalogItem:
     committed_order: Decimal
     master_item: bool
     matching_eligible: bool
+    blocked: bool
+    sales_blocked: bool
+    purchasing_blocked: bool
     canonical_text: str
     content_hash: str
     record_hash: str
@@ -281,9 +287,22 @@ def parse_catalog_files(article_data: bytes, translation_data: bytes) -> ParsedC
         )
         category_code = row["Artikelkategoriencode"]
         domain = _domain(item_number, category_code)
-        # Business Central base/master records have a 000 suffix and no parent number.
+        # Business Central base/master records have a 00 suffix and no parent number.
         # They describe a family, but they are not offerable inventory variants.
-        master_item = item_number.endswith("000") and not row["Nummer 2"]
+        master_item = item_number.endswith("00") and not row["Nummer 2"]
+        flags = {}
+        for field, name in (
+            ("Gesperrt", "blocked"),
+            ("Verkauf gesperrt", "sales_blocked"),
+            ("Einkauf gesperrt", "purchasing_blocked"),
+        ):
+            value = row[field].casefold()
+            flags[name] = value == "ja"
+            if value not in {"", "ja", "nein"}:
+                warnings.append(
+                    f"Row {row_number}, {field}: unexpected value {row[field]!r}; "
+                    "treated as unblocked."
+                )
         matching_eligible = bool(
             descriptions and category_code[:1] in {"2", "4"} and not master_item
         )
@@ -309,6 +328,7 @@ def parse_catalog_files(article_data: bytes, translation_data: bytes) -> ParsedC
                 committed_order=committed,
                 master_item=master_item,
                 matching_eligible=matching_eligible,
+                **flags,
                 canonical_text=canonical_text,
                 content_hash=content_hash,
                 record_hash=stable_json_hash(
@@ -321,6 +341,7 @@ def parse_catalog_files(article_data: bytes, translation_data: bytes) -> ParsedC
                         "replenishment_method": row["Wiederbeschaffungsverfahren"],
                         "t1": row["Zollware (T1)"].casefold() == "ja",
                         "master_item": master_item,
+                        **flags,
                     }
                 ),
             )

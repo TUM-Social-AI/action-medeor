@@ -13,8 +13,17 @@ from app.matching.contracts import (
 )
 
 
+def normalized_unit(unit: str | None) -> str | None:
+    value = unit.strip().casefold() if unit else None
+    if value in {"stück", "stueck", "st", "st.", "stk", "stk.", "pc", "pcs", "piece", "pieces"}:
+        return "piece"
+    if value in {"paket", "pakete", "package", "packages"}:
+        return "package"
+    return value
+
+
 def _same_unit(left: str | None, right: str | None) -> bool:
-    return bool(left and right and left.strip().casefold() == right.strip().casefold())
+    return bool(normalized_unit(left) and normalized_unit(left) == normalized_unit(right))
 
 
 def calculate_packaging(requested: QuantityValue, item: InventoryItemV1) -> PackagingResult:
@@ -77,7 +86,7 @@ def observed_availability(
     required: Decimal | None = None
     if _same_unit(stock.unit, requested.unit) and requested.value is not None:
         required = requested.value
-    elif stock.unit and stock.unit.casefold() == "package" and packaging.recommended_option:
+    elif normalized_unit(stock.unit) == "package" and packaging.recommended_option:
         required = Decimal(packaging.recommended_option.packages)
 
     if required is None:

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowDown, ArrowUp, ArrowUpDown, CalendarX2, Database, ExternalLink,
-  FileText, PackageSearch, RefreshCw, Search, X,
+  FileText, PackageSearch, PauseCircle, RefreshCw, Search, Upload, X,
 } from 'lucide-react';
 import { getCatalogueArticles, type CatalogueArticle } from '../api/catalogue';
 import {
@@ -10,6 +10,7 @@ import {
 } from '../features/catalogue/filtering';
 import { berlinDay, formatOfferPrice, getOfferStatus } from '../features/matching/offer-display';
 import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
+import { CatalogueImportDialog } from './CatalogueImportDialog';
 
 type SortKey = 'name' | 'vendor' | 'category' | 'availability' | 'price';
 
@@ -19,6 +20,8 @@ const STATUS_META: Record<Status, { label: string; dot: string }> = {
   valid: { label: 'Valid offer', dot: 'bg-violet-500' },
   expired: { label: 'Expired offer', dot: 'bg-rose-500' },
   unknown: { label: 'Availability unknown', dot: 'bg-gray-400' },
+  suspended: { label: 'Suspended', dot: 'bg-slate-500' },
+  master: { label: 'Stammartikel', dot: 'bg-slate-400' },
 };
 
 function compareArticles(a: CatalogueArticle, b: CatalogueArticle, key: SortKey): number {
@@ -42,9 +45,9 @@ function SortHeader({ label, sortKey, activeKey, direction, onSort, align }: {
 }) {
   const active = sortKey === activeKey;
   const Icon = active ? direction === 1 ? ArrowUp : ArrowDown : ArrowUpDown;
-  return <th className={`sticky top-0 z-10 border-b border-gray-200 bg-gray-50 px-4 py-3 text-[11px] font-semibold uppercase tracking-wider ${align === 'right' ? 'text-right' : 'text-left'}`}>
-    {sortKey ? <button type="button" onClick={() => onSort(sortKey)} className={`inline-flex items-center gap-1 uppercase tracking-wider ${active ? 'text-[#1B4E8A]' : 'text-gray-500 hover:text-gray-800'}`}>
-      {label}<Icon size={11} className={active ? '' : 'opacity-40'} />
+  return <th className={`sticky top-0 z-10 border-b border-gray-200 bg-gray-50 px-3 py-3 text-[11px] font-semibold uppercase tracking-wider ${align === 'right' ? 'text-right' : 'text-left'}`}>
+    {sortKey ? <button type="button" onClick={() => onSort(sortKey)} className={`inline-flex max-w-full items-center gap-1 text-left uppercase tracking-wider ${active ? 'text-[#1B4E8A]' : 'text-gray-500 hover:text-gray-800'}`}>
+      <span>{label}</span><Icon size={11} className={`shrink-0 ${active ? '' : 'opacity-40'}`} />
     </button> : <span className="text-gray-500">{label}</span>}
   </th>;
 }
@@ -57,6 +60,7 @@ export function CatalogueScreen() {
   const [filters, setFilters] = useState<CatalogueFilters>(DEFAULT_FILTERS);
   const { query, source, category, status } = filters;
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 });
+  const [showImport, setShowImport] = useState(false);
   useOfferDateRefresh();
   const today = berlinDay(new Date());
 
@@ -85,13 +89,16 @@ export function CatalogueScreen() {
   const setCategory = (category: string) => setFilters(previous => ({ ...previous, category }));
   const onSort = (key: SortKey) => setSort(previous => ({ key, dir: previous.key === key && previous.dir === 1 ? -1 : 1 }));
 
-  return <div className="flex min-h-full flex-col p-4 sm:p-6">
+  return <div className="flex min-h-full min-w-0 flex-col p-4 sm:p-6">
     <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
       <div>
         <h1 className="text-gray-900">Article Catalogue</h1>
         <p className="mt-0.5 text-sm text-gray-500">ERP articles and supplier offers from SharePoint, in one list.</p>
       </div>
       <div className="flex flex-wrap items-center gap-2 text-xs">
+        <button type="button" onClick={() => setShowImport(true)} className="inline-flex items-center gap-1.5 rounded-lg bg-[#1B4E8A] px-3 py-1.5 font-semibold text-white hover:bg-[#163f70]">
+          <Upload size={13} /> Update ERP catalogue
+        </button>
         <button type="button" disabled title="Fetching new data is coming later" className="mr-1 inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-[#1B4E8A] px-3 py-1.5 font-semibold text-white opacity-50">
           <RefreshCw size={13} /> Fetch new data
         </button>
@@ -138,8 +145,12 @@ export function CatalogueScreen() {
       </div>
     </div>
 
-    <div className="min-h-[300px] flex-1 overflow-auto rounded-b-xl border border-gray-200 bg-white">
-      <table className="w-full min-w-[900px]">
+    <div className="min-h-[300px] min-w-0 flex-1 overflow-auto rounded-b-xl border border-gray-200 bg-white">
+      <table className="w-full min-w-[900px] table-fixed">
+        <colgroup>
+          <col className="w-[24%]" /><col className="w-[8%]" /><col className="w-[14%]" />
+          <col className="w-[9%]" /><col className="w-[16%]" /><col className="w-[18%]" /><col className="w-[11%]" />
+        </colgroup>
         <thead><tr>
           <SortHeader label="Article" sortKey="name" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
           <SortHeader label="Source" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
@@ -160,20 +171,32 @@ export function CatalogueScreen() {
             offer_validity_source: article.offer_validity_source,
           }) : null;
           const price = article.unit_price ?? article.price;
-          return <tr key={article.id} className={`border-b ${expired ? 'border-rose-100 bg-rose-50/30 hover:bg-rose-50/60' : offer ? 'border-violet-100 bg-violet-50/30 hover:bg-violet-50/70' : 'border-gray-100 hover:bg-gray-50'}`}>
-            <td className={`border-l-[3px] px-4 py-3 ${expired ? 'border-l-rose-500' : offer ? 'border-l-violet-500' : 'border-l-transparent'}`}><span className={`text-sm font-semibold ${expired ? 'text-gray-500' : 'text-gray-900'}`}>{article.name}</span>{article.embedded && <span className="ml-2 whitespace-nowrap rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">Embedded</span>}</td>
-            <td className="px-4 py-3">{offer ? <span className="inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-0.5 text-[11px] font-bold text-violet-700"><FileText size={10} /> OFFER</span> : <span className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-bold text-blue-700"><Database size={10} /> ERP</span>}</td>
-            <td className="px-4 py-3 text-xs text-gray-600">{article.vendor || '—'}</td>
-            <td className="px-4 py-3 text-xs text-gray-500">{categoryLabel(article.category)}</td>
-            <td className="px-4 py-3">{offer && article.source_url ? <a href={article.source_url} target="_blank" rel="noopener noreferrer" title={`Open ${article.reference} in SharePoint`} className="inline-flex max-w-[200px] items-center gap-1.5 text-xs font-medium text-violet-800 hover:text-violet-950"><FileText size={12} className="shrink-0 text-violet-500" /><span className="truncate hover:underline">{article.reference}</span><ExternalLink size={10} className="shrink-0 opacity-60" /></a> : <span className="font-mono text-xs text-gray-500">{article.reference}</span>}</td>
-            <td className="whitespace-nowrap px-4 py-3 text-xs">{offerStatus ? <>
-              <span className={`inline-flex items-center gap-1 font-medium ${offerStatus.warning ? 'text-rose-600' : 'text-violet-700'}`}>
-                {expired && <CalendarX2 size={11} />} {offerStatus.label}
+          const restricted = !offer && (article.blocked || article.sales_blocked || article.purchasing_blocked);
+          const excluded = !offer && (article.blocked || article.sales_blocked);
+          const hasStock = article.stock != null && article.stock.trim() !== '' && Number.isFinite(Number(article.stock));
+          return <tr key={article.id} className={`border-b transition-colors ${restricted ? 'border-slate-200 bg-[repeating-linear-gradient(135deg,#f8fafc_0_8px,#f1f5f9_8px_16px)] hover:bg-slate-100' : expired ? 'border-rose-100 bg-rose-50/30 hover:bg-rose-50/60' : offer ? 'border-violet-100 bg-violet-50/30 hover:bg-violet-50/70' : 'border-gray-100 hover:bg-gray-50'}`}>
+            <td className={`border-l-[3px] px-4 py-3 [overflow-wrap:anywhere] ${restricted ? 'border-l-slate-400 [border-left-style:dashed]' : expired ? 'border-l-rose-500' : offer ? 'border-l-violet-500' : 'border-l-transparent'}`}><span className={`text-sm font-semibold ${restricted ? 'text-slate-500' : expired ? 'text-gray-500' : 'text-gray-900'}`}>{article.name}</span>{article.embedded && !restricted && <span className="ml-2 whitespace-nowrap rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">Embedded</span>}
+              {restricted && <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                {article.blocked && <span aria-label="Suspended" className="inline-flex items-center gap-1 rounded bg-slate-700 px-1.5 py-px text-[10px] font-bold tracking-wide text-white"><PauseCircle size={10} className="shrink-0" /> SUSPENDED</span>}
+                {article.sales_blocked && <span className="rounded bg-slate-700 px-1.5 py-px text-[10px] font-bold text-white">Sales blocked</span>}
+                {article.purchasing_blocked && <span title="Can only match requests fully covered by the available quantity" className="rounded bg-slate-200 px-1.5 py-px text-[10px] font-medium text-slate-600">Purchasing blocked</span>}
+              </div>}
+            </td>
+            <td className="px-2 py-3">{offer ? <span className="inline-flex items-center gap-1 rounded bg-violet-100 px-1.5 py-0.5 text-[11px] font-bold text-violet-700"><FileText size={10} className="shrink-0" /> OFFER</span> : <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-bold ${restricted ? 'bg-slate-200 text-slate-500' : 'bg-blue-100 text-blue-700'}`}><Database size={10} className="shrink-0" /> ERP</span>}</td>
+            <td className="px-4 py-3 text-xs text-gray-600 [overflow-wrap:anywhere]">{article.vendor || '—'}</td>
+            <td className="px-3 py-3 text-xs text-gray-500 [overflow-wrap:anywhere]">{categoryLabel(article.category)}</td>
+            <td className="px-4 py-3">{offer && article.source_url ? <a href={article.source_url} target="_blank" rel="noopener noreferrer" title={`Open ${article.reference} in SharePoint`} className="flex min-w-0 max-w-full items-center gap-1.5 text-xs font-medium text-violet-800 hover:text-violet-950"><FileText size={12} className="shrink-0 text-violet-500" /><span className="min-w-0 truncate hover:underline">{article.reference}</span><ExternalLink size={10} className="shrink-0 opacity-60" /></a> : <span title={article.reference} className={`block truncate font-mono text-xs ${excluded ? 'text-slate-400 line-through decoration-slate-300' : 'text-gray-500'}`}>{article.reference}</span>}</td>
+            <td className="px-4 py-3 text-xs [overflow-wrap:anywhere]">{offerStatus ? <>
+              <span className={`flex items-start gap-1 font-medium ${offerStatus.warning ? 'text-rose-600' : 'text-violet-700'}`}>
+                {expired && <CalendarX2 size={11} className="mt-0.5 shrink-0" />} <span className="min-w-0">{offerStatus.label}</span>
               </span>
               {articleStatus === 'unknown' && <span className="mt-1 block text-gray-500">Validity unknown</span>}
-            </> : articleStatus === 'unknown' ? <span className="text-gray-500">Stock unavailable</span> : <span className={articleStatus === 'in-stock' ? 'font-semibold text-green-700' : 'font-semibold text-red-600'}>{Number(article.stock).toLocaleString()} {article.unit || 'units'}</span>}</td>
-            <td className="whitespace-nowrap px-4 py-3 text-right text-sm">{price == null ? <span className="text-xs italic text-gray-400">{offer ? 'On request' : '—'}</span> : <>
-              <span className={`font-semibold ${expired ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{formatOfferPrice(article.price, article.currency, article.price_basis, article.unit_price, article.unit_price_unit)}</span>
+            </> : article.master_item ? <span title="Base article for suffix variants; not sellable inventory" className="rounded bg-slate-100 px-2 py-1 font-medium text-slate-600">Stammartikel</span> : restricted ? <div className="leading-tight">
+              <div className="font-semibold text-slate-600">{excluded ? 'Excluded from matching' : 'Stock-only matching'}</div>
+              <div className="mt-0.5 text-[11px] text-slate-500">{hasStock ? `${Number(article.stock).toLocaleString()} ${article.unit || 'units'} available` : 'Stock unavailable'}</div>
+            </div> : !hasStock ? <span className="text-gray-500">Stock unavailable</span> : <span className={Number(article.stock) > 0 ? 'font-semibold text-green-700' : 'font-semibold text-red-600'}>{Number(article.stock).toLocaleString()} {article.unit || 'units'}</span>}</td>
+            <td className="px-4 py-3 text-right text-sm [overflow-wrap:anywhere]">{price == null ? <span className="text-xs italic text-gray-400">{offer ? 'On request' : '—'}</span> : <>
+              <span className={`block font-semibold ${expired ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{formatOfferPrice(article.price, article.currency, article.price_basis, article.unit_price, article.unit_price_unit)}</span>
               {offer && <span className="mt-1 block text-xs text-gray-500">{article.unit_price != null ? 'Unit price' : 'Offer price'}</span>}
             </>}</td>
           </tr>;
@@ -182,5 +205,6 @@ export function CatalogueScreen() {
       {!loading && !error && rows.length === 0 && <div className="flex flex-col items-center py-16 text-center"><PackageSearch size={32} className="mb-3 text-gray-300" /><div className="text-sm font-semibold text-gray-700">{filtersActive ? 'No articles match these filters' : 'No articles stored yet'}</div>{filtersActive && <button type="button" onClick={resetFilters} className="mt-2 text-sm font-semibold text-[#1B4E8A] hover:underline">Clear filters</button>}</div>}
       {loading && <div role="status" className="py-16 text-center text-sm text-gray-500">Loading articles…</div>}
     </div>
+    {showImport && <CatalogueImportDialog onClose={() => setShowImport(false)} onUpdated={() => setReload(value => value + 1)} />}
   </div>;
 }

@@ -14,6 +14,7 @@ from app.matching.contracts import (
     InventoryItemV1,
     RuleOutcome,
 )
+from app.matching.eligibility import erp_exclusion
 
 
 class AttributeRule(BaseModel):
@@ -82,6 +83,14 @@ class ConstraintEngine:
                     code="quality_blocked",
                     outcome=RuleOutcome.EXCLUDE,
                     message="The authoritative catalogue marks this item quality-blocked.",
+                )
+            )
+
+        exclusion = erp_exclusion(line, item)
+        if exclusion:
+            results.append(
+                ConstraintResult(
+                    code=exclusion[0], outcome=RuleOutcome.EXCLUDE, message=exclusion[1]
                 )
             )
 

@@ -471,3 +471,49 @@ async def test_identical_product_text_receives_equal_scores_for_erp_and_offer() 
     assert erp_candidate.score_components["ranking_score"] == (
         offer_candidate.score_components["ranking_score"]
     )
+
+
+@pytest.mark.asyncio
+async def test_erp_restrictions_cannot_fill_retrieval_slots():
+    description = "Foley urinary catheter sterile CH18"
+    restricted = [
+        item("410001001", description, on_hand=Decimal("100")).model_copy(update={"blocked": True}),
+        item("410001002", description, on_hand=Decimal("100")).model_copy(
+            update={"sales_blocked": True}
+        ),
+        item("410001003", description, on_hand=Decimal("49")).model_copy(
+            update={"purchasing_blocked": True}
+        ),
+        item("410001100", description, on_hand=Decimal("100")),
+    ]
+    allowed = item("410001004", description, on_hand=Decimal("50")).model_copy(
+        update={"purchasing_blocked": True}
+    )
+    vectors = InMemoryVectorRepository()
+    for candidate in [*restricted, allowed]:
+        vectors.add(
+            item_number=candidate.item_number,
+            model_id="test",
+            domain=candidate.domain,
+            embedding=(1.0, 0.0),
+        )
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([*restricted, allowed]),
+        history_repository=InMemoryHistoryRepository([historical_offer("410001001")]),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(),
+        vector_repository=vectors,
+    )
+    result = await service.match(
+        MatchRequestV1(
+            inquiry_line=line(),
+            retrieval_limit=1,
+            query_embedding=(1.0, 0.0),
+            embedding_model_id="test",
+        )
+    )
+    assert [candidate.item_number for candidate in result.candidates] == [allowed.item_number]
+    assert {hit.retriever for hit in result.candidates[0].retrieval_evidence} >= {
+        "lexical",
+        "vector",
+    }

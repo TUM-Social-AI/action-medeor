@@ -20,7 +20,7 @@ pytestmark = pytest.mark.integration
 ARTICLE_HEADER = (
     "Nr.;Nummer 2;Beschreibung;Beschreibung 2;Basiseinheit;Artikelkategoriencode;"
     "Zollware (T1);Lagerbestand;Menge in Bestellung;Menge in Auftrag;"
-    "Wiederbeschaffungsverfahren\r\n"
+    "Wiederbeschaffungsverfahren;Gesperrt;Verkauf gesperrt;Einkauf gesperrt\r\n"
 )
 TRANSLATION_HEADER = "Artikelnr.;Sprachcode;Beschreibung;Beschreibung 2\r\n"
 
@@ -39,11 +39,11 @@ async def test_catalog_reapplies_older_contents_after_an_intervening_import() ->
     captured_at = datetime(2026, 8, 21, 9, tzinfo=UTC)
     articles_a = (
         ARTICLE_HEADER
-        + f"{item_number};;Original catheter;;STÜCK;404;nein;10;0;0;2\r\n"
+        + f"{item_number};;Original catheter;;STÜCK;404;nein;10;0;0;2;nein;nein;nein\r\n"
     ).encode()
     articles_b = (
         ARTICLE_HEADER
-        + f"{item_number};;Changed catheter;;STÜCK;404;nein;20;0;0;2\r\n"
+        + f"{item_number};;Changed catheter;;STÜCK;404;nein;20;0;0;2;nein;nein;nein\r\n"
     ).encode()
     translations = TRANSLATION_HEADER.encode()
     import_ids = []
@@ -160,16 +160,16 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
     source_marker = f"integration-{suffix}"
     first_articles = (
         ARTICLE_HEADER
-        + f"{item_one};;Foley catheter CH18;;STÜCK;404;nein;10;5;12;2\r\n"
-        + f"{item_two};;Foley catheter CH12;;STÜCK;404;nein;50;0;0;2\r\n"
+        + f"{item_one};;Foley catheter CH18;;STÜCK;404;nein;10;5;12;2;nein;nein;nein\r\n"
+        + f"{item_two};;Foley catheter CH12;;STÜCK;404;nein;50;0;0;2;nein;nein;nein\r\n"
     ).encode()
     second_articles = (
         ARTICLE_HEADER
-        + f"{item_one};;Foley urinary catheter sterile CH18;;STÜCK;404;nein;7;5;20;2\r\n"
+        + f"{item_one};;Foley urinary catheter sterile CH18;;STÜCK;404;nein;7;5;20;2;nein;nein;nein\r\n"
     ).encode()
     quantity_only_articles = (
         ARTICLE_HEADER
-        + f"{item_one};;Foley urinary catheter sterile CH18;;STÜCK;404;nein;9;5;20;2\r\n"
+        + f"{item_one};;Foley urinary catheter sterile CH18;;STÜCK;404;nein;9;5;20;2;nein;nein;nein\r\n"
     ).encode()
     translations = (
         TRANSLATION_HEADER + f"{item_one};FRA;Sonde de Foley CH18;;\r\n"
@@ -201,8 +201,8 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
             assert second.missing_items == 1
             view = await service.get_item(item_one)
             assert view is not None
-            assert view.available_raw == "-8"
-            assert view.fulfillable_quantity == "0"
+            assert view.available_raw == "22"
+            assert view.fulfillable_quantity == "22"
 
         async with sessions() as session:
             quantity_only = await CatalogImportService(session).import_files(

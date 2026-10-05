@@ -79,6 +79,7 @@ class InMemoryVectorRepository:
         domain: ProductDomain,
         limit: int,
         snapshot_id: str | None = None,
+        eligible_item_numbers: Sequence[str] | None = None,
     ) -> list[RetrievalHit]:
         query = tuple(embedding)
         scored: list[tuple[float, str]] = []
@@ -91,6 +92,7 @@ class InMemoryVectorRepository:
                 stored_model != model_id
                 or stored_domain is not domain
                 or stored_snapshot != snapshot_id
+                or (eligible_item_numbers is not None and item_number not in eligible_item_numbers)
             ):
                 continue
             if len(vector) != len(query):

@@ -36,7 +36,7 @@ test('initial counts partition the real rows into sources, categories, and statu
   assert.deepEqual(result.sourceCounts, { all: 8, erp: 4, sharepoint: 4 });
   assert.deepEqual(result.categoryCounts, { all: 8, Medicine: 4, Equipment: 4 });
   assert.deepEqual(result.statusCounts, {
-    all: 8, 'in-stock': 2, 'out-of-stock': 1, valid: 2, expired: 1, unknown: 2,
+    suspended: 0, master: 0, all: 8, 'in-stock': 2, 'out-of-stock': 1, valid: 2, expired: 1, unknown: 2,
   });
   assert.deepEqual(result.visibleSourceCounts, { erp: 4, sharepoint: 4 });
 });
@@ -59,9 +59,9 @@ test('source changes update statuses and reset the previous selection atomically
   assert.equal(offers.status, 'all');
   assert.deepEqual(ids(view(offers)), ['5', '6', '7', '8']);
   assert.deepEqual(view(offers).statusCounts, {
-    all: 4, 'in-stock': 0, 'out-of-stock': 0, valid: 2, expired: 1, unknown: 1,
+    suspended: 0, master: 0, all: 4, 'in-stock': 0, 'out-of-stock': 0, valid: 2, expired: 1, unknown: 1,
   });
-  assert.deepEqual(availableStatuses('erp'), ['in-stock', 'out-of-stock', 'unknown']);
+  assert.deepEqual(availableStatuses('erp'), ['in-stock', 'out-of-stock', 'suspended', 'master', 'unknown']);
   assert.deepEqual(availableStatuses('sharepoint'), ['valid', 'expired', 'unknown']);
   assert.equal(selectStatus(offers, 'in-stock'), offers);
   assert.equal(changeSource(filters, 'erp'), filters);
@@ -74,7 +74,7 @@ test('search updates every count and composes with source and category', () => {
   assert.deepEqual(result.sourceCounts, { all: 3, erp: 2, sharepoint: 1 });
   assert.deepEqual(result.categoryCounts, { all: 3, Medicine: 2, Equipment: 1 });
   assert.deepEqual(result.statusCounts, {
-    all: 3, 'in-stock': 2, 'out-of-stock': 0, valid: 1, expired: 0, unknown: 0,
+    suspended: 0, master: 0, all: 3, 'in-stock': 2, 'out-of-stock': 0, valid: 1, expired: 0, unknown: 0,
   });
   const erp = view({ query: 'needle', source: 'erp', category: 'Medicine' });
   assert.deepEqual(ids(erp), ['1']);
@@ -89,7 +89,7 @@ test('facet counts preserve alternatives when another status or category is sele
   assert.deepEqual(ids(result), ['3']);
   assert.deepEqual(result.categoryCounts, { all: 2, Medicine: 1, Equipment: 1 });
   assert.deepEqual(result.statusCounts, {
-    all: 2, 'in-stock': 1, 'out-of-stock': 0, valid: 0, expired: 0, unknown: 1,
+    suspended: 0, master: 0, all: 2, 'in-stock': 1, 'out-of-stock': 0, valid: 0, expired: 0, unknown: 1,
   });
   assert.deepEqual(result.sourceCounts, { all: 4, erp: 2, sharepoint: 2 });
 });
@@ -162,4 +162,21 @@ test('counts agree with the result of selecting each option across filter combin
       }
     }
   }
+});
+
+test('suspension filters include all ERP restrictions and keep master articles distinct', () => {
+  const restricted = [
+    article('blocked', { stock: '10', blocked: true }),
+    article('sales', { stock: '20', sales_blocked: true }),
+    article('purchase', { stock: '30', purchasing_blocked: true }),
+    article('master', { stock: '0', master_item: true }),
+    article('normal', { stock: '10' }),
+  ];
+  const result = getCatalogueView(restricted, { ...DEFAULT_FILTERS, status: 'suspended' }, today);
+  assert.deepEqual(ids(result), ['blocked', 'sales', 'purchase']);
+  assert.equal(result.statusCounts.suspended, 3);
+  assert.equal(result.statusCounts.master, 1);
+  assert.equal(result.statusCounts['out-of-stock'], 0);
+  assert.equal(result.statusCounts['in-stock'], 1);
+  assert.ok(!availableStatuses('sharepoint').includes('suspended'));
 });

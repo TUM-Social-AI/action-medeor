@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.catalog.state import restriction_flags
 from app.matching.contracts import (
     AttributeValue,
     HistoricalOfferV1,
@@ -137,6 +138,7 @@ class PostgresCatalogRepository:
                     t1=row["t1"],
                     active=row["active"],
                     quality_blocked=row["quality_blocked"],
+                    **restriction_flags(row["attributes"]),
                     stock=stock,
                     source=source,
                 )
@@ -156,6 +158,7 @@ class PgVectorRepository:
         domain: ProductDomain,
         limit: int,
         snapshot_id: str | None = None,
+        eligible_item_numbers: Sequence[str] | None = None,
     ) -> list[RetrievalHit]:
         dimensions = await self._session.scalar(
             text("SELECT dimensions FROM embedding_models WHERE id = :model_id"),
@@ -176,6 +179,7 @@ class PgVectorRepository:
                     WHERE CAST(combined_source_snapshot_id AS TEXT) = :snapshot_id
                 ), latest_versions AS (
                     SELECT v.id, v.item_number, v.domain, v.matching_eligible,
+                           v.attributes, v.family_id,
                            ROW_NUMBER() OVER (
                                PARTITION BY v.item_number ORDER BY v.version_sequence DESC
                            ) AS row_number
@@ -196,6 +200,12 @@ class PgVectorRepository:
                   AND COALESCE(lv.domain, c.domain) = :domain
                   AND c.active = TRUE
                   AND COALESCE(lv.matching_eligible, c.matching_eligible) = TRUE
+                  AND NOT (RIGHT(lv.item_number, 2) = '00'
+                           AND COALESCE(TRIM(lv.family_id), '') = '')
+                  AND COALESCE(lv.attributes->'blocked'->>'value', 'false') != 'true'
+                  AND COALESCE(lv.attributes->'sales_blocked'->>'value', 'false') != 'true'
+                  AND (CAST(:eligible_items AS text[]) IS NULL
+                       OR lv.item_number = ANY(CAST(:eligible_items AS text[])))
                   AND (CAST(:snapshot_id AS TEXT) IS NOT NULL OR c.source_missing = FALSE)
                   AND (CAST(:snapshot_id AS TEXT) IS NULL OR EXISTS (
                       SELECT 1 FROM inventory_snapshots si
@@ -212,6 +222,9 @@ class PgVectorRepository:
                 "domain": domain.value,
                 "limit": limit,
                 "snapshot_id": snapshot_id,
+                "eligible_items": list(eligible_item_numbers)
+                if eligible_item_numbers is not None
+                else None,
             },
         )
         return [

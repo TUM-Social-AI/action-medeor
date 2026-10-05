@@ -28,7 +28,7 @@ pytestmark = pytest.mark.integration
 ARTICLE_HEADER = (
     "Nr.;Nummer 2;Beschreibung;Beschreibung 2;Basiseinheit;Artikelkategoriencode;"
     "Zollware (T1);Lagerbestand;Menge in Bestellung;Menge in Auftrag;"
-    "Wiederbeschaffungsverfahren\r\n"
+    "Wiederbeschaffungsverfahren;Gesperrt;Verkauf gesperrt;Einkauf gesperrt\r\n"
 )
 TRANSLATION_HEADER = "Artikelnr.;Sprachcode;Beschreibung;Beschreibung 2\r\n"
 
@@ -44,8 +44,8 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
     descriptions = (f"Sterile catheter CH18 {suffix}", f"Sterile catheter CH12 {suffix}")
     articles = (
         ARTICLE_HEADER
-        + f"{first_number};;{descriptions[0]};;STÜCK;404;nein;10;0;0;2\r\n"
-        + f"{second_number};;{descriptions[1]};;STÜCK;404;nein;20;0;0;2\r\n"
+        + f"{first_number};;{descriptions[0]};;STÜCK;404;nein;10;0;0;2;nein;nein;nein\r\n"
+        + f"{second_number};;{descriptions[1]};;STÜCK;404;nein;20;0;0;2;nein;nein;nein\r\n"
     ).encode()
     changed_stock = articles.replace(b";nein;10;", b";nein;8;")
     translations = TRANSLATION_HEADER.encode()
