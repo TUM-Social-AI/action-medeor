@@ -21,6 +21,7 @@ class VectorRetriever:
         domain: ProductDomain,
         limit: int,
         snapshot_id: str | None = None,
+        eligible_item_numbers: Sequence[str] | None = None,
     ) -> list[RetrievalHit]:
         results = await self._repository.search(
             embedding=embedding,
@@ -28,5 +29,6 @@ class VectorRetriever:
             domain=domain,
             limit=limit,
             snapshot_id=snapshot_id,
+            eligible_item_numbers=eligible_item_numbers,
         )
         return list(results)

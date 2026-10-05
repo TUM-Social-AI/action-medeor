@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog.contracts import CatalogueArticleV1
+from app.catalog.state import is_master_item, restriction_flags
 
 
 async def list_catalogue_articles(session: AsyncSession) -> list[CatalogueArticleV1]:
@@ -15,15 +16,17 @@ async def list_catalogue_articles(session: AsyncSession) -> list[CatalogueArticl
         text(
             """
             SELECT c.item_number, c.domain, v.descriptions, v.manufacturer,
-                   i.unit, CASE WHEN i.id IS NULL THEN NULL ELSE
+                   v.attributes, v.family_id,
+                   i.unit, i.on_hand, CASE WHEN i.id IS NULL THEN NULL ELSE
                        GREATEST(0, COALESCE(i.on_hand, 0)
-                           + COALESCE(i.incoming_purchase_order, 0)
-                           - COALESCE(i.committed_order, 0)) END AS stock,
+                           - COALESCE(i.incoming_purchase_order, 0)
+                           + COALESCE(i.committed_order, 0)) END AS stock,
                    EXISTS (SELECT 1 FROM product_embeddings e
                            WHERE e.catalog_item_version_id = v.id) AS embedded
             FROM catalog_items c
             JOIN LATERAL (
-                SELECT id, descriptions, manufacturer FROM catalog_item_versions
+                SELECT id, descriptions, manufacturer, attributes, family_id
+                FROM catalog_item_versions
                 WHERE item_number = c.item_number
                 ORDER BY version_sequence DESC LIMIT 1
             ) v ON TRUE
@@ -46,8 +49,11 @@ async def list_catalogue_articles(session: AsyncSession) -> list[CatalogueArticl
             category=row["domain"],
             reference=row["item_number"],
             stock=str(row["stock"]) if row["stock"] is not None else None,
+            on_hand=str(row["on_hand"]) if row["on_hand"] is not None else None,
             unit=row["unit"],
             embedded=bool(row["embedded"]),
+            master_item=is_master_item(row["item_number"], row["family_id"]),
+            **restriction_flags(row["attributes"]),
         )
         for row in erp.mappings()
     ]

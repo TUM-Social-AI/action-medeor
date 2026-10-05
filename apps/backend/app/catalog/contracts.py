@@ -61,6 +61,10 @@ class CatalogItemViewV1(CatalogContract):
     available_raw: str | None = None
     fulfillable_quantity: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    blocked: bool = False
+    sales_blocked: bool = False
+    purchasing_blocked: bool = False
+    master_item: bool = False
 
 
 class CatalogueArticleV1(CatalogContract):
@@ -72,6 +76,7 @@ class CatalogueArticleV1(CatalogContract):
     reference: str
     source_url: str | None = None
     stock: str | None = None
+    on_hand: str | None = None
     unit: str | None = None
     valid_until: str | None = None
     offer_date: str | None = None
@@ -83,3 +88,17 @@ class CatalogueArticleV1(CatalogContract):
     unit_price_unit: str | None = None
     currency: str | None = None
     embedded: bool = False
+    blocked: bool = False
+    sales_blocked: bool = False
+    purchasing_blocked: bool = False
+    master_item: bool = False
+
+
+class CatalogEmbeddingStatusV1(CatalogContract):
+    import_id: UUID
+    model_id: str | None = None
+    configuration_error: str | None = None
+    pending: int = 0
+    running: int = 0
+    completed: int = 0
+    failed: int = 0

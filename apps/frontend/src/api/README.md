@@ -29,6 +29,7 @@ The backend also exposes data-maintenance contracts that are not yet wired into 
 ```text
 POST /api/v1/catalog-imports
 GET  /api/v1/catalog-imports/{import_id}
+GET  /api/v1/catalog-imports/{import_id}/embedding-status
 GET  /api/v1/catalog-items/{item_number}
 
 PUT  /api/v1/sharepoint-offer-files/{external_id}

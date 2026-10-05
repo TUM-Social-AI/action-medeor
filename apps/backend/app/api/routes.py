@@ -567,6 +567,9 @@ async def _saved_summary(session: AsyncSession, request) -> dict:
             "offerDate": candidate.get("offer_date") if candidate else None,
             "product": candidate["descriptions"][0] if candidate else None,
             "availability": candidate["availability_status"] if candidate else None,
+            "availableQuantity": candidate.get("available_quantity") if candidate else None,
+            "requiredStockQuantity": candidate.get("required_stock_quantity") if candidate else None,
+            "stockUnit": candidate.get("stock_unit") if candidate else None,
             "rankingScore": candidate["score_components"].get("ranking_score") if candidate else None,
             "warnings": candidate["warnings"] if candidate else [],
             "retrievalMethods": [evidence["retriever"] for evidence in candidate["retrieval_evidence"]]

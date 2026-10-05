@@ -21,7 +21,12 @@ from app.matching.contracts import (
     ValidationStatus,
 )
 from app.matching.domain import CandidateState, RetrievalHit
-from app.matching.packaging import calculate_packaging, observed_availability
+from app.matching.eligibility import erp_exclusion
+from app.matching.packaging import (
+    calculate_packaging,
+    observed_availability,
+    required_stock_quantity,
+)
 from app.matching.ports import (
     CatalogRepository,
     EmbeddingProvider,
@@ -40,7 +45,7 @@ from app.matching.retrieval.lexical import LexicalRetriever
 from app.matching.retrieval.vector import VectorRetriever
 from app.matching.validation import validate_inquiry
 
-ALGORITHM_VERSION = "allocura-matching-v2"
+ALGORITHM_VERSION = "allocura-matching-v5"
 
 
 class MatchingService:
@@ -88,6 +93,13 @@ class MatchingService:
                     snapshot_id=request.catalog_snapshot_id,
                 )
             )
+            catalog = [
+                item
+                for item in catalog
+                if item.active
+                and not item.quality_blocked
+                and erp_exclusion(request.inquiry_line, item) is None
+            ]
             item_by_number = {item.item_number: item for item in catalog}
             query = represent_inquiry(request.inquiry_line)
 
@@ -114,7 +126,7 @@ class MatchingService:
             result_sets.append(
                 self._historical.search(
                     query=query,
-                    offers=offers,
+                    offers=[offer for offer in offers if offer.item_number in item_by_number],
                     limit=request.retrieval_limit,
                 )
             )
@@ -135,6 +147,7 @@ class MatchingService:
                         domain=request.inquiry_line.domain,
                         limit=request.retrieval_limit,
                         snapshot_id=request.catalog_snapshot_id,
+                        eligible_item_numbers=list(item_by_number),
                     )
                 )
 
@@ -249,6 +262,12 @@ class MatchingService:
                             manufacturer=state.item.manufacturer,
                             review_status=state.review_status,
                             availability_status=availability[state.item.item_number],
+                            available_quantity=state.item.stock.fulfillable_quantity
+                            if state.item.stock else None,
+                            stock_unit=state.item.stock.unit if state.item.stock else None,
+                            required_stock_quantity=required_stock_quantity(
+                                request.inquiry_line.quantity, state.item
+                            ),
                             retrieval_evidence=tuple(hit.as_evidence() for hit in state.evidence),
                             score_components={
                                 **state.score_components,

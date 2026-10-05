@@ -11,15 +11,59 @@ from app.matching.adapters.in_memory import (
 )
 from app.matching.constraints.engine import load_default_policy
 from app.matching.contracts import (
+    AvailabilityStatus,
     CandidateType,
     DecisionType,
     MatchDecisionRequestV1,
     MatchRequestV1,
+    MatchRunResponseV1,
     RuleOutcome,
     SourceType,
 )
 from app.matching.service import MatchingService
 from tests.matching.factories import historical_offer, item, line
+
+
+@pytest.mark.parametrize(
+    "request_unit,expected", [("packs", AvailabilityStatus.ON_HAND_SUFFICIENT),
+                             ("pieces", AvailabilityStatus.UNKNOWN)]
+)
+async def test_known_stock_is_preserved_when_request_conversion_is_unknown(request_unit, expected):
+    candidate = item("410001001", "Foley catheter sterile CH18", on_hand=Decimal("60"))
+    candidate = candidate.model_copy(update={
+        "package": None,
+        "stock": candidate.stock.model_copy(update={
+            "unit": "PAKET", "incoming_purchase_order": Decimal("15"),
+            "committed_order": Decimal("5"),
+        }),
+    })
+    inquiry = line(description="Foley catheter sterile CH18")
+    inquiry = inquiry.model_copy(update={
+        "quantity": inquiry.quantity.model_copy(update={"unit": request_unit}),
+    })
+    runs = InMemoryMatchRunRepository()
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([candidate]),
+        history_repository=InMemoryHistoryRepository([]), run_repository=runs,
+        policy=load_default_policy(),
+    )
+    result = await service.match(MatchRequestV1(inquiry_line=inquiry))
+    matched = result.candidates[0]
+    assert matched.available_quantity == Decimal("50")
+    assert matched.stock_unit == "PAKET"
+    assert matched.availability_status is expected
+    assert matched.required_stock_quantity == (
+        Decimal("50") if expected is AvailabilityStatus.ON_HAND_SUFFICIENT else None
+    )
+    assert len(matched.warnings) == (1 if expected is AvailabilityStatus.UNKNOWN else 0)
+    payload = result.model_dump(mode="json")
+    assert MatchRunResponseV1.model_validate(payload).candidates[0].available_quantity == Decimal("50")
+    assert MatchRunResponseV1.model_validate(payload).candidates[0].required_stock_quantity == matched.required_stock_quantity
+    payload["candidates"][0].pop("available_quantity")
+    payload["candidates"][0].pop("required_stock_quantity")
+    payload["candidates"][0].pop("stock_unit")
+    assert MatchRunResponseV1.model_validate(payload).candidates[0].available_quantity is None
+    assert MatchRunResponseV1.model_validate(payload).candidates[0].required_stock_quantity is None
 
 
 @pytest.mark.asyncio
@@ -471,3 +515,49 @@ async def test_identical_product_text_receives_equal_scores_for_erp_and_offer() 
     assert erp_candidate.score_components["ranking_score"] == (
         offer_candidate.score_components["ranking_score"]
     )
+
+
+@pytest.mark.asyncio
+async def test_erp_restrictions_cannot_fill_retrieval_slots():
+    description = "Foley urinary catheter sterile CH18"
+    restricted = [
+        item("410001001", description, on_hand=Decimal("100")).model_copy(update={"blocked": True}),
+        item("410001002", description, on_hand=Decimal("100")).model_copy(
+            update={"sales_blocked": True}
+        ),
+        item("410001003", description, on_hand=Decimal("49")).model_copy(
+            update={"purchasing_blocked": True}
+        ),
+        item("410001100", description, on_hand=Decimal("100")),
+    ]
+    allowed = item("410001004", description, on_hand=Decimal("50")).model_copy(
+        update={"purchasing_blocked": True}
+    )
+    vectors = InMemoryVectorRepository()
+    for candidate in [*restricted, allowed]:
+        vectors.add(
+            item_number=candidate.item_number,
+            model_id="test",
+            domain=candidate.domain,
+            embedding=(1.0, 0.0),
+        )
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([*restricted, allowed]),
+        history_repository=InMemoryHistoryRepository([historical_offer("410001001")]),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(),
+        vector_repository=vectors,
+    )
+    result = await service.match(
+        MatchRequestV1(
+            inquiry_line=line(),
+            retrieval_limit=1,
+            query_embedding=(1.0, 0.0),
+            embedding_model_id="test",
+        )
+    )
+    assert [candidate.item_number for candidate in result.candidates] == [allowed.item_number]
+    assert {hit.retriever for hit in result.candidates[0].retrieval_evidence} >= {
+        "lexical",
+        "vector",
+    }

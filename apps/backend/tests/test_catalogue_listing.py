@@ -37,7 +37,7 @@ async def test_catalogue_preserves_quoted_price_basis_and_offer_dates(unit_price
     }
     erp = {
         "item_number": "123", "domain": "equipment", "descriptions": ["ERP item"],
-        "manufacturer": None, "unit": "piece", "stock": Decimal("12"), "embedded": False,
+        "manufacturer": None, "unit": "piece", "stock": Decimal("12"), "on_hand": Decimal("14"), "embedded": False, "attributes": {}, "family_id": None,
     }
     session = AsyncMock()
     session.execute.side_effect = [
@@ -57,6 +57,9 @@ async def test_catalogue_preserves_quoted_price_basis_and_offer_dates(unit_price
         assert response.status_code == 200
         stock_item, quoted_offer = response.json()
         assert stock_item["stock"] == "12"
+        assert stock_item["on_hand"] == "14"
+        assert "suspension_reason" not in stock_item
+        assert "suspension_by" not in stock_item
         assert stock_item["price"] is None
         assert stock_item["offer_date"] is None
         assert quoted_offer["price"] == "18.50"

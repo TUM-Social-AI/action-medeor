@@ -125,7 +125,7 @@ use a secure input directory or Azure storage.
 
 | File | Role | Important fields used by V1 |
 |---|---|---|
-| `Artikeldaten.csv` | Product identity, German descriptions, classification and inventory | `Nr.`, `Nummer 2`, descriptions, base unit, category, T1, on-hand stock, confirmed purchase orders, committed orders and replenishment method |
+| `Artikeldaten.csv` | Product identity, German descriptions, classification and inventory | `Nr.`, `Nummer 2`, descriptions, base unit, category, T1, inventory quantities, replenishment method, `Gesperrt`, `Verkauf gesperrt`, `Einkauf gesperrt` |
 | `Artikeluebersetzungen.csv` | Additional multilingual product text joined to the article number | `Artikelnr.`, language code and both description columns |
 
 Both files must be UTF-8, semicolon-separated CSVs with the expected Business Central headers. The
@@ -181,7 +181,15 @@ Run a limited import against a fresh test database. The catalog API treats every
 snapshot: omitted articles in a later upload are marked missing, or a large drop is rejected. The API
 already compares article identity and text versions, refreshes inventory quantities, and queues
 embeddings only for new or text-changed eligible versions with an active model. The worker also
-backfills missing embeddings on its first run.
+backfills missing embeddings on its first run. The web backend also drains durable catalogue
+embedding jobs automatically using the configured provider and active model; it does not switch an
+existing active model. The import CLI defaults to `Artikeldaten (2).csv` and
+`Artikeluebersetzungen (2).csv`, which contain the current export format. Older files without the
+three restriction columns cannot be uploaded; previously imported database records remain usable.
+
+The Article Catalogue has a separate **Update ERP catalogue** upload dialog with import summaries
+and real embedding progress. **Fetch new data** remains reserved for future SharePoint updates.
+See [the catalogue documentation](docs/article-catalogue.md) for restriction rules and progress.
 
 The easiest manual method is `http://localhost:8000/docs`: open
 `POST /api/v1/catalog-imports`, choose **Try it out**, select both files in their matching form fields
@@ -204,7 +212,7 @@ change is committed. Only an immediate repeat of the currently applied file pair
 replay. If contents change from A to B and later back to A, the final A is deliberately applied as a
 new audited import so catalogue and inventory state really return to A.
 
-With the supplied initial files and no active embedding model, the first response should be similar
+With the supplied current `(2)` exports and no active embedding model, the first response is similar
 to:
 
 ```json
@@ -213,11 +221,11 @@ to:
   "catalog_snapshot_id": "6c2c36db-690c-4b27-b6e9-b62e0bd32c3b",
   "status": "completed",
   "idempotent_replay": false,
-  "inserted_items": 2773,
+  "inserted_items": 3576,
   "text_updated_items": 0,
   "metadata_updated_items": 0,
   "unchanged_items": 0,
-  "inventory_refreshed_items": 2773,
+  "inventory_refreshed_items": 3576,
   "missing_items": 0,
   "reactivated_items": 0,
   "embedding_jobs_created": 0,
@@ -581,16 +589,18 @@ serialized so two imports cannot overlap.
   it is not deleted. Reappearance clears that flag.
 - A report containing less than half of the previously known article numbers is rejected as probably
   truncated, preventing one broken export from flagging most of the catalogue as missing.
-- Business Central master rows with a `000` suffix and no parent article are retained but are not
+- Business Central master rows with a `00` suffix and no parent article are retained but are not
   offerable and are not embedded. Placeholder rows without a medicine/equipment category are handled
   the same way.
-- Available quantity is calculated as `on hand + incoming purchase orders - committed orders`.
+- Available quantity is calculated as `Lagerbestand - Menge in Bestellung + Menge in Auftrag`
+  (`on_hand - incoming_purchase_order + committed_order`).
   The raw result is preserved even when negative; the fulfillable amount used operationally is
   `max(0, raw result)`. Purchasing inquiries are preserved but not counted as confirmed incoming
   stock.
 
-The supplied files validate as 2,773 articles and 2,879 translations. Of these, 1,645 are currently
-offerable variants and 1,124 are master rows. Thirty-one rows have a negative calculated raw
+The current `(2)` exports validate as 3,576 articles and 3,816 translations. Of these, 2,141 are
+classified non-master variants before applying ERP restrictions, and 1,430 are master rows.
+Seventy-seven rows have a negative calculated raw
 availability, which is why the value is clamped only at the point where a promiseable quantity is
 needed.
 

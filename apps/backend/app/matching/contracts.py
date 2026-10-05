@@ -118,6 +118,7 @@ class QuantityValue(ContractModel):
 class ProductPackage(ContractModel):
     units_per_package: Decimal | None = Field(default=None, gt=0)
     unit: str | None = None
+    stock_unit: str | None = None
     package_label: str | None = None
 
 
@@ -132,13 +133,13 @@ class StockSnapshot(ContractModel):
     @computed_field
     @property
     def available_raw(self) -> Decimal | None:
-        """Stored + ordered - reserved, preserving a negative business result."""
+        """Lagerbestand - Menge in Bestellung + Menge in Auftrag; retain negatives."""
         if self.on_hand is None:
             return None
         return (
             self.on_hand
-            + (self.incoming_purchase_order or Decimal(0))
-            - (self.committed_order or Decimal(0))
+            - (self.incoming_purchase_order or Decimal(0))
+            + (self.committed_order or Decimal(0))
         )
 
     @computed_field
@@ -183,6 +184,9 @@ class InventoryItemV1(ContractModel):
     t1: bool | None = None
     active: bool = True
     quality_blocked: bool = False
+    blocked: bool = False
+    sales_blocked: bool = False
+    purchasing_blocked: bool = False
     stock: StockSnapshot | None = None
     source: SourceReferenceV1
 
@@ -262,6 +266,7 @@ class PackagingOption(ContractModel):
 
 class PackagingResult(ContractModel):
     status: str
+    basis: str | None = None
     options: tuple[PackagingOption, ...] = ()
     recommended_option: PackagingOption | None = None
     warnings: tuple[str, ...] = ()
@@ -286,6 +291,9 @@ class MatchCandidateV1(ContractModel):
     manufacturer: str | None = None
     review_status: RuleOutcome
     availability_status: AvailabilityStatus
+    available_quantity: Decimal | None = Field(default=None, ge=0)
+    required_stock_quantity: Decimal | None = Field(default=None, ge=0)
+    stock_unit: str | None = None
     retrieval_evidence: tuple[RetrievalEvidence, ...]
     score_components: dict[str, float]
     constraints: tuple[ConstraintResult, ...]

@@ -54,6 +54,7 @@ export type QuantityValue = {
 };
 
 export type ProductPackage = {
+  stock_unit?: string | null;
   units_per_package?: string | number | null;
   unit?: string | null;
   package_label?: string | null;
@@ -120,6 +121,7 @@ export type PackagingOption = {
 
 export type PackagingResult = {
   status: string;
+  basis?: string | null;
   options: PackagingOption[];
   recommended_option?: PackagingOption | null;
   warnings: string[];
@@ -144,6 +146,9 @@ export type MatchCandidateV1 = {
   offer_validity_source?: string | null;
   review_status: RuleOutcome;
   availability_status: AvailabilityStatus;
+  available_quantity?: string | number | null;
+  required_stock_quantity?: string | number | null;
+  stock_unit?: string | null;
   retrieval_evidence: RetrievalEvidence[];
   score_components: Record<string, number>;
   constraints: ConstraintResult[];

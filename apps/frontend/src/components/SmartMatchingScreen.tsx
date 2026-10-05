@@ -15,6 +15,7 @@ import { formatOfferPrice, getOfferStatus } from '../features/matching/offer-dis
 import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
 import { WorkflowStepper } from './WorkflowStepper';
 import { SharePointOfferSource } from './SharePointOfferSource';
+import { CandidateAvailability } from './CandidateAvailability';
 
 type Props = { requestId: string; onContinue: () => Promise<void> };
 type CandidateDetails = { line: SavedMatchLine; candidate: MatchCandidateV1 } | null;
@@ -100,7 +101,7 @@ function CandidateCard({
       </div> : <div className="space-y-1.5 text-xs">
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">ERP ID</span><span className="text-gray-700">{candidate.item_number || 'Not specified'}</span></div>
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">MFR</span><span className="text-gray-700">{candidate.manufacturer || 'Not specified'}</span></div>
-        <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">AVAIL.</span><span className={candidate.availability_status === 'on_hand_sufficient' ? 'font-semibold text-green-700' : 'text-gray-600'}>{candidate.availability_status.replace(/_/g, ' ')}</span></div>
+        <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">AVAIL.</span><CandidateAvailability candidate={candidate} /></div>
       </div>}
       {firstWarning && <p className="mt-3 line-clamp-2 text-xs leading-snug text-amber-700">{firstWarning}</p>}
     </button>
@@ -135,7 +136,7 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
         </> : <>
           <span><span className="mr-1.5 font-semibold text-gray-400">ERP ID</span><span className="text-gray-700">{candidate.item_number || 'Not specified'}</span></span>
           <span><span className="mr-1.5 font-semibold text-gray-400">MFR</span><span className="text-gray-700">{candidate.manufacturer || 'Not specified'}</span></span>
-          <span><span className="mr-1.5 font-semibold text-gray-400">AVAIL.</span><span className="text-gray-600">{candidate.availability_status.replace(/_/g, ' ')}</span></span>
+          <span className="inline-flex gap-1.5"><span className="font-semibold text-gray-400">AVAIL.</span><CandidateAvailability candidate={candidate} /></span>
         </>}
       </div>
     </div>
@@ -389,10 +390,10 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
             <div><dt className="text-gray-500">{details.candidate.unit_price != null ? 'Unit price' : 'Offer price'}</dt><dd>{formatOfferPrice(details.candidate.price, details.candidate.currency, details.candidate.price_basis, details.candidate.unit_price, details.candidate.unit_price_unit)}</dd></div>
             <div><dt className="text-gray-500">{details.candidate.offer_valid_until ? 'Validity' : 'Offer age'}</dt><dd><OfferValidity candidate={details.candidate} /><OfferFollowUp candidate={details.candidate} /></dd></div>
           </>}
-          {details.candidate.candidate_type !== 'historical_offer' && <div><dt className="text-gray-500">Availability</dt><dd>{details.candidate.availability_status.replace(/_/g, ' ')}</dd></div>}
+          {details.candidate.candidate_type !== 'historical_offer' && <div><dt className="text-gray-500">Availability</dt><dd><CandidateAvailability candidate={details.candidate} /></dd></div>}
           <div><dt className="text-gray-500">Automated checks</dt><dd>{details.candidate.review_status === 'pass' ? 'No configured issue found' : details.candidate.review_status.replace(/_/g, ' ')}</dd></div>
           {details.candidate.manufacturer && <div><dt className="text-gray-500">Manufacturer</dt><dd>{details.candidate.manufacturer}</dd></div>}
-          <div><dt className="text-gray-500">Packaging</dt><dd>{details.candidate.packaging.status.replace(/_/g, ' ')}</dd></div>
+          <div><dt className="text-gray-500">Packaging</dt><dd>{details.candidate.packaging.basis || details.candidate.packaging.status.replace(/_/g, ' ')}</dd></div>
           <div><dt className="text-gray-500">Ranking score</dt><dd>{typeof details.candidate.score_components.ranking_score === 'number' ? formatRankingScore(details.candidate.score_components.ranking_score) : '—'}</dd></div>
           <div><dt className="text-gray-500">Exact reference</dt><dd>{details.candidate.score_components.exact_reference ? 'Yes' : 'No'}</dd></div>
           <div><dt className="text-gray-500">Attribute agreement</dt><dd>{typeof details.candidate.score_components.attribute_match_ratio === 'number' ? Math.round(details.candidate.score_components.attribute_match_ratio * 100) + '%' : 'No comparable attributes'}</dd></div>

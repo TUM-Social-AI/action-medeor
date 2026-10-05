@@ -1,5 +1,5 @@
 import { requestJson } from './http';
-import type { MatchCandidateV1, ProductDomain, SourceReferenceV1 } from './matching/contracts';
+import type { AvailabilityStatus, MatchCandidateV1, ProductDomain, SourceReferenceV1 } from './matching/contracts';
 import type { Priority, ReviewResponse } from './types';
 
 export type RequestStatus = 'draft' | 'review' | 'matching_queued' | 'matching' | 'matching_failed' | 'match_review' | 'complete' | 'finalized';
@@ -61,7 +61,10 @@ export type SavedSummary = {
     offerValidUntil: string | null;
     offerDate: string | null;
     product: string | null;
-    availability: string | null;
+    availability: AvailabilityStatus | null;
+    availableQuantity?: string | number | null;
+    requiredStockQuantity?: string | number | null;
+    stockUnit?: string | null;
     rankingScore: number | null;
     warnings: string[];
     retrievalMethods: string[];

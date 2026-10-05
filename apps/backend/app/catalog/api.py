@@ -9,12 +9,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog.contracts import (
+    CatalogEmbeddingStatusV1,
     CatalogImportResponseV1,
     CatalogImportValidationError,
     CatalogItemViewV1,
     CatalogueArticleV1,
 )
 from app.catalog.listing import list_catalogue_articles
+from app.catalog.progress import embedding_status
 from app.catalog.service import CatalogImportService
 from app.db.session import get_session
 
@@ -101,4 +103,17 @@ async def get_catalog_item(
     result = await service.get_item(item_number)
     if result is None:
         raise HTTPException(status_code=404, detail="Catalog item not found")
+    return result
+
+
+@router.get(
+    "/catalog-imports/{import_id}/embedding-status", response_model=CatalogEmbeddingStatusV1
+)
+async def get_embedding_status(
+    import_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> CatalogEmbeddingStatusV1:
+    result = await embedding_status(session, import_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Catalog import not found")
     return result

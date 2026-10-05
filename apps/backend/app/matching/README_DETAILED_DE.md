@@ -519,7 +519,7 @@ Möglichkeiten erhält die Entscheidung und macht sie nachvollziehbar.
 
 ### Was geschieht
 
-Der Import berechnet `available_raw = on_hand + incoming_purchase_order - committed_order` und bewahrt
+Der Import berechnet `available_raw = on_hand - incoming_purchase_order + committed_order` und bewahrt
 negative Ergebnisse als operativen Nachweis. Das Matching verwendet
 `fulfillable_quantity = max(0, available_raw)` nur, wenn die Einheit nachweislich mit der angefragten
 Menge vergleichbar ist. Verpackungsanzahlen können ebenfalls verglichen werden, wenn der Bestand
@@ -1069,7 +1069,7 @@ Wiederbeschaffungsverfahren
 `Nr.` ist die dauerhafte Identität. Mengen werden im deutschen Format gelesen, zum Beispiel `21.821`
 als 21821 und `12,5` als 12,5. Negative Quellmengen, doppelte/fehlende Artikelnummern und fehlende
 Spalten weisen das gesamte Paar zurück. `Nummer 2` verbindet eine Variante mit ihrer Familie. Eine
-`000`-Stammzeile ohne übergeordneten Artikel bleibt für Prüfzwecke erhalten, wird aber weder angeboten
+`00`-Stammzeile ohne übergeordneten Artikel bleibt für Prüfzwecke erhalten, wird aber weder angeboten
 noch eingebettet.
 
 ### 26.2 Eingabevertrag für `Artikeluebersetzungen.csv`

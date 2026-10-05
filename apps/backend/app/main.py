@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.api.identity import router as identity_router
 from app.api.routes import router as api_router
 from app.catalog.api import router as catalog_router
+from app.catalog.embedding_worker import run_forever as run_catalog_embeddings
 from app.core.config import get_settings
 from app.db.session import engine
 from app.frontend import mount_frontend
@@ -22,12 +23,16 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     worker = asyncio.create_task(run_forever(), name="request-matching-worker")
+    catalog_worker = asyncio.create_task(run_catalog_embeddings(), name="catalog-embedding-worker")
     try:
         yield
     finally:
         worker.cancel()
+        catalog_worker.cancel()
         with suppress(asyncio.CancelledError):
             await worker
+        with suppress(asyncio.CancelledError):
+            await catalog_worker
 
 
 app = FastAPI(title=settings.service_name, lifespan=lifespan)

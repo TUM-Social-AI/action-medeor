@@ -18,6 +18,7 @@ from app.catalog.contracts import (
     CatalogItemViewV1,
 )
 from app.catalog.parser import ParsedCatalogImport, parse_catalog_files
+from app.catalog.state import is_master_item, restriction_flags
 
 
 def _json(value: object) -> str:
@@ -51,11 +52,11 @@ class CatalogImportService:
                        v.descriptions, v.family_id, v.attributes,
                        i.on_hand, i.incoming_purchase_order, i.committed_order,
                        CASE WHEN i.id IS NULL THEN NULL
-                            ELSE i.on_hand + COALESCE(i.incoming_purchase_order, 0)
-                                 - COALESCE(i.committed_order, 0) END AS available_raw,
+                            ELSE i.on_hand - COALESCE(i.incoming_purchase_order, 0)
+                                 + COALESCE(i.committed_order, 0) END AS available_raw,
                        CASE WHEN i.id IS NULL THEN NULL
-                            ELSE GREATEST(0, i.on_hand + COALESCE(i.incoming_purchase_order, 0)
-                                 - COALESCE(i.committed_order, 0)) END AS fulfillable_quantity
+                            ELSE GREATEST(0, i.on_hand - COALESCE(i.incoming_purchase_order, 0)
+                                 + COALESCE(i.committed_order, 0)) END AS fulfillable_quantity
                 FROM catalog_items c
                 LEFT JOIN latest_version v ON TRUE
                 LEFT JOIN latest_inventory i ON TRUE
@@ -71,7 +72,8 @@ class CatalogImportService:
         return CatalogItemViewV1(
             item_number=row["item_number"],
             domain=row["domain"],
-            matching_eligible=row["matching_eligible"],
+            matching_eligible=row["matching_eligible"]
+            and not is_master_item(row["item_number"], row["family_id"]),
             source_missing=row["source_missing"],
             descriptions=tuple(row["descriptions"] or ()),
             family_id=row["family_id"],
@@ -83,6 +85,8 @@ class CatalogImportService:
             if row["fulfillable_quantity"] is not None
             else None,
             metadata={"attributes": attributes},
+            master_item=is_master_item(row["item_number"], row["family_id"]),
+            **restriction_flags(attributes),
         )
 
     async def import_files(
@@ -340,6 +344,9 @@ class CatalogImportService:
                 "category_code": {"value": item.category_code or "unknown"},
                 "base_unit": {"value": item.base_unit or "unknown"},
                 "master_item": {"value": item.master_item},
+                "blocked": {"value": item.blocked},
+                "sales_blocked": {"value": item.sales_blocked},
+                "purchasing_blocked": {"value": item.purchasing_blocked},
             }
             version_rows.append(
                 {
@@ -350,6 +357,7 @@ class CatalogImportService:
                     "source_snapshot_id": combined_source_id,
                     "descriptions": _json(item.descriptions),
                     "attributes": _json(attributes),
+                    "package": _json(item.package.model_dump(mode="json")) if item.package else None,
                     "family_id": item.family_id,
                     "replenishment_method": item.replenishment_method,
                     "t1": item.t1,
@@ -365,11 +373,12 @@ class CatalogImportService:
                     """
                     INSERT INTO catalog_item_versions (
                         id, item_number, domain, matching_eligible, source_snapshot_id,
-                        descriptions, attributes, family_id, replenishment_method, t1, canonical_text,
+                        descriptions, attributes, package, family_id, replenishment_method, t1, canonical_text,
                         content_hash, record_hash, valid_from
                     ) VALUES (
                         :id, :item_number, :domain, :matching_eligible, :source_snapshot_id,
                         CAST(:descriptions AS jsonb), CAST(:attributes AS jsonb),
+                        CAST(:package AS jsonb),
                         :family_id, :replenishment_method, :t1,
                         :canonical_text, :content_hash, :record_hash, :valid_from
                     )
@@ -479,10 +488,10 @@ class CatalogImportService:
         eligibility_by_item = {
             item.item_number: item.matching_eligible for item in parsed.items
         }
+        version_ids = {number: row["version_id"] for number, row in previous.items()}
+        version_ids.update({str(row["item_number"]): row["id"] for row in version_rows})
         eligible_version_ids = [
-            row["id"]
-            for row in version_rows
-            if eligibility_by_item[str(row["item_number"])]
+            version_ids[number] for number, eligible in eligibility_by_item.items() if eligible
         ]
         existing_embedding_pairs: set[tuple[UUID, str]] = set()
         if eligible_version_ids and active_models:
@@ -491,6 +500,11 @@ class CatalogImportService:
                     """
                     SELECT catalog_item_version_id, model_id
                     FROM product_embeddings
+                    WHERE catalog_item_version_id = ANY(CAST(:version_ids AS uuid[]))
+                      AND model_id = ANY(CAST(:model_ids AS text[]))
+                    UNION
+                    SELECT catalog_item_version_id, model_id
+                    FROM catalog_embedding_jobs
                     WHERE catalog_item_version_id = ANY(CAST(:version_ids AS uuid[]))
                       AND model_id = ANY(CAST(:model_ids AS text[]))
                     """

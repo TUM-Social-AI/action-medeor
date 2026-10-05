@@ -11,10 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas import MatchingLineState, RequestMatchingState, RequestState
 from app.db.models import ImportRequestRow, RequestItemRow
 from app.db.repository import get_request_by_id
+from app.matching.adapters.persistence import PostgresMatchRunRepository
 from app.matching.contracts import (
     AttributeValue,
     InquiryLineV1,
-    MatchRunResponseV1,
     QuantityValue,
     SourceReferenceV1,
     SourceType,
@@ -93,12 +93,8 @@ async def matching_state(session: AsyncSession, request_id: str) -> RequestMatch
         selected_candidate_id = None
         decision_type = None
         if item.current_match_run_id:
-            payload = await session.scalar(
-                text("SELECT result_payload FROM match_runs WHERE id = :id"),
-                {"id": item.current_match_run_id},
-            )
-            if payload:
-                run = MatchRunResponseV1.model_validate(payload)
+            run = await PostgresMatchRunRepository(session).get_run(item.current_match_run_id)
+            if run:
                 candidates = [candidate.model_dump(mode="json") for candidate in run.candidates]
                 # Runs saved before ranking scores existed retain their original order.
                 # Reconstruct the same sort key from their saved matching evidence.

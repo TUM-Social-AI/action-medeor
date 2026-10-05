@@ -41,9 +41,13 @@ async function render(articles) {
   const { CatalogueScreen } = await load('../src/components/CatalogueScreen.tsx', {
     react: {
       ...React,
-      useState: initial => [stateIndex++ === 0 ? articles : typeof initial === 'function' ? initial() : initial, () => {}],
+      useState: initial => {
+        const index = stateIndex++;
+        return [index === 0 ? articles : typeof initial === 'function' ? initial() : initial, () => {}];
+      },
       useEffect: () => {}, useMemo: callback => callback(),
     },
+    './CatalogueImportDialog': { CatalogueImportDialog: () => null },
     '../api/catalogue': { getCatalogueArticles: () => { throw new Error('Unexpected fetch'); } },
     '../features/catalogue/filtering': filtering,
     '../features/matching/offer-display': display,
@@ -92,4 +96,70 @@ test('missing prices and dates have honest fallbacks; ERP keeps its stock displa
   assert.ok(html.includes('Offer date unknown'));
   assert.ok(html.includes('12 piece'));
   assert.ok(!html.includes('EUR'));
+});
+
+test('ERP updates and future SharePoint fetching have separate controls', async () => {
+  const html = await render([]);
+  assert.match(html, /<button[^>]*>[^]*?Update ERP catalogue<\/button>/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>[^]*?Fetch new data<\/button>/);
+});
+
+test('restricted articles remain visible; Stammartikel replaces misleading stock', async () => {
+  const html = await render([
+    { ...baseOffer, id: 'erp:1', source: 'erp', name: 'Restricted', stock: '12', on_hand: '12', unit: 'piece',
+      blocked: true, sales_blocked: true, purchasing_blocked: true },
+    { ...baseOffer, id: 'erp:2', source: 'erp', name: 'Base article', stock: '0', unit: 'piece', master_item: true },
+  ]);
+  assert.ok(html.includes('Restricted'));
+  assert.ok(html.includes('Suspended'));
+  assert.ok(html.includes('Sales blocked'));
+  assert.ok(html.includes('Purchasing blocked'));
+  assert.ok(html.includes('12 piece'));
+  assert.ok(html.includes('Stammartikel'));
+  assert.ok(!html.includes('0 piece'));
+});
+
+test('database-backed suspension shows the mockup design and available stock without unsupported notes', async () => {
+  const html = await render([{
+    ...baseOffer, id: 'erp:ERP-51108', source: 'erp', name: 'Infusion Set 20 drops/ml, Luer Lock',
+    reference: 'ERP-51108', vendor: 'FlowMed GmbH', stock: '320', on_hand: '340', unit: 'pcs',
+    blocked: true, suspension_reason: 'Replaced by successor ERP-51190',
+    suspension_by: 'Procurement',
+  }]);
+  assert.ok(html.includes('repeating-linear-gradient'));
+  assert.ok(html.includes('[border-left-style:dashed]'));
+  assert.ok(html.includes('SUSPENDED'));
+  assert.ok(!html.includes('Replaced by successor ERP-51190'));
+  assert.ok(!html.includes('Suspended by Procurement'));
+  assert.ok(html.includes('Excluded from matching'));
+  assert.ok(!html.includes('since '));
+  assert.ok(html.includes('320 pcs available'));
+  assert.ok(!html.includes('340 pcs'));
+  assert.ok(!html.includes('on hand'));
+  assert.ok(html.includes('line-through decoration-slate-300'));
+  assert.ok(!html.includes('Show suspended example'));
+  assert.ok(!html.includes('Example only'));
+  assert.match(html, />1<\/strong> matching articles/);
+});
+
+test('purchasing-only restrictions describe conditional matching and legacy metadata stays usable', async () => {
+  const html = await render([{
+    ...baseOffer, id: 'erp:1', source: 'erp', name: 'Purchase restricted',
+    blocked: false, purchasing_blocked: true, on_hand: '60', stock: '50', unit: 'PAKET',
+  }]);
+  assert.ok(html.includes('Stock-only matching'));
+  assert.equal((html.match(/50 PAKET available/g) ?? []).length, 1);
+  assert.ok(!html.includes('60 PAKET'));
+  assert.ok(!html.includes('on hand'));
+  assert.ok(!html.includes('full requests only'));
+  assert.ok(!html.includes('Excluded from matching'));
+  assert.ok(!html.includes('since '));
+  const unknown = await render([{
+    ...baseOffer, id: 'erp:2', source: 'erp', name: 'Suspended without metadata', blocked: true,
+    on_hand: '60', stock: null,
+  }]);
+  assert.ok(unknown.includes('Excluded from matching'));
+  assert.ok(unknown.includes('Stock unavailable'));
+  assert.ok(!unknown.includes('60 '));
+  assert.ok(!unknown.includes('Invalid Date'));
 });

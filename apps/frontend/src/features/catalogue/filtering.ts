@@ -1,7 +1,7 @@
 import type { CatalogueArticle } from '../../api/catalogue';
 
 export type SourceFilter = 'all' | 'erp' | 'sharepoint';
-export type Status = 'in-stock' | 'out-of-stock' | 'valid' | 'expired' | 'unknown';
+export type Status = 'in-stock' | 'out-of-stock' | 'valid' | 'expired' | 'unknown' | 'suspended' | 'master';
 export type StatusFilter = 'all' | Status;
 export type CatalogueFilters = {
   query: string;
@@ -14,13 +14,15 @@ export const DEFAULT_FILTERS: CatalogueFilters = {
   query: '', source: 'all', category: 'all', status: 'all',
 };
 
-export const STATUSES: Status[] = ['in-stock', 'out-of-stock', 'valid', 'expired', 'unknown'];
+export const STATUSES: Status[] = ['in-stock', 'out-of-stock', 'suspended', 'master', 'valid', 'expired', 'unknown'];
 
 export const categoryLabel = (category: string) =>
   category === 'medicine' ? 'Medicine' : category === 'equipment' ? 'Equipment' : 'Other';
 
 export function statusOf(article: CatalogueArticle, today: string): Status {
   if (article.source === 'erp') {
+    if (article.blocked || article.sales_blocked || article.purchasing_blocked) return 'suspended';
+    if (article.master_item) return 'master';
     if (article.stock === null || !article.stock.trim() || !Number.isFinite(Number(article.stock))) return 'unknown';
     return Number(article.stock) > 0 ? 'in-stock' : 'out-of-stock';
   }
@@ -32,7 +34,7 @@ export function statusOf(article: CatalogueArticle, today: string): Status {
 }
 
 export function availableStatuses(source: SourceFilter): Status[] {
-  if (source === 'erp') return ['in-stock', 'out-of-stock', 'unknown'];
+  if (source === 'erp') return ['in-stock', 'out-of-stock', 'suspended', 'master', 'unknown'];
   if (source === 'sharepoint') return ['valid', 'expired', 'unknown'];
   return STATUSES;
 }
@@ -56,7 +58,7 @@ export function getCatalogueView(
   const term = filters.query.trim().toLocaleLowerCase();
   const sourceCounts: Record<SourceFilter, number> = { all: 0, erp: 0, sharepoint: 0 };
   const statusCounts: Record<StatusFilter, number> = {
-    all: 0, 'in-stock': 0, 'out-of-stock': 0, valid: 0, expired: 0, unknown: 0,
+    all: 0, 'in-stock': 0, 'out-of-stock': 0, suspended: 0, master: 0, valid: 0, expired: 0, unknown: 0,
   };
   const categoryCounts: Record<string, number> = { all: 0 };
   const rows: CatalogueArticle[] = [];

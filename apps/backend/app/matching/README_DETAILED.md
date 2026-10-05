@@ -478,6 +478,28 @@ ceil:  5 packages = 60 pieces = difference +10
 Both options are returned. An option is selected automatically only when the division is exact. For a
 non-exact division, the current code emits a warning and leaves `recommended_option` empty.
 
+Stock coverage uses the confirmed conversion independently of selecting a supply option. Five packs
+of 12 pieces cover a request for 50 pieces even though the floor/ceil decision still needs review.
+The reverse conversion is supported when stock is counted in pieces and the request is in packs.
+ERP imports read the final comma-separated pack-count segment in `Beschreibung`. Examples include
+`24 Rollen`, `10 x 100 Stück`, `2 Dtzd.` and `tablets, 1000`. A bare count requires an unambiguous
+contained-unit word in the name; dimensions, concentrations and uncertain suffixes remain unknown.
+The package records its ERP stock unit, so `DOSE` stock can be compared with tablets without treating
+one tin as one tablet. Explicit stored package data takes precedence. Existing versions without it
+derive the same conversion from their pinned name and base unit, without rewriting database history.
+Pack contents appear as the packaging basis in match details. Stock quantities stay in the ERP unit.
+Matching candidates include `available_quantity` and `stock_unit` from the pinned stock snapshot,
+so a missing conversion does not hide known ERP stock. Unambiguous unit aliases compare directly;
+no package size is required for a request already expressed in the ERP unit.
+`required_stock_quantity` expresses the request in that same unit using confirmed conversions.
+The UI shows the available quantity in green when it covers the request, orange when it covers
+the request with at most 10% extra stock (including an exact match), and red when stock is
+insufficient. Unknown comparisons stay grey; coverage explanations are available on hover and
+to screen readers. Older results without quantity fields read them from their saved import snapshot
+when reopened. Early runs without a pinned snapshot use the completed import available when the run
+started. This enriches the response without changing the saved payload or recomputing matches.
+“Quantity unavailable” is reserved for stock that cannot be recovered from historical inventory.
+
 ### Why the code refuses to round automatically
 
 Different humanitarian workflows may prefer avoiding shortages, avoiding excess, respecting carton
@@ -497,7 +519,7 @@ be a hidden business decision. Returning both options preserves the decision and
 
 ### What happens
 
-The importer calculates `available_raw = on_hand + incoming_purchase_order - committed_order` and
+The importer calculates `available_raw = on_hand - incoming_purchase_order + committed_order` and
 preserves negative results as operational evidence. Matching uses
 `fulfillable_quantity = max(0, available_raw)` only when its unit is confirmed comparable with the
 requested quantity. It can also compare package counts when stock is explicitly measured in packages
@@ -1035,7 +1057,7 @@ Wiederbeschaffungsverfahren
 
 `Nr.` is the durable identity. Quantities are parsed with German formatting, for example `21.821` as
 21821 and `12,5` as 12.5. Negative source quantities, duplicate/missing article numbers and missing
-headers reject the entire pair. `Nummer 2` links a variant to its family; a `000` master row without a
+headers reject the entire pair. `Nummer 2` links a variant to its family; a `00` master row without a
 parent is retained for audit but not offered or embedded.
 
 ### 26.2 Input contract for `Artikeluebersetzungen.csv`
@@ -1100,7 +1122,7 @@ Use a disposable staging copy to prove each change type before automating real e
 | Upload exact same pair | No new versions/snapshots/jobs | `idempotent_replay=true` |
 | Upload fewer than half the previous identities | No change committed | HTTP 422 with `suspicious_row_drop` |
 
-Availability is stored as `on hand + confirmed incoming purchase orders - committed orders`.
+Availability is stored as `Lagerbestand - Menge in Bestellung + Menge in Auftrag`.
 Purchasing inquiries are not confirmed stock. The negative raw result is auditable; only the
 fulfillable amount is clamped to zero.
 

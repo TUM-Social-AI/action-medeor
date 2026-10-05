@@ -14,6 +14,8 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.catalog.package_contents import package_from_erp_description
+from app.catalog.state import restriction_flags
 from app.matching.contracts import (
     AttributeValue,
     HistoricalOfferV1,
@@ -30,6 +32,7 @@ from app.matching.contracts import (
 )
 from app.matching.domain import RetrievalHit
 from app.matching.feedback import validate_decision_against_run
+from app.matching.packaging import required_stock_quantity
 
 
 def _attributes(value: object) -> dict[str, AttributeValue]:
@@ -53,7 +56,8 @@ class PostgresCatalogRepository:
         self._session = session
 
     async def list_items(
-        self, *, domain: ProductDomain, snapshot_id: str | None = None
+        self, *, domain: ProductDomain, snapshot_id: str | None = None,
+        item_numbers: Sequence[str] | None = None,
     ) -> list[InventoryItemV1]:
         result = await self._session.execute(
             text(
@@ -97,10 +101,13 @@ class PostgresCatalogRepository:
                 LEFT JOIN inventory i ON i.item_number = c.item_number AND i.row_number = 1
                 WHERE COALESCE(v.domain, c.domain) = :domain
                   AND (CAST(:snapshot_id AS TEXT) IS NULL OR i.id IS NOT NULL)
+                  AND (CAST(:item_numbers AS TEXT[]) IS NULL
+                       OR c.item_number = ANY(CAST(:item_numbers AS TEXT[])))
                 ORDER BY c.item_number
                 """
             ),
-            {"domain": domain.value, "snapshot_id": snapshot_id},
+            {"domain": domain.value, "snapshot_id": snapshot_id,
+             "item_numbers": list(item_numbers) if item_numbers is not None else None},
         )
         items: list[InventoryItemV1] = []
         for row in result.mappings():
@@ -132,11 +139,16 @@ class PostgresCatalogRepository:
                     manufacturer=row["manufacturer"],
                     brand=row["brand"],
                     family_id=row["family_id"],
-                    package=_package(row["package"]),
+                    package=_package(row["package"]) or package_from_erp_description(
+                        row["descriptions"][0] if row["descriptions"] else "",
+                        ((row["attributes"] or {}).get("base_unit") or {}).get("value")
+                        or (stock.unit if stock else None),
+                    ),
                     replenishment_method=row["replenishment_method"],
                     t1=row["t1"],
                     active=row["active"],
                     quality_blocked=row["quality_blocked"],
+                    **restriction_flags(row["attributes"]),
                     stock=stock,
                     source=source,
                 )
@@ -156,6 +168,7 @@ class PgVectorRepository:
         domain: ProductDomain,
         limit: int,
         snapshot_id: str | None = None,
+        eligible_item_numbers: Sequence[str] | None = None,
     ) -> list[RetrievalHit]:
         dimensions = await self._session.scalar(
             text("SELECT dimensions FROM embedding_models WHERE id = :model_id"),
@@ -176,6 +189,7 @@ class PgVectorRepository:
                     WHERE CAST(combined_source_snapshot_id AS TEXT) = :snapshot_id
                 ), latest_versions AS (
                     SELECT v.id, v.item_number, v.domain, v.matching_eligible,
+                           v.attributes, v.family_id,
                            ROW_NUMBER() OVER (
                                PARTITION BY v.item_number ORDER BY v.version_sequence DESC
                            ) AS row_number
@@ -196,6 +210,12 @@ class PgVectorRepository:
                   AND COALESCE(lv.domain, c.domain) = :domain
                   AND c.active = TRUE
                   AND COALESCE(lv.matching_eligible, c.matching_eligible) = TRUE
+                  AND NOT (RIGHT(lv.item_number, 2) = '00'
+                           AND COALESCE(TRIM(lv.family_id), '') = '')
+                  AND COALESCE(lv.attributes->'blocked'->>'value', 'false') != 'true'
+                  AND COALESCE(lv.attributes->'sales_blocked'->>'value', 'false') != 'true'
+                  AND (CAST(:eligible_items AS text[]) IS NULL
+                       OR lv.item_number = ANY(CAST(:eligible_items AS text[])))
                   AND (CAST(:snapshot_id AS TEXT) IS NOT NULL OR c.source_missing = FALSE)
                   AND (CAST(:snapshot_id AS TEXT) IS NULL OR EXISTS (
                       SELECT 1 FROM inventory_snapshots si
@@ -212,6 +232,9 @@ class PgVectorRepository:
                 "domain": domain.value,
                 "limit": limit,
                 "snapshot_id": snapshot_id,
+                "eligible_items": list(eligible_item_numbers)
+                if eligible_item_numbers is not None
+                else None,
             },
         )
         return [
@@ -508,10 +531,56 @@ class PostgresMatchRunRepository:
         await self._session.commit()
 
     async def get_run(self, run_id: UUID) -> MatchRunResponseV1 | None:
-        payload = await self._session.scalar(
-            text("SELECT result_payload FROM match_runs WHERE id = :id"), {"id": run_id}
-        )
-        return MatchRunResponseV1.model_validate(payload) if payload else None
+        row = (await self._session.execute(
+            text("SELECT result_payload, request_payload, source_versions FROM match_runs WHERE id = :id"),
+            {"id": run_id},
+        )).mappings().first()
+        if not row or not row["result_payload"]:
+            return None
+        result = MatchRunResponseV1.model_validate(row["result_payload"])
+        # Older saved runs have coverage statuses but lack quantity display fields.
+        # Enrich the response only; saved rankings, decisions, and payloads stay intact.
+        missing = {
+            candidate.item_number for candidate, payload in zip(
+                result.candidates, row["result_payload"].get("candidates", []), strict=True
+            )
+            if candidate.candidate_type.value == "catalog" and candidate.item_number
+            and any(field not in payload for field in (
+                "available_quantity", "stock_unit", "required_stock_quantity"
+            ))
+        }
+        if not missing:
+            return result
+        request = MatchRequestV1.model_validate(row["request_payload"])
+        snapshot_id = request.catalog_snapshot_id or (row["source_versions"] or {}).get("catalog_snapshot_id")
+        if snapshot_id is None:
+            # Early runs did not pin an import explicitly. Use the completed import
+            # available when the run started, never the current catalogue.
+            snapshot_id = await self._session.scalar(text("""
+                SELECT combined_source_snapshot_id FROM catalog_imports
+                WHERE completed_at <= :created_at
+                  AND status IN ('completed', 'completed_with_warnings')
+                ORDER BY import_sequence DESC LIMIT 1
+            """), {"created_at": result.created_at})
+        if snapshot_id is None:
+            return result
+        items = {item.item_number: item for item in await PostgresCatalogRepository(self._session).list_items(
+            domain=request.inquiry_line.domain, snapshot_id=str(snapshot_id),
+            item_numbers=sorted(missing),
+        )}
+        candidates = []
+        for candidate in result.candidates:
+            item = items.get(candidate.item_number)
+            updates = {}
+            if candidate.item_number in missing and item and item.stock:
+                if candidate.available_quantity is None:
+                    updates["available_quantity"] = item.stock.fulfillable_quantity
+                if candidate.stock_unit is None:
+                    updates["stock_unit"] = item.stock.unit
+                if candidate.required_stock_quantity is None:
+                    updates["required_stock_quantity"] = required_stock_quantity(request.inquiry_line.quantity, item)
+            candidates.append(candidate.model_copy(update=updates) if updates else candidate)
+        return result.model_copy(update={"candidates": tuple(candidates)})
 
     async def save_decision(self, decision: MatchDecisionRequestV1) -> MatchDecisionResponseV1:
         run = await self.get_run(decision.match_run_id)

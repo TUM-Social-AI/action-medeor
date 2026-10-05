@@ -12,7 +12,7 @@ from app.jobs.import_catalog import create_subset, post_import
 ARTICLE_HEADER = (
     "Nr.;Nummer 2;Beschreibung;Beschreibung 2;Basiseinheit;Artikelkategoriencode;"
     "Zollware (T1);Lagerbestand;Menge in Bestellung;Menge in Auftrag;"
-    "Wiederbeschaffungsverfahren\n"
+    "Wiederbeschaffungsverfahren;Gesperrt;Verkauf gesperrt;Einkauf gesperrt\n"
 )
 TRANSLATION_HEADER = "Artikelnr.;Sprachcode;Beschreibung;Beschreibung 2\n"
 
@@ -22,8 +22,8 @@ def test_subset_keeps_only_translations_of_selected_articles(tmp_path: Path) -> 
     translations = tmp_path / "source-translations.csv"
     articles.write_text(
         ARTICLE_HEADER
-        + "410001001;;Foley catheter CH18;;STÜCK;404;nein;10;0;0;2\n"
-        + "410001002;;Foley catheter CH12;;STÜCK;404;nein;20;0;0;2\n",
+        + "410001001;;Foley catheter CH18;;STÜCK;404;nein;10;0;0;2;nein;nein;nein\n"
+        + "410001002;;Foley catheter CH12;;STÜCK;404;nein;20;0;0;2;nein;nein;nein\n",
         encoding="utf-8-sig",
     )
     translations.write_text(
