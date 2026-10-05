@@ -12,7 +12,7 @@ import { berlinDay, formatOfferPrice, getOfferStatus } from '../features/matchin
 import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
 import { CatalogueImportDialog } from './CatalogueImportDialog';
 
-type SortKey = 'name' | 'vendor' | 'category' | 'availability' | 'price';
+type SortKey = 'name' | 'vendor' | 'category' | 'reference' | 'availability' | 'price';
 
 const STATUS_META: Record<Status, { label: string; dot: string }> = {
   'in-stock': { label: 'In stock', dot: 'bg-green-500' },
@@ -25,6 +25,7 @@ const STATUS_META: Record<Status, { label: string; dot: string }> = {
 };
 
 function compareArticles(a: CatalogueArticle, b: CatalogueArticle, key: SortKey): number {
+  if (key === 'reference') return a.reference.localeCompare(b.reference, undefined, { numeric: true });
   if (key === 'price') {
     const value = (article: CatalogueArticle) => article.unit_price ?? article.price;
     return (value(a) == null ? Infinity : Number(value(a))) - (value(b) == null ? Infinity : Number(value(b)));
@@ -45,7 +46,7 @@ function SortHeader({ label, sortKey, activeKey, direction, onSort, align }: {
 }) {
   const active = sortKey === activeKey;
   const Icon = active ? direction === 1 ? ArrowUp : ArrowDown : ArrowUpDown;
-  return <th className={`sticky top-0 z-10 border-b border-gray-200 bg-gray-50 px-3 py-3 text-[11px] font-semibold uppercase tracking-wider ${align === 'right' ? 'text-right' : 'text-left'}`}>
+  return <th aria-sort={sortKey ? active ? direction === 1 ? 'ascending' : 'descending' : 'none' : undefined} className={`sticky top-0 z-10 border-b border-gray-200 bg-gray-50 px-3 py-3 text-[11px] font-semibold uppercase tracking-wider ${align === 'right' ? 'text-right' : 'text-left'}`}>
     {sortKey ? <button type="button" onClick={() => onSort(sortKey)} className={`inline-flex max-w-full items-center gap-1 text-left uppercase tracking-wider ${active ? 'text-[#1B4E8A]' : 'text-gray-500 hover:text-gray-800'}`}>
       <span>{label}</span><Icon size={11} className={`shrink-0 ${active ? '' : 'opacity-40'}`} />
     </button> : <span className="text-gray-500">{label}</span>}
@@ -156,7 +157,7 @@ export function CatalogueScreen() {
           <SortHeader label="Source" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
           <SortHeader label="Manufacturer / Supplier" sortKey="vendor" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
           <SortHeader label="Category" sortKey="category" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
-          <SortHeader label="ERP ID / Offer" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
+          <SortHeader label="ERP ID / Offer" sortKey="reference" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
           <SortHeader label="Availability" sortKey="availability" activeKey={sort.key} direction={sort.dir} onSort={onSort} />
           <SortHeader label="Price" sortKey="price" activeKey={sort.key} direction={sort.dir} onSort={onSort} align="right" />
         </tr></thead>

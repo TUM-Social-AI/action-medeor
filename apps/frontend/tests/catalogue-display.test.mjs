@@ -36,14 +36,14 @@ const baseOffer = {
   unit_price: null, unit_price_unit: null, currency: 'EUR', embedded: true,
 };
 
-async function render(articles) {
+async function render(articles, sort) {
   let stateIndex = 0;
   const { CatalogueScreen } = await load('../src/components/CatalogueScreen.tsx', {
     react: {
       ...React,
       useState: initial => {
         const index = stateIndex++;
-        return [index === 0 ? articles : typeof initial === 'function' ? initial() : initial, () => {}];
+        return [index === 0 ? articles : index === 5 && sort ? sort : typeof initial === 'function' ? initial() : initial, () => {}];
       },
       useEffect: () => {}, useMemo: callback => callback(),
     },
@@ -55,6 +55,25 @@ async function render(articles) {
   }, FixedDate);
   return renderToStaticMarkup(React.createElement(CatalogueScreen));
 }
+
+test('ERP ID / Offer is sortable by displayed references in natural order in both directions', async () => {
+  const articles = [
+    { ...baseOffer, id: 'erp:1', source: 'erp', name: 'Article ten', reference: 'ERP-10' },
+    { ...baseOffer, id: 'erp:99', source: 'erp', name: 'Article two', reference: 'ERP-2' },
+    { ...baseOffer, id: 'offer:1', name: 'Offer ten', reference: 'quote10.pdf' },
+    { ...baseOffer, id: 'offer:99', name: 'Offer two', reference: 'quote2.pdf' },
+  ];
+  for (const [dir, direction, names] of [
+    [1, 'ascending', ['Article two', 'Article ten', 'Offer two', 'Offer ten']],
+    [-1, 'descending', ['Offer ten', 'Offer two', 'Article ten', 'Article two']],
+  ]) {
+    const html = await render(articles, { key: 'reference', dir });
+    assert.match(html, new RegExp(`<th aria-sort="${direction}"[^>]*><button[^>]*><span>ERP ID / Offer</span>`));
+    const positions = names.map(name => html.indexOf(name));
+    assert.ok(positions.every(position => position >= 0));
+    assert.deepEqual([...positions].sort((a, b) => a - b), positions);
+  }
+});
 
 test('catalogue shows quoted pack prices and age without inferring validity', async () => {
   const html = await render([baseOffer]);
