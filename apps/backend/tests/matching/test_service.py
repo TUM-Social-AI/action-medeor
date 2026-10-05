@@ -17,11 +17,34 @@ from app.matching.contracts import (
     MatchDecisionRequestV1,
     MatchRequestV1,
     MatchRunResponseV1,
+    QuantityValue,
     RuleOutcome,
     SourceType,
 )
 from app.matching.service import MatchingService
 from tests.matching.factories import historical_offer, item, line
+
+
+@pytest.mark.parametrize("request_unit", ["piece", "packs", "unknown-unit"])
+async def test_package_metadata_is_preserved_independently_of_conversion(request_unit):
+    product = item("410001001", "Foley catheter sterile CH18", on_hand=Decimal("60"))
+    product = product.model_copy(update={
+        "package": product.package.model_copy(update={"stock_unit": "PAKET"}),
+    })
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository([product]),
+        history_repository=InMemoryHistoryRepository(),
+        run_repository=InMemoryMatchRunRepository(), policy=load_default_policy(),
+    )
+    inquiry = line(description=product.descriptions[0]).model_copy(update={
+        "quantity": QuantityValue(value=50, unit=request_unit),
+    })
+    result = await service.match(MatchRequestV1(inquiry_line=inquiry))
+    assert result.candidates[0].package == product.package
+    payload = result.model_dump(mode="json")
+    assert MatchRunResponseV1.model_validate(payload).candidates[0].package == product.package
+    payload["candidates"][0].pop("package")
+    assert MatchRunResponseV1.model_validate(payload).candidates[0].package is None
 
 
 @pytest.mark.parametrize(

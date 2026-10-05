@@ -276,6 +276,7 @@ class MatchingService:
                                 ),
                             },
                             constraints=tuple(state.constraints),
+                            package=state.item.package,
                             packaging=state.packaging,
                             warnings=tuple(dict.fromkeys(state.warnings)),
                             provenance=(

@@ -42,6 +42,8 @@ async def test_matching_api_creates_and_reads_run() -> None:
             assert response.status_code == 201
             body: dict[str, Any] = response.json()
             assert body["candidates"][0]["item_number"] == "410001001"
+            assert body["candidates"][0]["package"]["units_per_package"] == "12"
+            assert body["candidates"][0]["package"]["unit"] == "piece"
 
             stored = await client.get(f"/api/v1/match-runs/{body['match_run_id']}")
             assert stored.status_code == 200
