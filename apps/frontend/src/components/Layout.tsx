@@ -156,7 +156,7 @@ export function Layout({ children, currentScreen, onNavigate, displayName, avata
 
           <NavItem
             icon={<FileText size={15} />}
-            label="New Request"
+            label="Request Workflow"
             active={isWorkflow}
             disabled={isWorkflow}
             collapsed={!sidebarExpanded}

@@ -434,7 +434,7 @@ the full architecture in the [detailed walkthrough](apps/backend/app/matching/RE
 The backend contains an explainable matching engine for normalized medicine and equipment
 inquiries. It combines exact, lexical, vector, and historical retrieval, applies versioned
 constraints, calculates packaging and availability evidence, and stores match runs and human
-decisions. New Request opens the import screen without saving a row; submitting a file
+decisions. Request Workflow opens the import screen without saving a row; submitting a file
 creates the saved request and extracts its contents. Empty drafts from older clients are hidden
 from request history. Extraction
 suggests medicine or equipment from an explicit type column, specific units or item names; the
