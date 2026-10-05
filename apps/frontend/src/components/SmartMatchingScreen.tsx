@@ -307,7 +307,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
     <div className="mb-5">
       <h1>Smart Matching</h1>
       <p className="text-gray-500 text-sm mt-0.5">
-        Search finished for {data.completed} of {data.total} items. Review suggestions and choose an article or supplier offer, or mark each item unmatched. The ranking score is calculated from the matching evidence before candidates are sorted. The best option scores 100; the others are scaled against it. Scores are only comparable within one item and are not confidence percentages. Your decisions are saved. Expired offers and offers at least six months old without an expiry date remain selectable; contact the supplier to receive a new offer.
+        Review the suggestions and choose an article or supplier offer for each item, or mark it unmatched.
       </p>
     </div>
     {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
