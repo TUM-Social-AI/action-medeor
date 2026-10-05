@@ -478,6 +478,28 @@ ceil:  5 packages = 60 pieces = difference +10
 Both options are returned. An option is selected automatically only when the division is exact. For a
 non-exact division, the current code emits a warning and leaves `recommended_option` empty.
 
+Stock coverage uses the confirmed conversion independently of selecting a supply option. Five packs
+of 12 pieces cover a request for 50 pieces even though the floor/ceil decision still needs review.
+The reverse conversion is supported when stock is counted in pieces and the request is in packs.
+ERP imports read the final comma-separated pack-count segment in `Beschreibung`. Examples include
+`24 Rollen`, `10 x 100 Stück`, `2 Dtzd.` and `tablets, 1000`. A bare count requires an unambiguous
+contained-unit word in the name; dimensions, concentrations and uncertain suffixes remain unknown.
+The package records its ERP stock unit, so `DOSE` stock can be compared with tablets without treating
+one tin as one tablet. Explicit stored package data takes precedence. Existing versions without it
+derive the same conversion from their pinned name and base unit, without rewriting database history.
+Pack contents appear as the packaging basis in match details. Stock quantities stay in the ERP unit.
+Matching candidates include `available_quantity` and `stock_unit` from the pinned stock snapshot,
+so a missing conversion does not hide known ERP stock. Unambiguous unit aliases compare directly;
+no package size is required for a request already expressed in the ERP unit.
+`required_stock_quantity` expresses the request in that same unit using confirmed conversions.
+The UI shows the available quantity in green when it covers the request, orange when it covers
+the request with at most 10% extra stock (including an exact match), and red when stock is
+insufficient. Unknown comparisons stay grey; coverage explanations are available on hover and
+to screen readers. Older results without quantity fields read them from their saved import snapshot
+when reopened. Early runs without a pinned snapshot use the completed import available when the run
+started. This enriches the response without changing the saved payload or recomputing matches.
+“Quantity unavailable” is reserved for stock that cannot be recovered from historical inventory.
+
 ### Why the code refuses to round automatically
 
 Different humanitarian workflows may prefer avoiding shortages, avoiding excess, respecting carton

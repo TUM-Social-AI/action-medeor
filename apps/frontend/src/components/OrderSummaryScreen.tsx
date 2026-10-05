@@ -10,6 +10,7 @@ import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh
 import { WorkflowStepper } from './WorkflowStepper';
 import { ProcessingProgress } from './ProcessingScreen';
 import { SharePointOfferSource } from './SharePointOfferSource';
+import { CandidateAvailability } from './CandidateAvailability';
 
 type Props = { requestId: string; onBack: () => Promise<void> };
 
@@ -302,7 +303,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
                   <td className="whitespace-nowrap px-4 py-3 text-gray-900 tabular-nums">{item.quantity?.toLocaleString() ?? '—'} <span className="text-gray-500">{item.unit}</span></td>
                   <td className="whitespace-nowrap px-4 py-3 font-semibold text-gray-700 tabular-nums">{typeof item.rankingScore === 'number' ? formatRankingScore(item.rankingScore) + '/100' : '—'}</td>
                   <td className="px-4 py-3">{isOffer ? <span className="text-gray-400">—</span>
-                    : <span className="text-gray-700">{item.availability?.replace(/_/g, ' ') ?? '—'}</span>}</td>
+                    : item.availability ? <CandidateAvailability candidate={{ available_quantity: item.availableQuantity, required_stock_quantity: item.requiredStockQuantity, stock_unit: item.stockUnit, availability_status: item.availability }} /> : <span className="text-gray-700">—</span>}</td>
                   <td className="px-4 py-3 text-xs">{isOffer ? <span><span className={offerStatus?.muted ? 'text-gray-400 line-through' : item.unitPrice == null && item.price == null ? 'italic text-gray-400' : 'font-semibold text-violet-800'}>{formatOfferPrice(item.price, item.currency, item.priceBasis, item.unitPrice, item.unitPriceUnit)}</span><span className="text-gray-400"> · </span><span className={offerStatus?.warning ? 'font-semibold text-red-700' : 'text-gray-700'}>{offerStatus?.label}</span></span> : <span className="text-gray-400">—</span>}</td>
                 </tr>;
               })}</tbody>

@@ -3,8 +3,12 @@ from decimal import Decimal
 import pytest
 
 from app.matching.constraints.engine import ConstraintEngine, load_default_policy
-from app.matching.contracts import AvailabilityStatus, RuleOutcome
-from app.matching.packaging import calculate_packaging, observed_availability
+from app.matching.contracts import AvailabilityStatus, QuantityValue, RuleOutcome
+from app.matching.packaging import (
+    calculate_packaging,
+    observed_availability,
+    required_stock_quantity,
+)
 from tests.matching.factories import item, line
 
 
@@ -148,3 +152,86 @@ def test_legacy_master_is_excluded_without_metadata_flag() -> None:
     assert any(
         result.code == "master_item" and result.outcome is RuleOutcome.EXCLUDE for result in results
     )
+
+
+@pytest.mark.parametrize(
+    "stock_unit,request_unit",
+    [("STÜCK", "pcs"), ("PAKET", "packs"), ("FLASCHE", "bottles"),
+     ("PAAR", "pairs"), ("ROLLE", "rolls"), ("TUBE", "tubes"),
+     ("KANISTER", "canisters"), ("EIMER", "buckets"), ("PALETTE", "pallets")],
+)
+def test_same_count_units_need_no_package_size(stock_unit, request_unit):
+    candidate = item("410001001", "Article", on_hand=Decimal("60")).model_copy(
+        update={"package": None, "purchasing_blocked": True}
+    )
+    candidate = candidate.model_copy(
+        update={"stock": candidate.stock.model_copy(update={"unit": stock_unit})}
+    )
+    request = QuantityValue(value=Decimal("50"), unit=request_unit)
+    packaging = calculate_packaging(request, candidate)
+    assert packaging.status == "not_required" and not packaging.warnings
+    assert observed_availability(request, candidate, packaging) == (
+        AvailabilityStatus.ON_HAND_SUFFICIENT, None
+    )
+    assert required_stock_quantity(request, candidate) == Decimal("50")
+    inquiry = line().model_copy(update={"quantity": request})
+    assert not any(r.outcome is RuleOutcome.EXCLUDE for r in
+                   ConstraintEngine(load_default_policy()).evaluate(inquiry, candidate))
+
+
+@pytest.mark.parametrize(
+    "stock_unit,request_unit,stock,quantity,expected",
+    [("PAKET", "pieces", "5", "50", AvailabilityStatus.ON_HAND_SUFFICIENT),
+     ("PAKET", "pieces", "4", "50", AvailabilityStatus.ON_HAND_PARTIAL),
+     ("STÜCK", "packs", "60", "5", AvailabilityStatus.ON_HAND_SUFFICIENT),
+     ("STÜCK", "packs", "59", "5", AvailabilityStatus.ON_HAND_PARTIAL)],
+)
+def test_confirmed_conversion_compares_quantity_in_both_directions(
+    stock_unit, request_unit, stock, quantity, expected
+):
+    candidate = item("410001001", "Article", units_per_package=Decimal("12"),
+                     on_hand=Decimal(stock))
+    candidate = candidate.model_copy(
+        update={"stock": candidate.stock.model_copy(update={"unit": stock_unit})}
+    )
+    requested = QuantityValue(value=Decimal(quantity), unit=request_unit)
+    packaging = calculate_packaging(requested, candidate)
+    assert observed_availability(requested, candidate, packaging) == (expected, None)
+    assert required_stock_quantity(requested, candidate) == (
+        Decimal(quantity) / Decimal("12") if stock_unit == "PAKET"
+        else Decimal(quantity) * Decimal("12")
+    )
+    if request_unit == "pieces":
+        assert packaging.recommended_option is None
+        assert "not confirmed" in packaging.warnings[0]
+
+
+def test_unstructured_names_do_not_supply_conversions_without_erp_package_metadata():
+    candidate = item("410001001", "Fixierpflaster 24 Rollen", on_hand=Decimal("50"))
+    candidate = candidate.model_copy(update={
+        "package": None, "purchasing_blocked": True,
+        "stock": candidate.stock.model_copy(update={"unit": "PAKET"}),
+    })
+    requested = QuantityValue(value=Decimal("200"), unit="rolls")
+    packaging = calculate_packaging(requested, candidate)
+    status, warning = observed_availability(requested, candidate, packaging)
+    assert status is AvailabilityStatus.UNKNOWN
+    assert "PAKET" in warning and "rolls" in warning
+    assert required_stock_quantity(requested, candidate) is None
+    assert warning == packaging.warnings[0]
+    assert any(r.outcome is RuleOutcome.EXCLUDE for r in
+               ConstraintEngine(load_default_policy()).evaluate(
+                   line().model_copy(update={"quantity": requested}), candidate))
+
+
+@pytest.mark.parametrize("quantity,unit", [(None, "pcs"), ("50", None), ("50", " ")])
+def test_missing_request_quantity_or_unit_does_not_claim_missing_inventory(quantity, unit):
+    candidate = item("410001001", "Article", on_hand=Decimal("60"))
+    requested = QuantityValue(value=Decimal(quantity) if quantity else None, unit=unit)
+    packaging = calculate_packaging(requested, candidate)
+    status, warning = observed_availability(requested, candidate, packaging)
+    assert status is AvailabilityStatus.UNKNOWN
+    assert warning == packaging.warnings[0]
+    assert "Requested" in warning and "missing" in warning
+    assert candidate.stock.fulfillable_quantity == Decimal("60")
+    assert required_stock_quantity(requested, candidate) is None

@@ -147,6 +147,7 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             # The queued job must still use its pinned snapshot.
             async with async_session() as session:
                 changed_domain = changed_stock.replace(b";404;nein;8;", b";204;nein;8;")
+                changed_domain = changed_domain.replace(b";nein;8;", b";nein;99;")
                 third = await CatalogImportService(session).import_files(
                     article_data=changed_domain, translation_data=translations,
                     article_filename=f"workflow-{suffix}-articles.csv",
@@ -232,6 +233,16 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             assert {first_number, second_number} <= {
                 candidate["item_number"] for line in state["lines"] for candidate in line["candidates"]
             }
+            for matching_line in state["lines"]:
+                for candidate in matching_line["candidates"]:
+                    assert candidate["stock_unit"] == "STÜCK"
+                    assert candidate["required_stock_quantity"] == (
+                        "2" if matching_line == state["lines"][0] else "3"
+                    )
+                    assert candidate["available_quantity"] == (
+                        "8" if candidate["item_number"] == first_number else "20"
+                    )
+                    assert candidate["packaging"]["status"] == "not_required"
             assert state["lines"][0]["selectedCandidateId"] == state["lines"][0]["candidates"][0]["candidate_id"]
             repeat = await client.post(f"/api/requests/{request_id}/matching")
             assert repeat.status_code == 202
@@ -253,6 +264,8 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
                 )
                 legacy_payload = json.loads(json.dumps(original_payload))
                 for candidate in legacy_payload["candidates"]:
+                    for field in ("available_quantity", "stock_unit", "required_stock_quantity"):
+                        candidate.pop(field, None)
                     candidate["score_components"]["ranking_score"] = 50000.0
                     candidate["score_components"].pop("ranking_score_normalized", None)
                 await session.execute(
@@ -268,7 +281,22 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             assert legacy_scores == sorted(legacy_scores, reverse=True)
             assert legacy_scores[0] == 100.0
             assert all(0.0 <= score <= 100.0 for score in legacy_scores)
+            for candidate in legacy_state.json()["lines"][0]["candidates"]:
+                assert candidate["available_quantity"] == (
+                    "8" if candidate["item_number"] == first_number else "20"
+                )
+                assert candidate["stock_unit"] == "STÜCK"
+                assert candidate["required_stock_quantity"] == "2"
+            direct_run = await client.get(f"/api/v1/match-runs/{completed_run}")
+            assert direct_run.status_code == 200, direct_run.text
+            assert [candidate["available_quantity"] for candidate in direct_run.json()["candidates"]] == [
+                candidate["available_quantity"] for candidate in legacy_state.json()["lines"][0]["candidates"]
+            ]
             async with async_session() as session:
+                unchanged_legacy = await session.scalar(
+                    text("SELECT result_payload FROM match_runs WHERE id = :id"), {"id": completed_run}
+                )
+                assert unchanged_legacy == legacy_payload
                 await session.execute(
                     text("UPDATE match_runs SET result_payload = CAST(:payload AS jsonb) WHERE id = :id"),
                     {"id": completed_run, "payload": json.dumps(original_payload)},
@@ -319,6 +347,26 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             assert summary.json()["status"] == "finalized"
             assert summary.json()["matchedCount"] == 1
             assert summary.json()["unmatchedCount"] == 1
+            selected = summary.json()["items"][0]
+            assert selected["stockUnit"] == "STÜCK"
+            assert selected["requiredStockQuantity"] == "2"
+            assert selected["availableQuantity"] == (
+                "8" if selected["itemNumber"] == first_number else "20"
+            )
+            async with async_session() as session:
+                quantity_legacy = json.loads(json.dumps(original_payload))
+                for candidate in quantity_legacy["candidates"]:
+                    for field in ("available_quantity", "stock_unit", "required_stock_quantity"):
+                        candidate.pop(field, None)
+                await session.execute(
+                    text("UPDATE match_runs SET result_payload = CAST(:payload AS jsonb) WHERE id = :id"),
+                    {"id": completed_run, "payload": json.dumps(quantity_legacy)},
+                )
+                await session.commit()
+            legacy_summary = await client.get(f"/api/requests/{request_id}/summary")
+            assert legacy_summary.status_code == 200, legacy_summary.text
+            assert legacy_summary.json()["items"][0]["availableQuantity"] == selected["availableQuantity"]
+            assert legacy_summary.json()["items"][0]["stockUnit"] == "STÜCK"
             assert summary.json()["items"][0]["rankingScore"] == (
                 first_line["candidates"][1]["score_components"]["ranking_score"]
             )

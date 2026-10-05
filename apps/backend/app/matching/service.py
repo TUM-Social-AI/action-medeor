@@ -22,7 +22,11 @@ from app.matching.contracts import (
 )
 from app.matching.domain import CandidateState, RetrievalHit
 from app.matching.eligibility import erp_exclusion
-from app.matching.packaging import calculate_packaging, observed_availability
+from app.matching.packaging import (
+    calculate_packaging,
+    observed_availability,
+    required_stock_quantity,
+)
 from app.matching.ports import (
     CatalogRepository,
     EmbeddingProvider,
@@ -41,7 +45,7 @@ from app.matching.retrieval.lexical import LexicalRetriever
 from app.matching.retrieval.vector import VectorRetriever
 from app.matching.validation import validate_inquiry
 
-ALGORITHM_VERSION = "allocura-matching-v3"
+ALGORITHM_VERSION = "allocura-matching-v5"
 
 
 class MatchingService:
@@ -258,6 +262,12 @@ class MatchingService:
                             manufacturer=state.item.manufacturer,
                             review_status=state.review_status,
                             availability_status=availability[state.item.item_number],
+                            available_quantity=state.item.stock.fulfillable_quantity
+                            if state.item.stock else None,
+                            stock_unit=state.item.stock.unit if state.item.stock else None,
+                            required_stock_quantity=required_stock_quantity(
+                                request.inquiry_line.quantity, state.item
+                            ),
                             retrieval_evidence=tuple(hit.as_evidence() for hit in state.evidence),
                             score_components={
                                 **state.score_components,

@@ -8,6 +8,7 @@ import type {
   MatchRunResponseV1,
 } from '../../api/matching/contracts';
 import type { MatchCandidateView, MatchRunView } from './models';
+import { getCandidateAvailability } from './availability-display';
 
 export function toMatchCandidateView(candidate: MatchCandidateV1): MatchCandidateView {
   return {
@@ -18,6 +19,7 @@ export function toMatchCandidateView(candidate: MatchCandidateV1): MatchCandidat
     rank: candidate.rank,
     reviewStatus: candidate.review_status,
     availabilityStatus: candidate.availability_status,
+    availabilityDetail: getCandidateAvailability(candidate).quantity ?? undefined,
     retrievalMethods: [...new Set(candidate.retrieval_evidence.map(item => item.retriever))],
     constraintMessages: candidate.constraints
       .filter(constraint => constraint.outcome !== 'pass')

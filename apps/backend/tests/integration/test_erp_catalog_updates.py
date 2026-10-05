@@ -3,6 +3,7 @@
 import json
 import os
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,8 +16,22 @@ from app.catalog.embeddings import CatalogEmbeddingJobService, EmbeddingModelSpe
 from app.catalog.listing import list_catalogue_articles
 from app.catalog.service import CatalogImportService
 from app.jobs.seed_suspended_example import ITEM_NUMBER, seed_suspended_example
-from app.matching.adapters.persistence import PgVectorRepository, PostgresCatalogRepository
-from app.matching.contracts import ProductDomain
+from app.matching.adapters.in_memory import InMemoryHistoryRepository
+from app.matching.adapters.persistence import (
+    PgVectorRepository,
+    PostgresCatalogRepository,
+    PostgresMatchRunRepository,
+)
+from app.matching.constraints.engine import load_default_policy
+from app.matching.contracts import AvailabilityStatus, MatchRequestV1, ProductDomain, QuantityValue
+from app.matching.eligibility import erp_exclusion
+from app.matching.packaging import (
+    calculate_packaging,
+    observed_availability,
+    required_stock_quantity,
+)
+from app.matching.service import MatchingService
+from tests.matching.factories import line
 
 pytestmark = pytest.mark.integration
 HEADER = (
@@ -66,6 +81,125 @@ async def upload(session, rows, translations=TRANSLATIONS):
         translation_filename="translations.csv",
         captured_at=datetime(2026, 10, 5, tzinfo=UTC),
     )
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+async def test_legacy_stock_display_uses_historical_inventory_without_rewriting_run(session, pinned):
+    description = "Fixierpflaster 1,25 cm x 9,1 m Kunstseide, 24 Rollen"
+    row = f"401101001;401101000;{description};;PAKET;404;nein;60;15;5;2;nein;nein;nein"
+    first = await upload(session, [row])
+    inquiry = line(description=description).model_copy(update={
+        "quantity": QuantityValue(value=1200, unit="rolls"),
+    })
+    runs = PostgresMatchRunRepository(session)
+    service = MatchingService(
+        catalog_repository=PostgresCatalogRepository(session),
+        history_repository=InMemoryHistoryRepository(), run_repository=runs,
+        policy=load_default_policy(),
+    )
+    result = await service.match(MatchRequestV1(
+        inquiry_line=inquiry, catalog_snapshot_id=str(first.catalog_snapshot_id) if pinned else None,
+    ))
+    assert result.candidates[0].available_quantity == 50
+    legacy = result.model_dump(mode="json")
+    for candidate in legacy["candidates"]:
+        for field in ("available_quantity", "stock_unit", "required_stock_quantity"):
+            candidate.pop(field)
+    await session.execute(text(
+        "UPDATE match_runs SET result_payload = CAST(:payload AS jsonb) WHERE id = :id"
+    ), {"id": result.match_run_id, "payload": json.dumps(legacy)})
+    newer = await upload(session, [row.replace(";60;15;5;", ";999;0;0;")])
+    # The rollback transaction fixes CURRENT_TIMESTAMP; simulate the later
+    # import's completion as it would be in independent transactions.
+    await session.execute(text("UPDATE catalog_imports SET completed_at = :later WHERE id = :id"),
+                          {"later": datetime.now(UTC), "id": newer.import_id})
+    restored = await runs.get_run(result.match_run_id)
+    candidate = restored.candidates[0]
+    assert candidate.available_quantity == 50
+    assert candidate.stock_unit == "PAKET"
+    assert candidate.required_stock_quantity == 50
+    assert candidate.availability_status == result.candidates[0].availability_status
+    assert candidate.rank == result.candidates[0].rank
+    assert candidate.candidate_id == result.candidates[0].candidate_id
+    assert await session.scalar(text("SELECT result_payload FROM match_runs WHERE id = :id"),
+                                {"id": result.match_run_id}) == legacy
+
+
+async def test_erp_description_conversions_use_pinned_versions_and_legacy_fallback(session, monkeypatch):
+    provider = Provider()
+    monkeypatch.setattr(progress, "create_embedding_provider", lambda _: provider)
+    embeddings = CatalogEmbeddingJobService(session)
+    await embeddings.register_and_activate(provider, preserve_active=True)
+    row = "401101001;401101000;Fixierpflaster 1,25 cm x 9,1 m Kunstseide, 24 Rollen;;PAKET;404;nein;60;15;5;2;nein;nein;ja"
+    first = await upload(session, [row])
+    assert await embeddings.process_pending(provider) == {"completed": 1, "failed": 0}
+    package = await session.scalar(text(
+        "SELECT package FROM catalog_item_versions WHERE item_number = '401101001'"
+    ))
+    assert package["units_per_package"] == "24" and package["stock_unit"] == "PAKET"
+
+    # Simulate a pre-feature database version in the isolated test database.
+    await session.execute(text(
+        "UPDATE catalog_item_versions SET package = NULL WHERE item_number = '401101001'"
+    ))
+    repository = PostgresCatalogRepository(session)
+    old = (await repository.list_items(
+        domain=ProductDomain.EQUIPMENT, snapshot_id=str(first.catalog_snapshot_id)
+    ))[0]
+    requested = QuantityValue(value=Decimal("1200"), unit="rolls")
+    inquiry = line().model_copy(update={"quantity": requested})
+    packaging = calculate_packaging(requested, old)
+    assert old.stock.fulfillable_quantity == 50
+    assert old.package.units_per_package == 24
+    assert "24 rolls per PAKET" in packaging.basis
+    assert not packaging.warnings
+    assert required_stock_quantity(requested, old) == 50
+    assert observed_availability(requested, old, packaging) == (
+        AvailabilityStatus.ON_HAND_SUFFICIENT, None
+    )
+    assert erp_exclusion(inquiry, old) is None
+    assert erp_exclusion(inquiry.model_copy(update={
+        "quantity": requested.model_copy(update={"value": Decimal("1201")})
+    }), old) is not None
+
+    status_only = await upload(session, [row.removesuffix(";ja") + ";nein"])
+    assert status_only.metadata_updated_items == 1
+    assert status_only.embedding_jobs_created == 0
+    assert len(provider.calls) == 1
+
+    changed = await upload(session, [row.replace("24 Rollen", "12 Rollen")])
+    assert changed.text_updated_items == 1
+    assert changed.embedding_jobs_created == 1
+    current = (await repository.list_items(domain=ProductDomain.EQUIPMENT))[0]
+    assert current.package.units_per_package == 12
+    assert erp_exclusion(inquiry, current) is not None
+    pinned = (await repository.list_items(
+        domain=ProductDomain.EQUIPMENT, snapshot_id=str(first.catalog_snapshot_id)
+    ))[0]
+    assert pinned.package.units_per_package == 24
+    assert erp_exclusion(inquiry, pinned) is None
+    replay = await upload(session, [row.replace("24 Rollen", "12 Rollen")])
+    assert replay.idempotent_replay
+    assert replay.import_id == changed.import_id
+
+
+async def test_dose_contents_compare_tablets_without_treating_tin_stock_as_tablets(session):
+    await upload(session, [
+        "202100001;202100000;Acetylsalicylic acid 500 mg tablets, 1000;;DOSE;201;nein;2;0;0;2;nein;nein;ja"
+    ])
+    item = (await PostgresCatalogRepository(session).list_items(domain=ProductDomain.MEDICINE))[0]
+    for value, unit, required, status in [
+        (2000, "tabs", 2, AvailabilityStatus.ON_HAND_SUFFICIENT),
+        (2001, "tablets", Decimal("2.001"), AvailabilityStatus.ON_HAND_PARTIAL),
+        (2, "DOSE", 2, AvailabilityStatus.ON_HAND_SUFFICIENT),
+    ]:
+        requested = QuantityValue(value=Decimal(value), unit=unit)
+        packaging = calculate_packaging(requested, item)
+        assert required_stock_quantity(requested, item) == required
+        assert observed_availability(requested, item, packaging) == (status, None)
+        if unit == "DOSE":
+            assert packaging.status == "not_required" and not packaging.warnings
+    assert required_stock_quantity(QuantityValue(value=2000, unit="capsules"), item) is None
 
 
 async def test_suspended_example_is_durable_visible_idempotent_and_ineligible(session):

@@ -118,6 +118,7 @@ class QuantityValue(ContractModel):
 class ProductPackage(ContractModel):
     units_per_package: Decimal | None = Field(default=None, gt=0)
     unit: str | None = None
+    stock_unit: str | None = None
     package_label: str | None = None
 
 
@@ -265,6 +266,7 @@ class PackagingOption(ContractModel):
 
 class PackagingResult(ContractModel):
     status: str
+    basis: str | None = None
     options: tuple[PackagingOption, ...] = ()
     recommended_option: PackagingOption | None = None
     warnings: tuple[str, ...] = ()
@@ -289,6 +291,9 @@ class MatchCandidateV1(ContractModel):
     manufacturer: str | None = None
     review_status: RuleOutcome
     availability_status: AvailabilityStatus
+    available_quantity: Decimal | None = Field(default=None, ge=0)
+    required_stock_quantity: Decimal | None = Field(default=None, ge=0)
+    stock_unit: str | None = None
     retrieval_evidence: tuple[RetrievalEvidence, ...]
     score_components: dict[str, float]
     constraints: tuple[ConstraintResult, ...]

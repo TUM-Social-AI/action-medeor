@@ -58,6 +58,36 @@ entire requested quantity. Piece and package aliases are normalized; unknown pac
 inferred. Restrictions and stock use the matching snapshot. Existing results and queued requests
 remain unchanged; newly started requests use the latest import.
 
+Matching shows the snapshot's calculated available quantity in the ERP unit even when the requested
+quantity cannot be compared. For example, **50 PAKET available** can appear alongside **Request
+quantity not comparable** for a request in rolls. The inventory is known; the conversion is missing.
+Stored historical runs without quantity fields load their display quantity and unit from their
+saved import snapshot. Early runs without an explicit snapshot use the completed import available
+when they started. This is read-only response enrichment: saved results, ranking, and decisions are
+not recomputed or rewritten, and newer inventory never replaces historical stock. If no historical
+stock can be recovered, the UI still reports that the quantity is unavailable.
+Matching cards and the order summary show the calculated available quantity instead of a stock
+status label. The number is green for sufficient stock, orange when sufficient stock is at most
+110% of the requested quantity, and red for insufficient stock. This margin uses the request
+expressed in the ERP stock unit, including confirmed package conversions. Unknown comparisons
+stay grey, with an explanation on hover and for screen readers.
+
+Unambiguous unit aliases such as `PAKET`/packs, `STÜCK`/pcs, `FLASCHE`/bottles, `PAAR`/pairs,
+`ROLLE`/rolls and `TUBE`/tubes compare directly. Matching does not require a package size when the
+request already uses the ERP stock unit. A pack-to-content conversion needs confirmed article-specific
+`units_per_package`, its contained `unit`, and the ERP `stock_unit`. The confirmed ERP naming convention
+provides these through the final comma-separated segment in `Beschreibung`: `24 Rollen` means
+24 rolls per ERP unit, `tablets, 1000` means 1,000 tablets, `10 x 10` multiplies the counts, and
+`2 Dtzd.` means 24 pieces. A bare number needs an unambiguous contained-unit word in the name.
+Dimensions, strength, volume, unclear suffixes, and translations are not used as count fallbacks.
+Imports store the structured package in immutable version metadata and the record hash. This
+metadata does not add anything to the embedding text hash; unchanged product text reuses vectors.
+Existing versions without package metadata derive it from their pinned description and ERP unit,
+so no re-upload, database rewrite, or embedding run is needed. Explicit package metadata takes
+precedence. Match details show the conversion and identify the ERP description as its source.
+Conversions work in both directions, including non-exact package quantities;
+the available stock comparison does not automatically choose a rounded supply option.
+
 The dialog shows real import counts, warnings, and checksum replays. Product embeddings are reused
 for stock/status-only changes and regenerated for new or changed searchable text. A lifespan worker
 drains durable embedding jobs outside upload requests, backfills missing vectors on initialization,
