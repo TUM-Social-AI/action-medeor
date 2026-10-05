@@ -18,6 +18,7 @@ from app.api.schemas import (
     ExtractedItem,
     HomeResponse,
     ItemUpdate,
+    ManualItemCreate,
     MatchingResponse,
     MatchSelection,
     MatchSelectionResponse,
@@ -25,6 +26,7 @@ from app.api.schemas import (
     PartnerDetails,
     PartnerUpdate,
     RecentImport,
+    RequestCreate,
     RequestDecision,
     RequestMatchingState,
     RequestState,
@@ -124,8 +126,13 @@ async def _parse_request_file(file: UploadFile):
 
 
 @router.post("/requests", status_code=201)
-async def create_request(session: AsyncSession = Depends(get_session)) -> RequestState:
-    request = await repository.create_draft_request(session)
+async def create_request(
+    payload: RequestCreate | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> RequestState:
+    request = await repository.create_draft_request(
+        session, manual=payload is not None and payload.mode == "manual"
+    )
     return request_state(request)
 
 
@@ -194,6 +201,42 @@ async def review(request_id: str, session: AsyncSession = Depends(get_session)) 
     return fixtures.review_response()
 
 
+@router.post("/requests/{request_id}/items", status_code=201)
+async def add_manual_item(
+    request_id: str,
+    payload: ManualItemCreate,
+    session: AsyncSession = Depends(get_session),
+) -> ExtractedItem:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if request.workflow_status != "review":
+        raise HTTPException(status_code=409, detail="Items can only be added during review")
+    item = await repository.add_manual_item(session, request, payload)
+    return repository.to_extracted_item(item)
+
+
+@router.delete("/requests/{request_id}/items/{item_id}", status_code=204)
+async def remove_manual_item(
+    request_id: str,
+    item_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    item = next((item for item in request.items if item.id == item_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if request.workflow_status != "review":
+        raise HTTPException(status_code=409, detail="Review is locked after matching starts")
+    if not item.manual:
+        raise HTTPException(status_code=409, detail="Only manual items can be removed")
+    await session.delete(item)
+    await session.commit()
+    return Response(status_code=204)
+
+
 @router.patch("/requests/{request_id}/items/{item_id}")
 async def update_item(
     request_id: str,
@@ -208,6 +251,17 @@ async def update_item(
         if request.workflow_status != "review":
             raise HTTPException(status_code=409, detail="Review is locked after matching starts")
         update = payload.model_dump(exclude_unset=True)
+        item = next(item for item in request.items if item.id == item_id)
+        if item.manual:
+            # Keep manual items complete when editing them, just as on creation.
+            try:
+                ManualItemCreate.model_validate({
+                    **repository.to_extracted_item(item).model_dump(), **update,
+                })
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422, detail="Manual items require a name, positive quantity and product type"
+                ) from exc
         updated = await repository.update_item_fields(session, item_id, update)
         return repository.to_extracted_item(updated)
 
@@ -354,7 +408,7 @@ async def start_matching(
         assert state is not None
         return state
     if request.workflow_status not in {"review", "matching_failed"}:
-        raise HTTPException(status_code=409, detail="Upload a file before matching")
+        raise HTTPException(status_code=409, detail="Upload a file or create a manual request before matching")
     await repository.suggest_missing_item_domains(session, request)
     if not request.items or any(item.status != "verified" or not item.domain for item in request.items):
         raise HTTPException(status_code=422, detail="Verify and classify every item before matching")

@@ -80,6 +80,7 @@ class ExtractedItem(BaseModel):
     confidence: int | None
     status: ItemStatus
     domain: Literal["medicine", "equipment"] | None = None
+    manual: bool = False
 
 
 class ReviewCounts(BaseModel):
@@ -136,6 +137,21 @@ class ItemUpdate(BaseModel):
     shelfLife: str | None = None
     priority: Priority | None = None
     domain: Literal["medicine", "equipment"] | None = None
+
+
+class ManualItemCreate(BaseModel):
+    name: str = Field(min_length=1, pattern=r"\S")
+    quantity: int = Field(gt=0, strict=True)
+    unit: str = ""
+    notes: str = ""
+    itemNumber: str = ""
+    shelfLife: str = ""
+    priority: Priority = "medium"
+    domain: Literal["medicine", "equipment"]
+
+
+class RequestCreate(BaseModel):
+    mode: Literal["upload", "manual"] = "upload"
 
 
 class PartnerUpdate(BaseModel):

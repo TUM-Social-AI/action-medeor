@@ -41,7 +41,9 @@ def to_inquiry_line(request: ImportRequestRow, item: RequestItemRow) -> InquiryL
         raise ValueError(f"Item {item.id} needs a medicine/equipment type")
     reference = item.source_reference
     suffix = request.source_file_name.lower().rsplit(".", 1)[-1]
-    source_type = SourceType.EXCEL if suffix in {"xlsx", "xls"} else SourceType.OTHER
+    source_type = (
+        SourceType.EXCEL if not item.manual and suffix in {"xlsx", "xls"} else SourceType.OTHER
+    )
     captured = request.created_at
     if captured.tzinfo is None:
         captured = captured.replace(tzinfo=UTC)
@@ -66,7 +68,7 @@ def to_inquiry_line(request: ImportRequestRow, item: RequestItemRow) -> InquiryL
             document_id=request.request_id,
             captured_at=captured,
             row=reference.row if reference and reference.row > 0 else None,
-            locator={
+            locator={"entry_method": "manual"} if item.manual else {
                 "file_name": request.source_file_name,
                 "page": reference.page if reference else None,
                 "excerpt": reference.excerpt if reference else None,

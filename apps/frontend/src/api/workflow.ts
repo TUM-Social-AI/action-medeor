@@ -74,7 +74,8 @@ export type SavedSummary = {
   unmatchedCount: number;
 };
 
-export const createRequest = () => requestJson<SavedRequest>('/api/requests', { method: 'POST' });
+export const createRequest = (mode: 'upload' | 'manual' = 'upload') =>
+  requestJson<SavedRequest>('/api/requests', { method: 'POST', body: JSON.stringify({ mode }) });
 export const listRequests = () => requestJson<SavedRequest[]>('/api/requests');
 export const deleteRequest = (id: string) =>
   requestJson<void>(`/api/requests/${encodeURIComponent(id)}`, { method: 'DELETE' });

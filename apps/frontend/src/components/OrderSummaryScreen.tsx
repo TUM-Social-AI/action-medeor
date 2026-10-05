@@ -270,7 +270,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
         <div className={tableExpanded ? 'fixed inset-0 z-[60] bg-gray-950/50 p-2 sm:p-4' : ''}>
           <div role={tableExpanded ? 'dialog' : undefined} aria-modal={tableExpanded ? true : undefined} aria-labelledby="summary-table-title" className={'bg-white rounded-xl border border-gray-200 overflow-hidden ' + (tableExpanded ? 'flex h-full flex-col shadow-2xl' : '')}>
           <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between gap-3 sm:px-5">
-            <div id="summary-table-title" className="text-sm text-gray-900 font-bold truncate">Matched Items · {data.sourceFile}</div>
+            <div id="summary-table-title" className="text-sm text-gray-900 font-bold truncate">Matched Items · {data.sourceFile || 'Manual request'}</div>
             <div className="flex flex-shrink-0 items-center gap-3">
               <div className="hidden sm:block text-xs text-gray-400 whitespace-nowrap">Request ID: {data.requestId}</div>
               {tableExpanded ? <button ref={tableCloseRef} type="button" onClick={closeTable} aria-label="Close expanded table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><X size={14} /> Close</button> : <button ref={tableExpandRef} type="button" onClick={() => setTableExpanded(true)} aria-label="Expand matched items table" className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Maximize2 size={14} /> Expand</button>}
@@ -342,7 +342,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
                 { label: 'Request ID', value: data.requestId },
                 { label: 'Contact', value: data.contact },
                 { label: 'Request date', value: data.requestDate },
-                { label: 'Source file', value: data.sourceFile },
+                { label: 'Source', value: data.sourceFile || 'Manual entry' },
               ].map(row => <div key={row.label}><dt className="text-xs text-gray-400">{row.label}</dt><dd className="text-xs text-gray-800 font-medium break-words">{row.value || 'Not specified'}</dd></div>)}
             </dl>
             {data.partnerConfirmed ? <div className="mt-4 flex items-center gap-1.5 text-xs font-medium text-green-700"><CheckCircle2 size={14} /> Details confirmed</div> :

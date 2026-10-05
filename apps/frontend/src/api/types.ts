@@ -81,6 +81,7 @@ export type ExtractedItem = {
   confidence: number | null;
   status: ItemStatus;
   domain?: 'medicine' | 'equipment' | null;
+  manual: boolean;
 };
 
 export type ReviewCounts = {
@@ -120,6 +121,11 @@ export type ItemUpdate = Partial<
 >;
 
 export type PartnerUpdate = Pick<PartnerDetails, 'partner' | 'region' | 'requestId' | 'contact'>;
+
+export type ManualItemCreate = Omit<Required<ItemUpdate>, 'quantity' | 'domain'> & {
+  quantity: number;
+  domain: 'medicine' | 'equipment';
+};
 
 /** A field the user wants extracted, requested after the initial extraction from the review
  * screen's "Add column" control - either picked from availableColumns or typed freely. displayName

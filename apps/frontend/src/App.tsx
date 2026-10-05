@@ -3,6 +3,7 @@ import type { LoadingType, ReviewResponse, Screen } from './api/types';
 import { createImport } from './api/client';
 import { getAvatar, getCurrentUser, saveAvatar, type AvatarId } from './api/identity';
 import {
+  createRequest,
   finalizeRequest,
   getRequest,
   reopenRequestMatching,
@@ -40,6 +41,7 @@ export default function App() {
   const [requestId, setRequestId] = useState<string | null>(null);
   const [reviewData, setReviewData] = useState<ReviewResponse | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [isStartingManual, setIsStartingManual] = useState(false);
 
   const navigationVersion = useRef(0);
 
@@ -154,6 +156,26 @@ export default function App() {
     }
   };
 
+  const handleStartManual = async () => {
+    if (isStartingManual) return;
+    const version = navigationVersion.current;
+    setWorkflowError(null);
+    setIsStartingManual(true);
+    try {
+      const request = await createRequest('manual');
+      if (version !== navigationVersion.current) return;
+      setRequestId(request.requestId);
+      setReviewData(null);
+      navigate('review', request.requestId);
+    } catch (caught) {
+      if (version === navigationVersion.current) {
+        setWorkflowError(caught instanceof Error ? caught.message : 'Unable to create manual request');
+      }
+    } finally {
+      setIsStartingManual(false);
+    }
+  };
+
   const finalizeAndOpenSummary = async () => {
     if (!requestId) return;
     await finalizeRequest(requestId);
@@ -191,6 +213,7 @@ export default function App() {
       {currentScreen === 'catalogue' && <CatalogueScreen />}
       {currentScreen === 'ingestion' && <IngestionScreen
         onContinue={file => void handleImport(file)} error={workflowError} onOpenRequest={openRequest}
+        onStartManual={() => void handleStartManual()} isStartingManual={isStartingManual}
       />}
       {currentScreen === 'review' && requestId && <ReviewItemsScreen
         key={requestId} requestId={requestId} initialData={reviewData}

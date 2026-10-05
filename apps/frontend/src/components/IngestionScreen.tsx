@@ -6,6 +6,7 @@ import {
   FileSpreadsheet,
   FileText,
   Info,
+  PenLine,
   Upload,
   X,
 } from 'lucide-react';
@@ -17,6 +18,8 @@ type IngestionScreenProps = {
   onContinue: (file: File) => void;
   error?: string | null;
   onOpenRequest: (request: SavedRequest) => void;
+  onStartManual: () => void;
+  isStartingManual?: boolean;
 };
 
 function isValidFile(file: File) {
@@ -25,7 +28,7 @@ function isValidFile(file: File) {
   );
 }
 
-export function IngestionScreen({ onContinue, error: workflowError, onOpenRequest }: IngestionScreenProps) {
+export function IngestionScreen({ onContinue, error: workflowError, onOpenRequest, onStartManual, isStartingManual = false }: IngestionScreenProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [imports, setImports] = useState<SavedRequest[]>([]);
@@ -184,10 +187,32 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
             </p>
           </div>
 
+          <div className="mt-6 flex items-center gap-3">
+            <div className="h-px flex-1 bg-gray-200" />
+            <span className="text-xs text-gray-400 uppercase tracking-wider font-semibold">or</span>
+            <div className="h-px flex-1 bg-gray-200" />
+          </div>
+          <button
+            onClick={onStartManual}
+            disabled={isStartingManual}
+            className="mt-4 w-full flex items-center gap-4 p-4 rounded-xl border border-gray-200 bg-white hover:border-[#1B4E8A]/40 hover:bg-blue-50/30 transition-colors text-left group disabled:opacity-60 disabled:cursor-wait"
+          >
+            <div className="w-10 h-10 rounded-lg bg-[#1B4E8A]/10 flex items-center justify-center flex-shrink-0">
+              <PenLine size={18} className="text-[#1B4E8A]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-gray-900 font-semibold">{isStartingManual ? 'Creating request…' : 'Create request manually'}</div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                No file? Enter items line by line — for phone, e-mail or verbal requests.
+              </div>
+            </div>
+            <ArrowRight size={16} className="text-gray-400 group-hover:text-[#1B4E8A] transition-colors" />
+          </button>
+
           <div className="mt-4 flex items-center justify-end">
             <button
               onClick={() => uploadedFile && onContinue(uploadedFile)}
-              disabled={!uploadedFile}
+              disabled={!uploadedFile || isStartingManual}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm transition-all ${
                 uploadedFile
                   ? 'bg-[#1B4E8A] text-white hover:bg-[#163d6d] shadow-sm cursor-pointer'
@@ -213,13 +238,13 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
             {importsError && <ErrorPanel message={importsError} />}
             {!isLoadingImports && !importsError && (
               <div className="space-y-2.5">
-                {imports.filter(item => item.sourceFile).slice(0, 5).map(item => (
+                {imports.slice(0, 5).map(item => (
                   <button
                     key={item.requestId}
                     onClick={() => onOpenRequest(item)}
                     className="block w-full text-left p-3 bg-gray-50 rounded-lg hover:bg-gray-100 border border-gray-100"
                   >
-                    <div className="text-xs font-medium text-gray-900 truncate" title={item.sourceFile || ''}>{item.sourceFile}</div>
+                    <div className="text-xs font-medium text-gray-900 truncate" title={item.sourceFile || 'Manual request'}>{item.sourceFile || 'Manual request'}</div>
                     <div className="text-xs text-gray-500 mt-1">{item.partner || item.requestId}</div>
                     <div className="text-xs text-gray-400 mt-1">{item.itemCount} items · {item.status.replace(/_/g, ' ')}</div>
                   </button>
@@ -232,4 +257,3 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
     </div>
   );
 }
-

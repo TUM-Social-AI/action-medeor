@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.schemas import (
     ExtractedItem,
+    ManualItemCreate,
     PartnerDetails,
     PartnerUpdate,
     ReviewCounts,
@@ -253,10 +254,10 @@ async def add_custom_column(
         filename=request.source_file_name, content=request.raw_file, custom_columns=all_specs
     )
 
-    for position, item in enumerate(request.items):
-        if position >= len(parsed.items):
+    for item in request.items:
+        if item.manual or item.position >= len(parsed.items):
             continue
-        value = parsed.items[position].attributes.get(spec.display_name)
+        value = parsed.items[item.position].attributes.get(spec.display_name)
         if value:
             updated_attributes = dict(item.attributes or {})
             updated_attributes[spec.display_name] = value
@@ -303,6 +304,7 @@ def to_extracted_item(row: RequestItemRow) -> ExtractedItem:
         confidence=row.confidence,
         status=row.status,
         domain=row.domain,
+        manual=bool(row.manual),
     )
 
 
@@ -358,13 +360,34 @@ def review_counts(items: list[ExtractedItem]) -> ReviewCounts:
     )
 
 
-async def create_draft_request(session: AsyncSession) -> ImportRequestRow:
-    request = ImportRequestRow(request_id=generate_request_id(), source_file_name="")
+async def create_draft_request(session: AsyncSession, *, manual: bool = False) -> ImportRequestRow:
+    request = ImportRequestRow(
+        request_id=generate_request_id(), source_file_name="",
+        workflow_status="review" if manual else "draft",
+        request_date=dt.date.today().isoformat() if manual else None,
+    )
     session.add(request)
     await session.commit()
     saved = await get_request_by_id(session, request.request_id)
     assert saved is not None
     return saved
+
+
+async def add_manual_item(
+    session: AsyncSession, request: ImportRequestRow, payload: ManualItemCreate
+) -> RequestItemRow:
+    fields = payload.model_dump()
+    item = RequestItemRow(
+        request_id=request.request_id,
+        position=max((row.position for row in request.items), default=-1) + 1,
+        **{_ITEM_UPDATE_FIELD_MAP.get(key, key): value for key, value in fields.items()},
+        manual=True, status="verified", confidence=None,
+    )
+    item.name = item.name.strip()
+    request.items.append(item)
+    await session.commit()
+    await session.refresh(item)
+    return item
 
 
 async def request_match_rates(session: AsyncSession) -> dict[str, int]:
@@ -425,7 +448,7 @@ async def list_requests(session: AsyncSession) -> list[ImportRequestRow]:
     result = await session.execute(
         select(ImportRequestRow)
         .options(selectinload(ImportRequestRow.items))
-        .where(ImportRequestRow.source_file_name != "")
+        .where(ImportRequestRow.workflow_status != "draft")
         .order_by(ImportRequestRow.created_at.desc(), ImportRequestRow.id.desc())
     )
     return list(result.scalars().all())

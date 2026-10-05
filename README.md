@@ -455,16 +455,24 @@ open at the summary from history; returning to matching clears that final state 
 decisions. Pricing and offer creation are not available in this workflow.
 
 Apply the current migrations with `uv run alembic upgrade head` before using this workflow.
+Requests can also start with **Create request manually**, which opens an empty review without
+uploading or extracting a file. **Add item manually** is available below the review table for
+both manual and uploaded requests. Manual items require a name, positive whole-number quantity,
+and Medicine/Equipment type; they are saved as verified, marked **Manual**, and can be edited or
+removed until matching starts. Manual requests remain available in request history.
+
 Import a catalog first through `POST /api/v1/catalog-imports` or the catalog import job. The
 catalog snapshot is fixed when request matching starts. If `EMBEDDING_PROVIDER` is configured,
 the matching worker generates query embeddings and includes vector retrieval; with the setting
 empty, exact and lexical retrieval still run.
 
 ```text
-POST /api/requests                        create draft
+POST /api/requests                        create draft, or {"mode":"manual"} for review
 POST /api/requests/{id}/file              upload and extract
 GET  /api/requests                        list saved requests
 GET  /api/requests/{id}/review            reopen extraction and review
+POST /api/requests/{id}/items             add a verified manual item
+DELETE /api/requests/{id}/items/{item}    remove a manual item during review
 POST /api/requests/{id}/matching          queue or retry matching
 GET  /api/requests/{id}/matching          progress, candidates, decisions
 POST /api/requests/{id}/matching/auto-select  apply saved defaults to older runs
