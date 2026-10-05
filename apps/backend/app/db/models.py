@@ -97,6 +97,7 @@ class RequestItemRow(Base):
     confidence: Mapped[int | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="needs_review")
     domain: Mapped[str | None] = mapped_column(default=None)
+    manual: Mapped[bool] = mapped_column(default=False, server_default="false")
     match_status: Mapped[str] = mapped_column(default="pending")
     match_error: Mapped[str | None] = mapped_column(default=None)
     current_match_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)

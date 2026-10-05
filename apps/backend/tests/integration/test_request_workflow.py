@@ -34,7 +34,8 @@ TRANSLATION_HEADER = "Artikelnr.;Sprachcode;Beschreibung;Beschreibung 2\r\n"
 
 
 @pytest.mark.asyncio
-async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
+@pytest.mark.parametrize("manual_addition", [False, True])
+async def test_saved_request_matches_and_reopens(monkeypatch, manual_addition) -> None:
     if not os.getenv("MATCHING_TEST_DATABASE_URL"):
         pytest.skip("MATCHING_TEST_DATABASE_URL is not configured")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "")
@@ -89,7 +90,7 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             content = (
                 "Item,Quantity,Unit\n"
                 + f"{descriptions[0]},2,pcs\n"
-                + f"{descriptions[1]},3,pcs\n"
+                + ("" if manual_addition else f"{descriptions[1]},3,pcs\n")
             ).encode()
             uploaded = await client.post(
                 f"/api/requests/{request_id}/file",
@@ -99,6 +100,13 @@ async def test_saved_request_matches_and_reopens(monkeypatch) -> None:
             after_upload = await client.get("/api/requests")
             assert any(row["requestId"] == request_id for row in after_upload.json())
             items = uploaded.json()["items"]
+            if manual_addition:
+                added = await client.post(f"/api/requests/{request_id}/items", json={
+                    "name": descriptions[1], "quantity": 3, "unit": "pcs", "domain": "equipment",
+                })
+                assert added.status_code == 201, added.text
+                items.append(added.json())
+                assert items[1]["manual"] is True
             assert len(items) == 2
             assert [item["domain"] for item in items] == ["equipment", "equipment"]
             # Legacy review rows without a type receive the same suggestion on reopen.

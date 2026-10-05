@@ -5,6 +5,7 @@ import type {
   HomeResponse,
   ImportFileType,
   ItemUpdate,
+  ManualItemCreate,
   MatchingResponse,
   OfferResponse,
   PartnerDetails,
@@ -43,6 +44,17 @@ export function updateItem(requestId: string, itemId: number, payload: ItemUpdat
     method: 'PATCH',
     body: JSON.stringify(payload),
   });
+}
+
+export function addManualItem(requestId: string, payload: ManualItemCreate) {
+  return requestJson<ExtractedItem>(`/api/requests/${requestId}/items`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function removeManualItem(requestId: string, itemId: number) {
+  return requestJson<void>(`/api/requests/${requestId}/items/${itemId}`, { method: 'DELETE' });
 }
 
 export function verifyItem(requestId: string, itemId: number) {

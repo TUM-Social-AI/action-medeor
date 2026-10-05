@@ -13,13 +13,16 @@ import {
   ChevronRight,
   ListPlus,
   Pencil,
+  PenLine,
   Plus,
   X,
 } from 'lucide-react';
 import {
   addCustomColumn,
+  addManualItem,
   confirmPartner,
   getReview,
+  removeManualItem,
   updateColumnLabel,
   updateItem,
   updatePartner,
@@ -28,6 +31,7 @@ import {
 import type {
   ExtractedItem,
   ItemStatus,
+  ManualItemCreate,
   PartnerDetails,
   Priority,
   ReviewResponse,
@@ -37,9 +41,12 @@ import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { WorkflowStepper } from './WorkflowStepper';
 
 type ReviewItemsScreenProps = {
-  requestId: string;
+  requestId: string | null;
   initialData?: ReviewResponse | null;
   onContinue: () => void;
+  onCreateManual?: (
+    item: ManualItemCreate, partner: PartnerDetails, columnLabels: Record<string, string>,
+  ) => Promise<ReviewResponse>;
 };
 
 const PRIORITY_CFG: Record<Priority, { label: string; color: string; bg: string }> = {
@@ -138,13 +145,17 @@ function EditableLabel({ value, onSave }: { value: string; onSave: (next: string
   );
 }
 
-export function ReviewItemsScreen({ requestId, initialData, onContinue }: ReviewItemsScreenProps) {
+export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreateManual }: ReviewItemsScreenProps) {
   const [data, setData] = useState<ReviewResponse | null>(initialData ?? null);
   const [items, setItems] = useState<ExtractedItem[]>(initialData?.items ?? []);
   const [partnerDetails, setPartnerDetails] = useState<PartnerDetails | null>(
     initialData?.partner ?? null,
   );
   const [editingItem, setEditingItem] = useState<ExtractedItem | null>(null);
+  const [isNewItem, setIsNewItem] = useState(false);
+  const [isSavingItem, setIsSavingItem] = useState(false);
+  const [removingItemId, setRemovingItemId] = useState<number | null>(null);
+  const [itemError, setItemError] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Partial<ExtractedItem>>({});
   const [editingPartner, setEditingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState<PartnerDetails | null>(null);
@@ -166,6 +177,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   // back to its old text while the request is in flight, then reconciles with the server's copy.
   const renameColumn = (key: string, label: string) => {
     setColumnLabels(previous => ({ ...previous, [key]: label }));
+    if (!requestId) return;
     updateColumnLabel(requestId, key, label)
       .then(setColumnLabels)
       .catch(caught => {
@@ -185,8 +197,9 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   // free) or typed freely by the user, in which case it still guides the LLM fallback match the
   // same way a hint would - see CustomColumnRequest / app.parsing.custom_columns.
   const submitNewColumn = async () => {
+    if (!requestId) return;
     const trimmed = newColumnName.trim();
-    if (!trimmed || existingColumnLabels.has(trimmed.toLowerCase())) {
+    if (!trimmed || isAddingColumn || isSavingItem || removingItemId !== null || existingColumnLabels.has(trimmed.toLowerCase())) {
       return;
     }
 
@@ -222,6 +235,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       setData(initialData);
       setItems(initialData.items);
       setPartnerDetails(initialData.partner);
+      if (!initialData.source.fileName && !initialData.partner.confirmed) {
+        setPartnerDraft(initialData.partner);
+        setEditingPartner(true);
+      }
       setColumnLabels(initialData.columnLabels ?? {});
       setAvailableColumns(initialData.availableColumns ?? []);
       setIsLoading(false);
@@ -229,6 +246,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
     }
 
     let mounted = true;
+    if (!requestId) {
+      setIsLoading(false);
+      return;
+    }
     setIsLoading(true);
     getReview(requestId)
       .then(response => {
@@ -236,6 +257,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
           setData(response);
           setItems(response.items);
           setPartnerDetails(response.partner);
+          if (!response.source.fileName && !response.partner.confirmed) {
+            setPartnerDraft(response.partner);
+            setEditingPartner(true);
+          }
           setColumnLabels(response.columnLabels ?? {});
           setAvailableColumns(response.availableColumns ?? []);
           setError(null);
@@ -280,7 +305,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   const showShelfLife = items.some(item => item.shelfLife);
   const showNotes = items.some(item => item.notes);
   const columnCount =
-    7 +
+    8 +
     (attributeColumns.length > 0 ? 1 : 0) +
     [showItemNumber, showUnit, showShelfLife, showNotes].filter(Boolean).length;
 
@@ -288,10 +313,16 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
   const needsReview = items.filter(item => item.status === 'needs_review').length;
   const lowConfidence = items.filter(item => item.status === 'low_confidence').length;
   const missing = items.filter(item => item.status === 'missing').length;
-  const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain);
+  const manualCount = items.filter(item => item.manual).length;
+  const isManualRequest = !!data && !data.source.fileName;
+  const itemMutationPending = isSavingItem || removingItemId !== null;
+  const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain)
+    && !itemMutationPending && !isAddingColumn;
   const blockedItems = items.filter(needsManualReview);
 
   const openEdit = (item: ExtractedItem) => {
+    setIsNewItem(false);
+    setItemError(null);
     setEditingItem(item);
     setEditValues({
       name: item.name,
@@ -305,35 +336,79 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
     });
   };
 
+  const openAdd = () => {
+    const item: ExtractedItem = {
+      id: 0, name: '', quantity: null, unit: '', notes: '', itemNumber: '', shelfLife: '',
+      attributes: {}, priority: 'medium', confidence: null, status: 'verified',
+      domain: null, manual: true,
+    };
+    openEdit(item);
+    setIsNewItem(true);
+  };
+
+  const canSave = !!editValues.name?.trim() && Number.isInteger(editValues.quantity)
+    && (editValues.quantity ?? 0) > 0 && !!editValues.domain;
+
   const saveEdit = async () => {
-    if (!editingItem) {
+    if (!editingItem || isSavingItem || !canSave) {
       return;
     }
 
-    if (!editValues.domain) {
-      setError('Choose Medicine or Equipment before verifying this item.');
-      return;
-    }
+    setIsSavingItem(true);
+    setItemError(null);
     try {
-      const updated = await updateItem(requestId, editingItem.id, {
-        name: editValues.name,
-        quantity: editValues.quantity,
-        unit: editValues.unit,
-        notes: editValues.notes,
-        itemNumber: editValues.itemNumber,
-        shelfLife: editValues.shelfLife,
-        priority: editValues.priority,
-        domain: editValues.domain,
-      });
-      setItems(prev => prev.map(item => (item.id === updated.id ? updated : item)));
+      const payload = {
+        name: editValues.name!.trim(),
+        quantity: editValues.quantity!,
+        unit: editValues.unit ?? '',
+        notes: editValues.notes ?? '',
+        itemNumber: editValues.itemNumber ?? '',
+        shelfLife: editValues.shelfLife ?? '',
+        priority: editValues.priority ?? 'medium',
+        domain: editValues.domain!,
+      };
+      if (!requestId) {
+        if (!isNewItem || !onCreateManual || !partnerDetails) return;
+        await onCreateManual(
+          payload, editingPartner && partnerDraft ? partnerDraft : partnerDetails, columnLabels,
+        );
+        setEditingItem(null);
+        return;
+      }
+      const updated = isNewItem
+        ? await addManualItem(requestId, payload)
+        : await updateItem(requestId, editingItem.id, payload);
+      setItems(prev => isNewItem ? [...prev, updated] : prev.map(item => (item.id === updated.id ? updated : item)));
       setEditingItem(null);
       setError(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to save item');
+      setItemError(caught instanceof Error ? caught.message : 'Unable to save item');
+    } finally {
+      setIsSavingItem(false);
+    }
+  };
+
+  const removeItem = async (id: number) => {
+    if (!requestId || itemMutationPending) return;
+    setRemovingItemId(id);
+    try {
+      await removeManualItem(requestId, id);
+      setItems(previous => previous.filter(item => item.id !== id));
+      setExpandedItems(previous => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to remove item');
+    } finally {
+      setRemovingItemId(null);
     }
   };
 
   const markVerified = async (id: number) => {
+    if (!requestId) return;
     const item = items.find(value => value.id === id);
     if (item && !item.domain) {
       openEdit(item);
@@ -361,12 +436,12 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
     }
 
     try {
-      const updated = await updatePartner(requestId, {
+      const updated = requestId ? await updatePartner(requestId, {
         partner: partnerDraft.partner,
         region: partnerDraft.region,
         requestId: partnerDraft.requestId,
         contact: partnerDraft.contact,
-      });
+      }) : partnerDraft;
       setPartnerDetails({
         ...partnerDraft,
         ...updated,
@@ -382,7 +457,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
 
   const confirmPartnerDetails = async () => {
     try {
-      const updated = await confirmPartner(requestId);
+      const updated = requestId ? await confirmPartner(requestId) : { confirmed: true };
       setPartnerDetails(details => details && { ...details, ...updated });
       setError(null);
     } catch (caught) {
@@ -417,13 +492,22 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
       <div className="flex flex-col xl:flex-row gap-5 items-start">
         <div className="w-full flex-1 min-w-0">
           <div className="mb-4">
-            <h1 className="text-gray-900">Review Extracted Items</h1>
+            <h1 className="text-gray-900">{isManualRequest ? 'Build Manual Request' : 'Review Extracted Items'}</h1>
             <p className="text-gray-500 text-sm mt-0.5">
-              Check the extracted items and suggested product types. Specific units and names are
-              classified automatically; edit a type if it is wrong or still unclear.
+              {isManualRequest
+                ? 'Add each requested item with a quantity and product type. Manually entered items are treated as verified.'
+                : 'Check the extracted items and suggested product types. Edit a type if it is wrong or still unclear. Missed a row? Add it manually below the table.'}
             </p>
           </div>
 
+          {isManualRequest ? (
+            <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 flex items-center gap-2 mb-3">
+              <PenLine size={14} className="text-slate-500 flex-shrink-0" />
+              <span className="text-sm text-slate-700">Source: <span className="font-medium">Manual entry</span></span>
+              <span className="text-slate-300 mx-1">·</span>
+              <span className="text-sm text-slate-600">{items.length} item(s) added</span>
+            </div>
+          ) : (
           <div className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-2.5 flex items-center gap-2 mb-3">
             <FileText size={14} className="text-blue-500 flex-shrink-0" />
             <span className="text-sm text-blue-700">
@@ -431,9 +515,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             </span>
             <span className="text-blue-300 mx-1">-</span>
             <span className="text-sm text-blue-600">
-              {data.source.rowsDetected} rows detected - Partner: {data.source.partner}
+              {data.source.rowsDetected} rows detected{manualCount > 0 && ` · ${manualCount} added manually`} · Partner: {partnerDetails.partner || '—'}
             </span>
           </div>
+          )}
 
           {blockedItems.length > 0 && (
             <div className="bg-amber-50 border border-amber-300 rounded-lg px-4 py-3 flex items-start gap-2.5 mb-4">
@@ -450,7 +535,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             </div>
           )}
 
-          <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-3 flex items-center gap-3 flex-wrap">
+          {!isManualRequest && <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-3 flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-1.5 text-gray-500 flex-shrink-0">
               <ListPlus size={14} />
               <span className="text-xs" style={{ fontWeight: 600 }}>
@@ -472,7 +557,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                   void submitNewColumn();
                 }
               }}
-              disabled={isAddingColumn}
+              disabled={isAddingColumn || itemMutationPending}
               className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] disabled:bg-gray-50"
             />
             <datalist id="available-columns-suggestions">
@@ -482,7 +567,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             </datalist>
             <button
               onClick={() => void submitNewColumn()}
-              disabled={!newColumnName.trim() || isAddingColumn}
+              disabled={!newColumnName.trim() || isAddingColumn || itemMutationPending}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs flex-shrink-0 transition-colors ${
                 newColumnName.trim() && !isAddingColumn
                   ? 'bg-[#1B4E8A] text-white hover:bg-[#163d6d]'
@@ -492,9 +577,9 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             >
               <Plus size={12} /> {isAddingColumn ? 'Adding...' : 'Add'}
             </button>
-          </div>
+          </div>}
 
-          <div role="region" aria-label="Extracted items table" tabIndex={0} className="bg-white rounded-xl border border-gray-200 max-w-full max-h-[min(65vh,42rem)] overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A]">
+          <div role="region" aria-label="Request items table" tabIndex={0} className="bg-white rounded-xl border border-gray-200 max-w-full max-h-[min(65vh,42rem)] overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A]">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50">
@@ -531,6 +616,12 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                 </tr>
               </thead>
               <tbody>
+                {items.length === 0 && (
+                  <tr><td colSpan={columnCount} className="px-6 py-12 text-center">
+                    <PenLine size={24} className="mx-auto mb-3 text-gray-300" />
+                    <div className="text-sm text-gray-500">No items yet. Add your first item below.</div>
+                  </td></tr>
+                )}
                 {items.map((item, index) => {
                   const status = STATUS_CFG[item.status];
                   const priority = PRIORITY_CFG[item.priority];
@@ -582,6 +673,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                         >
                           {missingName ? '- Missing -' : item.name}
                         </button>
+                        {item.manual && (
+                          <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-slate-100 text-slate-500 font-medium">
+                            <PenLine size={10} /> Manual
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <span className={`text-xs ${item.domain ? 'text-gray-700' : 'text-amber-700'}`}>
@@ -695,6 +791,17 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                               )}
                             </>
                           )}
+                          {item.manual && (
+                            <button
+                              onClick={() => void removeItem(item.id)}
+                              disabled={itemMutationPending || isAddingColumn}
+                              aria-label={`Remove ${item.name}`}
+                              title="Remove manual item"
+                              className="p-1 rounded text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-40"
+                            >
+                              <X size={14} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -736,9 +843,19 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             </table>
           </div>
 
+          <button
+            onClick={openAdd}
+            disabled={itemMutationPending || isAddingColumn}
+            className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-3 border border-dashed border-gray-300 rounded-xl text-sm text-[#1B4E8A] hover:border-[#1B4E8A]/50 hover:bg-blue-50/40 transition-colors font-medium disabled:opacity-50"
+          >
+            <Plus size={16} /> Add item manually
+          </button>
+
           <div className="mt-5 flex items-center justify-between gap-4">
             <div className="text-xs leading-relaxed">
-              {blockedItems.length > 0 ? (
+              {items.length === 0 ? (
+                <span className="text-gray-500">Add at least one item to continue.</span>
+              ) : blockedItems.length > 0 ? (
                 <span className="text-amber-700" style={{ fontWeight: 500 }}>
                   <AlertTriangle size={12} className="inline mr-1 mb-0.5" />
                   {blockedItems.map(item => item.name || '(missing item)').join(', ')} must be reviewed before proceeding.
@@ -774,13 +891,14 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
         <div className="w-full xl:w-56 flex-shrink-0 xl:sticky xl:top-6 space-y-4">
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h3 className="text-gray-900 text-sm mb-4" style={{ fontWeight: 600 }}>
-              Extraction Summary
+              {isManualRequest ? 'Request Summary' : 'Extraction Summary'}
             </h3>
             <SummaryRow label="Total rows" value={items.length} />
             <SummaryRow label="Verified" value={verified} icon={<CheckCircle2 size={13} className="text-green-500" />} tone="green" />
             <SummaryRow label="Needs Verification" value={needsReview} icon={<AlertCircle size={13} className="text-amber-500" />} tone="amber" />
             <SummaryRow label="Low Confidence" value={lowConfidence} icon={<AlertTriangle size={13} className="text-red-500" />} tone="red" />
             <SummaryRow label="Missing" value={missing} icon={<HelpCircle size={13} className="text-red-500" />} tone="red" last />
+            {manualCount > 0 && <SummaryRow label="Added manually" value={manualCount} icon={<PenLine size={13} className="text-slate-500" />} last />}
             <div className="mt-4 pt-3 border-t border-gray-100">
               <div className="flex justify-between text-xs text-gray-400 mb-1.5">
                 <span>Verification</span>
@@ -826,7 +944,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     />
                   </div>
                 ))}
-                <div className="text-xs text-gray-500">System request ID: <span className="font-mono text-gray-700">{partnerDetails.requestId}</span></div>
+                <div className="text-xs text-gray-500">{requestId ? <>System request ID: <span className="font-mono text-gray-700">{partnerDetails.requestId}</span></> : 'Request saved when you add the first item.'}</div>
                 <div className="flex gap-2 pt-1">
                   <button
                     onClick={() => setEditingPartner(false)}
@@ -850,7 +968,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                   {[
                     { label: 'Partner', value: partnerDetails.partner },
                     { label: 'Region', value: partnerDetails.region },
-                    { label: 'Request ID', value: partnerDetails.requestId },
+                    { label: 'Request ID', value: partnerDetails.requestId || 'Assigned when the first item is added' },
                     { label: 'Contact', value: partnerDetails.contact },
                   ].map(row => (
                     <div key={row.label}>
@@ -882,20 +1000,21 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
 
       {editingItem && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+          <div role="dialog" aria-modal="true" aria-labelledby="item-dialog-title" className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between">
               <div>
-                <h3 className="text-gray-900">
-                  {editingItem.status === 'missing' ? 'Complete Missing Information' : 'Edit Extracted Item'}
+                <h3 id="item-dialog-title" className="text-gray-900">
+                  {isNewItem ? 'Add Item Manually' : editingItem.manual ? 'Edit Manual Item' : editingItem.status === 'missing' ? 'Complete Missing Information' : 'Edit Extracted Item'}
                 </h3>
-                <p className="text-gray-500 text-sm mt-0.5">Row #{editingItem.id} in source document</p>
+                <p className="text-gray-500 text-sm mt-0.5">{editingItem.manual ? 'Not linked to a source document' : `Row #${sourceReferences[editingItem.id]?.row ?? editingItem.id} in source document`}</p>
               </div>
-              <button onClick={() => setEditingItem(null)} className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors">
+              <button disabled={isSavingItem} aria-label="Close item dialog" onClick={() => setEditingItem(null)} className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors">
                 <X size={18} />
               </button>
             </div>
 
             <div className="px-6 py-5">
+              {itemError && <div className="mb-4"><ErrorPanel message={itemError} /></div>}
               <SourceReferencePanel item={editingItem} reference={sourceReferences[editingItem.id]} />
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
@@ -931,6 +1050,9 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                   </label>
                   <input
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                    aria-label="Item Name"
+                    autoFocus={editingItem.manual}
+                    placeholder={editingItem.manual ? 'e.g. Ceftriaxone 1g Powder for Injection' : ''}
                     value={editValues.name ?? ''}
                     onChange={event => setEditValues(values => ({ ...values, name: event.target.value }))}
                   />
@@ -942,6 +1064,9 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     </label>
                     <input
                       type="number"
+                      aria-label="Quantity"
+                      min={1}
+                      step={1}
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
                       value={editValues.quantity ?? ''}
                       onChange={event =>
@@ -978,6 +1103,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                     Product type (required)
                   </label>
                   <select
+                    aria-label="Product type"
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white"
                     value={editValues.domain ?? ''}
                     onChange={event => setEditValues(values => ({
@@ -1012,6 +1138,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
 
             <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
               <button
+                disabled={isSavingItem}
                 onClick={() => setEditingItem(null)}
                 className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors"
                 style={{ fontWeight: 500 }}
@@ -1020,10 +1147,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
               </button>
               <button
                 onClick={() => void saveEdit()}
-                className="px-5 py-2 bg-[#1B4E8A] text-white rounded-lg text-sm hover:bg-[#163d6d] transition-colors"
+                disabled={!canSave || isSavingItem}
+                className="px-5 py-2 bg-[#1B4E8A] text-white rounded-lg text-sm hover:bg-[#163d6d] transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
                 style={{ fontWeight: 600 }}
               >
-                Save & Mark Verified
+                {isSavingItem ? 'Saving…' : isNewItem ? 'Add Item' : 'Save & Mark Verified'}
               </button>
             </div>
           </div>
@@ -1038,7 +1166,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
             </div>
             <h3 className="text-gray-900 mb-2">Proceed to Smart Matching?</h3>
             <p className="text-gray-500 text-sm leading-relaxed">
-              Once you proceed, the extracted item list will be locked. The matching step requires
+              Once you proceed, the item list will be locked. The matching step requires
               significant compute and cannot be undone without starting a new request.
             </p>
             <div className="mt-5 bg-gray-50 border border-gray-200 rounded-lg p-3">
@@ -1046,7 +1174,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue }: Review
                 Summary
               </div>
               <div className="text-xs text-gray-700 mt-1">
-                {items.length} items - {verified} verified - Partner: {partnerDetails.partner}
+                {items.length} items · {verified} verified{manualCount > 0 && ` · ${manualCount} manual`} · Partner: {partnerDetails.partner || '—'}
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3">
@@ -1113,6 +1241,18 @@ function SourceReferencePanel({
 }) {
   const isMissing = item.status === 'missing';
 
+  if (item.manual) {
+    return (
+      <div className="border border-dashed border-slate-300 bg-slate-50 rounded-xl p-4 mb-5 flex items-start gap-2.5">
+        <PenLine size={14} className="text-slate-500 mt-0.5 flex-shrink-0" />
+        <div className="text-xs text-slate-600 leading-relaxed">
+          <span className="font-bold">Manual entry.</span> This item is added by you and will be marked
+          as verified. Name, a positive whole-number quantity and product type are required.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`border rounded-xl p-4 mb-5 ${isMissing ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
       <div className="flex items-center gap-2 mb-2">
@@ -1146,4 +1286,3 @@ function partnerLabel(key: keyof Pick<PartnerDetails, 'partner' | 'region' | 're
     contact: 'Contact',
   }[key];
 }
-

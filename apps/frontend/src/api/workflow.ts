@@ -1,6 +1,6 @@
 import { requestJson } from './http';
 import type { AvailabilityStatus, MatchCandidateV1, ProductDomain, SourceReferenceV1 } from './matching/contracts';
-import type { Priority, ReviewResponse } from './types';
+import type { ManualItemCreate, PartnerDetails, Priority, ReviewResponse } from './types';
 
 export type RequestStatus = 'draft' | 'review' | 'matching_queued' | 'matching' | 'matching_failed' | 'match_review' | 'complete' | 'finalized';
 export type SavedRequest = {
@@ -74,7 +74,19 @@ export type SavedSummary = {
   unmatchedCount: number;
 };
 
-export const createRequest = () => requestJson<SavedRequest>('/api/requests', { method: 'POST' });
+export const createRequest = (mode: 'upload' | 'manual' = 'upload') =>
+  requestJson<SavedRequest>('/api/requests', { method: 'POST', body: JSON.stringify({ mode }) });
+export const createManualRequest = (
+  item: ManualItemCreate,
+  partner: PartnerDetails,
+  columnLabels: Record<string, string>,
+) => requestJson<ReviewResponse>('/api/requests/manual', {
+  method: 'POST',
+  body: JSON.stringify({
+    item, partner: partner.partner, region: partner.region, contact: partner.contact,
+    confirmed: partner.confirmed, columnLabels,
+  }),
+});
 export const listRequests = () => requestJson<SavedRequest[]>('/api/requests');
 export const deleteRequest = (id: string) =>
   requestJson<void>(`/api/requests/${encodeURIComponent(id)}`, { method: 'DELETE' });
