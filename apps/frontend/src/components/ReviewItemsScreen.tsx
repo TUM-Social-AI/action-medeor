@@ -1,5 +1,7 @@
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import {
+  Loader2,
   AlertCircle,
   AlertTriangle,
   ArrowRight,
@@ -173,8 +175,21 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const [newColumnName, setNewColumnName] = useState('');
   const [isAddingColumn, setIsAddingColumn] = useState(false);
   const [isReviewingAi, setIsReviewingAi] = useState(false);
+  const busyDialog = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!isReviewingAi) return;
+    const appRoot = document.getElementById('root');
+    const alreadyInert = appRoot?.hasAttribute('inert');
+    const previousFocus = document.activeElement;
+    appRoot?.setAttribute('inert', '');
+    busyDialog.current?.focus();
+    return () => {
+      if (!alreadyInert) appRoot?.removeAttribute('inert');
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, [isReviewingAi]);
   const runAiReview = async () => {
-    if (!requestId) return;
+    if (!requestId || isReviewingAi) return;
     setIsReviewingAi(true);
     setError(null);
     try {
@@ -498,7 +513,18 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   }
 
   return (
-    <div className="p-6">
+    <div className="p-6" aria-busy={isReviewingAi}>
+      {isReviewingAi && createPortal(
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-6">
+          <div ref={busyDialog} role="dialog" aria-modal="true" aria-labelledby="ai-review-loading" tabIndex={-1}
+            onKeyDown={event => { if (event.key === 'Tab') event.preventDefault(); }}
+            className="rounded-2xl bg-white p-8 shadow-xl text-center outline-none">
+            <Loader2 size={32} className="animate-spin text-[#1B4E8A] mx-auto mb-4" aria-hidden="true" />
+            <h2 id="ai-review-loading" className="text-gray-900">Checking items with AI</h2>
+            <p className="text-sm text-gray-500 mt-2" role="status">Please wait while the copied values are checked.</p>
+          </div>
+        </div>, document.body,
+      )}
       <div className="bg-white rounded-xl border border-gray-200 px-6 py-4 mb-6">
         <WorkflowStepper currentStep="review" />
       </div>
@@ -524,10 +550,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
             {data.reviewSummary.message && <p className="text-amber-700 mt-1">{data.reviewSummary.message}</p>}
           </> : <p>AI can check copied values and fill clear types and units.</p>}
         </div>
-        <button type="button" onClick={() => void runAiReview()} disabled={!requestId || isReviewingAi || isAddingColumn || itemMutationPending || !!editingItem}
+        {data.reviewSummary?.status !== 'completed' && <button type="button" onClick={() => void runAiReview()} disabled={!requestId || isReviewingAi || isAddingColumn || itemMutationPending || !!editingItem}
           className="px-3 py-2 text-sm rounded-lg bg-[#1B4E8A] text-white disabled:opacity-50 flex-shrink-0">
           {isReviewingAi ? 'Reviewing with AI…' : 'Review with AI'}
-        </button>
+        </button>}
       </div>}
 
       <div className="flex flex-col xl:flex-row gap-5 items-start">
@@ -724,7 +750,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       <td className="px-4 py-3">
                         <span className={`text-xs ${item.domain ? 'text-gray-700' : 'text-amber-700'}`}>
                           {item.domain ?? 'Choose in Edit'}
-                          {item.inferredFields?.type && <span title={`Inferred from: ${item.inferredFields.type}`} className="block text-gray-400">AI inferred</span>}
+
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -739,7 +765,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       {showUnit && (
                         <td className="px-4 py-3">
                           {item.unit ? (
-                            <span className="text-sm text-gray-500">{item.unit}{item.inferredFields?.unit && <span title={`Inferred from: ${item.inferredFields.unit}`} className="block text-xs text-gray-400">AI inferred</span>}</span>
+                            <span className="text-sm text-gray-500">{item.unit}</span>
                           ) : (
                             <span className="text-sm text-gray-400 italic">-</span>
                           )}
@@ -1311,15 +1337,13 @@ function SourceReferencePanel({
       >
         {reference?.excerpt ?? 'No source reference available'}
       </div>
-      {!!Object.keys(item.inferredFields ?? {}).length && <dl className="mt-3 text-xs text-gray-700 space-y-1">
-        {Object.entries(item.inferredFields ?? {}).map(([field, evidence]) => <div key={field}><dt className="font-semibold inline">AI inferred {field}: </dt><dd className="inline">{evidence}</dd></div>)}
-      </dl>}
+      <InferredFieldsDetails item={item} />
       {!!item.reviewReasons?.length && <ul className="mt-3 text-xs text-amber-800 list-disc pl-4">{item.reviewReasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
       <div className={`flex items-center gap-1.5 mt-2 text-xs ${isMissing ? 'text-red-600' : 'text-amber-600'}`}>
         <Info size={11} />
         {isMissing
           ? 'Item name extracted. Quantity could not be read. Please enter it manually.'
-          : item.verificationSource === 'ai' ? 'AI checked against the source' : item.confidence == null ? 'Check against the original source' : `Extracted with ${item.confidence}% confidence`}
+          : item.verificationSource === 'ai' ? `AI checked against the source${item.confidence == null ? '' : ` · ${item.confidence}% confidence`}` : item.confidence == null ? 'Check against the original source' : `Extracted with ${item.confidence}% confidence`}
       </div>
     </div>
   );
@@ -1332,4 +1356,19 @@ function partnerLabel(key: keyof Pick<PartnerDetails, 'partner' | 'region' | 're
     requestId: 'Request ID',
     contact: 'Contact',
   }[key];
+}
+
+
+export function InferredFieldsDetails({ item }: { item: ExtractedItem }) {
+  const fields = [
+    { key: 'type', label: 'Type', value: item.domain === 'equipment' ? 'Equipment' : item.domain === 'medicine' ? 'Medicine' : 'Not set' },
+    { key: 'unit', label: 'Unit', value: item.unit || 'Not set' },
+  ].filter(field => item.inferredFields?.[field.key]);
+  if (!fields.length) return null;
+  return <dl className="mt-3 text-xs text-gray-700 space-y-1">
+    {fields.map(field => <div key={field.key} className="flex items-center gap-2">
+      <dt className="font-semibold">{field.label}:</dt>
+      <dd>{field.value} <span className="ml-1 text-gray-500">(AI inferred)</span></dd>
+    </div>)}
+  </dl>;
 }

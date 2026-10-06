@@ -70,6 +70,7 @@ async def test_balanced_default_basic_preference_and_saved_review_cache(client, 
     try:
         assert balanced["extractionMode"] == "balanced"
         assert balanced["items"][0]["verificationSource"] == "ai"
+        assert balanced["items"][0]["confidence"] == 95
         assert balanced["items"][0]["inferredFields"]["unit"]
         assert balanced["reviewSummary"]["unresolved"] == 0
         assert call.call_count == 1
@@ -107,11 +108,12 @@ async def test_failure_is_visible_and_retryable(client, monkeypatch, failure):
     else:
         call = Mock(
             return_value=ReviewBatch(
+                confidence=95,
                 completed=True,
                 reviewed_count=1,
                 corrections=[
                     Correction(
-                        row_id="0", field="quantity", value=999, inferred=False, evidence="2"
+                        row_id="row-0001", field="quantity", value=999, inferred=False, evidence="2"
                     )
                 ],
                 issues=[],
@@ -131,6 +133,10 @@ async def test_failure_is_visible_and_retryable(client, monkeypatch, failure):
         assert result.json()["reviewSummary"]["status"] == "completed"
         assert result.json()["items"][0]["status"] == "verified"
         assert call.call_count == 2
+        async with async_session() as session:
+            saved = await get_request_by_id(session, rid)
+            assert saved.ai_review["attempt_history"][-1]["status"] == "unavailable"
+            assert saved.ai_review["attempt_history"][-1]["failures"]
     finally:
         await client.delete(f"/api/requests/{rid}")
 

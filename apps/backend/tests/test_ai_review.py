@@ -29,7 +29,11 @@ def checked(prompt, schema):
                 )
             )
     return ReviewBatch(
-        completed=True, reviewed_count=len(data["rows"]), corrections=patches, issues=[]
+        confidence=95,
+        completed=True,
+        reviewed_count=len(data["rows"]),
+        corrections=patches,
+        issues=[],
     )
 
 
@@ -46,12 +50,15 @@ def install(monkeypatch, response=checked):
     return call
 
 
-def patch(field, value, *, inferred=False, evidence="Diagnostic scanner model A", row_id="0"):
+def patch(
+    field, value, *, inferred=False, evidence="Diagnostic scanner model A", row_id="row-0001"
+):
     return Correction(row_id=row_id, field=field, value=value, inferred=inferred, evidence=evidence)
 
 
 def response(corrections=(), issues=(), *, completed=True, count=1):
     return ReviewBatch(
+        confidence=95,
         completed=completed,
         reviewed_count=count,
         corrections=list(corrections),
@@ -229,7 +236,7 @@ def test_batches_cover_every_row_and_keep_successful_batch(monkeypatch):
 
     install(monkeypatch, call)
     review_document(doc)
-    assert seen == list(map(str, range(205)))
+    assert seen == [f"row-{index + 1:04d}" for index in range(205)]
     assert doc.review_summary["checked"] == 200
     assert doc.review_summary["status"] == "partial"
     assert all(item.status == "verified" for item in doc.items[:200])
@@ -263,7 +270,7 @@ def test_missing_or_extra_rows_are_reported_without_changing_count(monkeypatch):
     doc = device()
     install(
         monkeypatch,
-        response(issues=[Issue(row_id="0", reason="Another source row may be missing")]),
+        response(issues=[Issue(row_id="row-0001", reason="Another source row may be missing")]),
     )
     review_document(doc)
     assert len(doc.items) == 1
@@ -342,3 +349,96 @@ def test_unit_in_an_explicit_requested_quantity_is_source_stated(monkeypatch):
     assert doc.items[0].unit == "vials"
     assert doc.items[0].status == "verified"
     assert "unit" not in doc.items[0].inferred_fields
+
+
+def test_table_column_references_do_not_require_repeated_literal_quotes(monkeypatch):
+    doc = device()
+    patches = [
+        Correction(
+            row_id="row-0001",
+            field=field,
+            value=value,
+            inferred=True,
+            evidence="A paraphrased explanation",
+            source_column=0,
+        )
+        for field, value in [("domain", "equipment"), ("unit", "pcs")]
+    ]
+    install(monkeypatch, response(patches))
+    review_document(doc)
+    assert doc.items[0].status == "verified"
+    assert doc.items[0].confidence == 95
+    assert doc.items[0].inferred_fields == {"type": doc.items[0].name, "unit": doc.items[0].name}
+
+
+def test_column_reference_must_support_the_correct_field(monkeypatch):
+    doc = device()
+    install(
+        monkeypatch,
+        response(
+            [
+                Correction(
+                    row_id="row-0001",
+                    field="domain",
+                    value="equipment",
+                    inferred=True,
+                    evidence="",
+                    source_column=1,
+                )
+            ]
+        ),
+    )
+    review_document(doc)
+    assert doc.items[0].domain is None
+    assert doc.review_summary["failures"] == {"invalid_correction": 1}
+
+
+def test_batch_confidence_and_row_exceptions_are_persisted(monkeypatch):
+    from app.parsing.ai_review import ConfidenceOverride
+
+    doc = ParsedDocument(items=[device().items[0], device().items[0]])
+
+    def call(prompt, schema):
+        result = checked(prompt, schema)
+        result.confidence = 96
+        result.confidence_overrides = [ConfidenceOverride(row_id="row-0002", confidence=55)]
+        return result
+
+    install(monkeypatch, call)
+    review_document(doc)
+    assert doc.items[0].confidence == 96 and doc.items[0].status == "verified"
+    assert doc.items[1].confidence == 55 and doc.items[1].status == "needs_review"
+    assert any("confidence" in reason for reason in doc.items[1].review_reasons)
+
+
+def test_missing_or_invalid_confidence_is_not_fabricated(monkeypatch):
+    doc = device()
+    install(monkeypatch, {"completed": True, "reviewed_count": 1, "corrections": [], "issues": []})
+    review_document(doc)
+    assert doc.review_summary["status"] == "unavailable"
+    assert doc.review_summary["failures"] == {"invalid_response": 1}
+    assert doc.items[0].verification_source is None
+
+
+def test_upload_ids_are_explicit_identifiers_not_source_ordinals(monkeypatch):
+    doc = device()
+    seen = []
+
+    def call(prompt, schema):
+        seen.extend(row["row_id"] for row in json.loads(prompt.rsplit("\n", 1)[1])["rows"])
+        return checked(prompt, schema)
+
+    install(monkeypatch, call)
+    review_document(doc)
+    assert seen == ["row-0001"]
+
+
+@pytest.mark.parametrize(
+    "reason", ["invalid_row_ids", "incomplete_response", "duplicate_assignments"]
+)
+def test_safe_failure_reason_is_available_to_review_interface(monkeypatch, reason):
+    doc = device()
+    install(monkeypatch, lambda *_: (_ for _ in ()).throw(ai_review.ReviewRejected(reason)))
+    review_document(doc)
+    assert doc.review_summary["failures"] == {reason: 1}
+    assert "Basic extraction has been retained" in doc.review_summary["message"]

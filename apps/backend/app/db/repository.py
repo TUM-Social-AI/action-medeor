@@ -594,7 +594,13 @@ def apply_ai_review(request: ImportRequestRow, document: ParsedDocument) -> None
         item.inferred_fields = result.inferred_fields
         item.review_reasons = result.review_reasons
     request.used_llm_fallback = request.used_llm_fallback or document.used_llm_fallback
+    history = list((request.ai_review or {}).get("attempt_history", []))
+    previous = (request.ai_review or {}).get("summary", {})
+    if previous.get("status") in {"unavailable", "partial"}:
+        history.append({"status": previous["status"], "failures": previous.get("failures", {}),
+                        "checked": previous.get("checked", 0)})
     request.ai_review = {
+        "attempt_history": history[-5:],
         "summary": document.review_summary,
         "sources": {item.review_id: item.review_source for item in document.items},
         "fingerprint": fingerprint(request.raw_file or b"", document),

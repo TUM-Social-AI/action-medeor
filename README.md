@@ -115,8 +115,13 @@ an upload, and saved mappings are reused when adding columns.
 **Balanced** is the default per-user extraction preference in Settings. After copying, it adds
 one compact AI review for ordinary documents, split at row boundaries into batches of at most
 100 items or 32,000 characters for larger imports. Clear gaps in product type and individual-device
-units are filled with inference provenance. Checked, complete rows show **AI checked** and need
-only the existing final confirmation. Unclear packaging, conflicting totals and missing required
+units are filled with inference provenance. Table corrections reference validated request column
+indices, avoiding fragile repeated source quotes. Review responses include an overall confidence
+score and sparse row overrides; confidence below 80 keeps a row in review. Safe failure categories
+are retained across retries, while provider details stay in backend logs. Checked, complete rows show **AI checked** and need
+only the existing final confirmation. The review button disappears after a completed check;
+a blocking loading dialog disables the workspace during an explicit AI review. Inferred types
+and units are marked beside their values in item details. Unclear packaging, conflicting totals and missing required
 fields still require review. **Basic** retains selective column assistance and the existing
 free-text extraction path, without the extra review pass. Preferences affect future uploads only.
 
