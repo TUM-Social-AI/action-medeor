@@ -159,11 +159,12 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const [isSavingItem, setIsSavingItem] = useState(false);
   const [removingItemId, setRemovingItemId] = useState<number | null>(null);
   const [itemError, setItemError] = useState<string | null>(null);
+  const [showItemValidation, setShowItemValidation] = useState(false);
   const [editValues, setEditValues] = useState<Partial<ExtractedItem>>({});
   const unitInferred = Boolean(editingItem?.inferredFields?.unit) && editValues.unit === editingItem?.unit;
   const typeInferred = Boolean(editingItem?.inferredFields?.type) && editValues.domain === editingItem?.domain;
   useEffect(() => {
-    if (!editingItem) return;
+    if (!editingItem || isNewItem) return;
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !isSavingItem) {
         event.preventDefault();
@@ -172,7 +173,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     };
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
-  }, [editingItem, isSavingItem]);
+  }, [editingItem, isNewItem, isSavingItem]);
   const [editingPartner, setEditingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState<PartnerDetails | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -367,6 +368,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     if (isReviewingAi) return;
     setIsNewItem(false);
     setItemError(null);
+    setShowItemValidation(false);
     setEditingItem(item);
     setEditValues({
       name: item.name,
@@ -390,11 +392,20 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     setIsNewItem(true);
   };
 
-  const canSave = !!editValues.name?.trim() && Number.isInteger(editValues.quantity)
-    && (editValues.quantity ?? 0) > 0 && !!editValues.domain;
+  const validName = !!editValues.name?.trim();
+  const validQuantity = Number.isInteger(editValues.quantity) && (editValues.quantity ?? 0) > 0;
+  const validType = !!editValues.domain;
+  const canSave = validName && validQuantity && validType;
+  const nameInvalid = showItemValidation && !validName;
+  const quantityInvalid = showItemValidation && !validQuantity;
+  const typeInvalid = showItemValidation && !validType;
 
   const saveEdit = async () => {
-    if (!editingItem || isSavingItem || !canSave) {
+    if (!editingItem || isSavingItem) {
+      return;
+    }
+    if (!canSave) {
+      setShowItemValidation(true);
       return;
     }
 
@@ -1083,7 +1094,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       {editingItem && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6"
           onClick={event => {
-            if (event.target === event.currentTarget && !isSavingItem) setEditingItem(null);
+            if (event.target === event.currentTarget && !isNewItem && !isSavingItem) setEditingItem(null);
           }}>
           <div role="dialog" aria-modal="true" aria-labelledby="item-dialog-title" className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
             <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between shrink-0">
@@ -1093,9 +1104,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                 </h3>
                 <p className="text-gray-500 text-sm mt-0.5">{editingItem.manual ? 'Not linked to a source document' : `Row #${sourceReferences[editingItem.id]?.row ?? editingItem.id} in source document`}</p>
               </div>
-              <button disabled={isSavingItem} aria-label="Close item dialog" onClick={() => setEditingItem(null)} className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors">
-                <X size={18} />
-              </button>
+              {!isNewItem && (
+                <button disabled={isSavingItem} aria-label="Close item dialog" onClick={() => setEditingItem(null)} className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors">
+                  <X size={18} />
+                </button>
+              )}
             </div>
 
             <div className="px-6 py-5 min-h-0 overflow-y-auto overscroll-contain">
@@ -1130,29 +1143,38 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
-                    Item Name
+                  <label htmlFor="item-name" className={`block text-xs mb-1 ${nameInvalid ? 'text-red-600' : 'text-gray-500'}`} style={{ fontWeight: 600 }}>
+                    Item Name (required)
                   </label>
                   <input
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                    id="item-name"
+                    className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ${nameInvalid ? 'border-red-500 bg-red-50 focus:ring-red-500/20 focus:border-red-500' : 'border-gray-300 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]'}`}
                     aria-label="Item Name"
+                    aria-required="true"
+                    aria-invalid={nameInvalid}
+                    aria-describedby={nameInvalid ? 'item-name-error' : undefined}
                     autoFocus={editingItem.manual}
                     placeholder={editingItem.manual ? 'e.g. Ceftriaxone 1g Powder for Injection' : ''}
                     value={editValues.name ?? ''}
                     onChange={event => setEditValues(values => ({ ...values, name: event.target.value }))}
                   />
+                  {nameInvalid && <p id="item-name-error" className="mt-1 text-xs text-red-600">Enter an item name.</p>}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
-                      Quantity
+                    <label htmlFor="item-quantity" className={`block text-xs mb-1 ${quantityInvalid ? 'text-red-600' : 'text-gray-500'}`} style={{ fontWeight: 600 }}>
+                      Quantity (required)
                     </label>
                     <input
                       type="number"
+                      id="item-quantity"
                       aria-label="Quantity"
+                      aria-required="true"
+                      aria-invalid={quantityInvalid}
+                      aria-describedby={quantityInvalid ? 'item-quantity-error' : undefined}
                       min={1}
                       step={1}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ${quantityInvalid ? 'border-red-500 bg-red-50 focus:ring-red-500/20 focus:border-red-500' : 'border-gray-300 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]'}`}
                       value={editValues.quantity ?? ''}
                       onChange={event =>
                         setEditValues(values => ({
@@ -1161,6 +1183,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                         }))
                       }
                     />
+                    {quantityInvalid && <p id="item-quantity-error" className="mt-1 text-xs text-red-600">Enter a positive whole-number quantity.</p>}
                   </div>
                   <div>
                     <label htmlFor="item-unit" className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
@@ -1187,15 +1210,17 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   />
                 </div>
                 <div>
-                  <label htmlFor="item-type" className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                  <label htmlFor="item-type" className={`block text-xs mb-1 ${typeInvalid ? 'text-red-600' : 'text-gray-500'}`} style={{ fontWeight: 600 }}>
                     Product type (required)
                     {typeInferred && <span id="item-type-inference" className="ml-2 text-amber-700 font-normal">AI inferred</span>}
                   </label>
                   <select
                     id="item-type"
                     aria-label="Product type"
-                    aria-describedby={typeInferred ? 'item-type-inference' : undefined}
-                    className={`w-full border rounded-lg px-3 py-2 text-sm ${typeInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
+                    aria-required="true"
+                    aria-invalid={typeInvalid}
+                    aria-describedby={typeInvalid ? 'item-type-error' : typeInferred ? 'item-type-inference' : undefined}
+                    className={`w-full border rounded-lg px-3 py-2 text-sm ${typeInvalid ? 'border-red-500 bg-red-50' : typeInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
                     value={editValues.domain ?? ''}
                     onChange={event => setEditValues(values => ({
                       ...values,
@@ -1206,6 +1231,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     <option value="medicine">Medicine</option>
                     <option value="equipment">Equipment</option>
                   </select>
+                  {typeInvalid && <p id="item-type-error" className="mt-1 text-xs text-red-600">Choose a product type.</p>}
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
@@ -1238,7 +1264,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               </button>
               <button
                 onClick={() => void saveEdit()}
-                disabled={!canSave || isSavingItem}
+                disabled={isSavingItem || (!isNewItem && !canSave)}
                 className="px-5 py-2 bg-[#1B4E8A] text-white rounded-lg text-sm hover:bg-[#163d6d] transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
                 style={{ fontWeight: 600 }}
               >
