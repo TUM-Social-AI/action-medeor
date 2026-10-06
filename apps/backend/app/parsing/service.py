@@ -43,6 +43,10 @@ def parse_upload(
             )
         else:
             raise ParsingError(f"Unsupported file extension: .{extension}")
+        if not document.items:
+            document.warnings.append(
+                "No requested line items could be extracted; check the source table or add items manually"
+            )
         basic_partner(document, filename)
         return document
     except ParsingError:

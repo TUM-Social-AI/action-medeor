@@ -56,6 +56,9 @@ Return EVERY column index exactly once, including blank/excluded columns. Each c
 appear at most once. Use attribute for other request fields, ordinal for line numbers, none for
 irrelevant columns. Non-request columns must have role none (or ordinal). Use unknown scope
 when genuinely ambiguous. Never guess a missing role.
+An ancillary header cell may contain a numeric template marker; exclude that column rather
+than choosing a data row as the header. Map regional quantities as attributes when an explicit
+requested total exists; do not use regional subtotals as the requested total.
 Inputs include nearby section headings, indexed rows (up to six data samples), and a tentative
 keyword mapping that may be WRONG. Correct it when the data contradicts it.
 INPUT:

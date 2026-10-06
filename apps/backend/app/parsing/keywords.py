@@ -263,6 +263,13 @@ def match_column_role(header_text: str) -> str | None:
     return None
 
 
+def is_total_quantity_column(header_text: str) -> bool:
+    normalized = normalize(header_text)
+    return match_column_role(header_text) == "quantity" and any(
+        phrase in normalized for phrase in ("total quantity", "total units", "requested total")
+    )
+
+
 def classify_columns(header_cells: list[str]) -> list[bool]:
     """Decide, per column, whether it describes what the partner requested.
 

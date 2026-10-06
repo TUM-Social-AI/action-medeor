@@ -57,7 +57,9 @@ async def save_parsed_request(
         raise ValueError("Only an existing draft request can receive a file")
     if request is None:
         request_id = generate_request_id()
-        request = ImportRequestRow(request_id=request_id, source_file_name="")
+        # Initialize even empty imports: accessing an unloaded collection after flush
+        # would otherwise attempt synchronous lazy loading on the async session.
+        request = ImportRequestRow(request_id=request_id, source_file_name="", items=[])
     request.source_file_name = file_name
     request.rows_detected = parsed.rows_detected
     request.request_date = dt.date.today().isoformat()

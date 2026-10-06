@@ -200,6 +200,97 @@ def test_supplier_values_never_become_request_quantity(monkeypatch):
     assert call.call_count == 1
 
 
+def regional_request_rows():
+    return [
+        [None, None, "Request template instructions"],
+        [None, 1, "Requester Code", "Requester Source Code", "Requester Product Description",
+         "Region A Quantity (each)", "Region B Quantity (each)", "Total Quantity (each)",
+         "Supplier Item No.", "Supplier Item Description", "Quantity of packs offered"],
+        [None, "Internal routing", "CODE-A", "REF-A", "Example medicine 5mg tablet",
+         10, 20, 30, "SUPPLIER-CODE", "Supplier substitute", 999],
+        [None, None, "CODE-B", "REF-B", "Sterile device", 3, 4, 7, None, None, 700],
+        # Preallocated spreadsheet rows contain supplier formulas but no request items.
+        [None] * 10 + [0],
+    ]
+
+
+def test_numeric_template_marker_allows_header_mapping_and_requested_totals(monkeypatch):
+    call = stub(monkeypatch, mapping(
+        {2: "item_number", 3: "attribute", 4: "name", 5: "attribute",
+         6: "attribute", 7: "quantity"}, 11, header=1, suppliers=range(8, 11),
+    ))
+    document = parse_upload(
+        filename="regional-request.xlsx", content=build_xlsx(regional_request_rows()),
+    )
+    assert call.call_count == 1
+    payload = json.loads(call.call_args.args[0].split("INPUT:\n", 1)[1])
+    assert payload["tentative_header_row_index"] == 1
+    assert payload["tentative_roles"]["7"] == "quantity"
+    assert [(item.name, item.quantity) for item in document.items] == [
+        ("Example medicine 5mg tablet", 30), ("Sterile device", 7),
+    ]
+    assert [item.row for item in document.items] == [3, 4]
+    assert all(item.unit == "" for item in document.items)
+    assert all("Supplier substitute" not in item.excerpt for item in document.items)
+    assert not any("Columns could not be confirmed" in note for note in document.warnings)
+
+
+def test_regional_quantities_fall_back_to_explicit_total_when_mapping_unavailable(monkeypatch):
+    call = Mock(side_effect=LlmUnavailable("offline"))
+    monkeypatch.setattr(llm_table_classifier, "call_llm", call)
+    document = parse_table_rows(regional_request_rows())
+    assert call.call_count == 1
+    assert [item.quantity for item in document.items] == [30, 7]
+    assert all(item.status != "verified" for item in document.items)
+    assert any("Columns could not be confirmed" in note for note in document.warnings)
+
+
+def test_mapping_validation_still_rejects_numeric_quantity_data_as_header():
+    rows = [["Product", 30, "Quantity"], ["Sterile device", 7, "pcs"]]
+    with pytest.raises(ValueError, match="Data row selected as header"):
+        validated_layout(rows, mapping({0: "name", 1: "quantity", 2: "unit"}, 3))
+
+
+def test_clear_header_with_leading_numeric_marker_needs_no_call(monkeypatch):
+    call = stub(monkeypatch, None)
+    result = parse_table_rows([
+        [None, 1, "Product", "Quantity", "Unit"],
+        [None, None, "Sterile device", 20, "pcs"],
+    ])
+    assert call.call_count == 0
+    assert [(item.name, item.quantity, item.unit) for item in result.items] == [
+        ("Sterile device", 20, "pcs"),
+    ]
+
+
+def test_numeric_amount_after_product_text_still_does_not_look_like_header(monkeypatch):
+    call = stub(monkeypatch, mapping({0: "name", 1: "quantity", 2: "notes"}, 3))
+    result = parse_table_rows([
+        ["Label A", "Label B", "Label C"],
+        ["Medicine description", 20, "Quantity for clinic"],
+    ])
+    payload = json.loads(call.call_args.args[0].split("INPUT:\n", 1)[1])
+    assert payload["tentative_header_row_index"] == -1
+    assert result.items[0].name == "Medicine description"
+    assert result.items[0].quantity == 20
+
+
+def test_mapping_rejection_logs_safe_validation_reason(monkeypatch, caplog):
+    stub(monkeypatch, mapping({0: "name", 1: "quantity", 2: "quantity"}, 3))
+    parse_table_rows([["Product", "Quantity", "Quantity"], ["Private source value", 7, 8]])
+    assert "Duplicate core role" in caplog.text
+    assert "Private source value" not in caplog.text
+
+
+def test_arbitrary_provider_error_details_are_not_logged(monkeypatch, caplog):
+    monkeypatch.setattr(
+        llm_table_classifier, "call_llm", Mock(side_effect=ValueError("Private source value")),
+    )
+    parse_table_rows([["Product", "Quantity", "Quantity"], ["Device", 7, 8]])
+    assert "ValueError" in caplog.text
+    assert "Private source value" not in caplog.text
+
+
 def test_unknown_headers_and_quantity_gap_are_resolved(monkeypatch):
     call = stub(monkeypatch, mapping({0: "name", 1: "quantity_packs", 2: "units_per_pack"}, 3))
     result = parse_table_rows(

@@ -8,7 +8,12 @@ the remaining rows into ParsedLineItem records.
 
 from dataclasses import dataclass, field
 
-from app.parsing.keywords import SPECIAL_INFO_KEYWORDS, classify_columns, match_column_role
+from app.parsing.keywords import (
+    SPECIAL_INFO_KEYWORDS,
+    classify_columns,
+    is_total_quantity_column,
+    match_column_role,
+)
 from app.parsing.text_heuristics import (
     build_item,
     detect_priority,
@@ -49,26 +54,40 @@ def _find_header_row(rows: list[list[object]]) -> HeaderLayout | None:
         # A merged document title is not a column header in a multi-column table.
         if width > 1 and sum(bool(cell) for cell in cells) < 2:
             continue
-        # Numeric amounts alongside product text indicate data, not header labels.
-        if any(text.isdigit() for text in cells):
-            continue
         keep_column = classify_columns(cells)
         layout = HeaderLayout(row_index=row_index)
 
         for col_index, text in enumerate(cells):
-            if not text or not keep_column[col_index]:
+            if not text or text.isdigit() or not keep_column[col_index]:
                 continue
             layout.labels[col_index] = text
             role = match_column_role(text)
-            if role and role not in layout.roles.values():
+            previous = next((col for col, mapped in layout.roles.items() if mapped == role), None)
+            if (
+                role == "quantity"
+                and previous is not None
+                and is_total_quantity_column(text)
+                and not is_total_quantity_column(layout.labels[previous])
+            ):
+                layout.extras[previous] = layout.labels[previous]
+                del layout.roles[previous]
+                layout.roles[col_index] = role
+            elif role and role not in layout.roles.values():
                 layout.roles[col_index] = role
             else:
                 layout.extras[col_index] = (
                     f"{text} ({col_index + 1})" if text in layout.extras.values() else text
                 )
 
-        if _REQUIRED_ROLES <= set(layout.roles.values()):
-            roles = set(layout.roles.values())
+        roles = set(layout.roles.values())
+        # Some templates number a leading ancillary column in the header. Amounts
+        # after the product column still indicate data, not header labels.
+        numeric_columns = {index for index, text in enumerate(cells) if text.isdigit()}
+        if numeric_columns:
+            name_column = next((col for col, role in layout.roles.items() if role == "name"), -1)
+            if not {"name", "quantity"} <= roles or any(col > name_column for col in numeric_columns):
+                continue
+        if _REQUIRED_ROLES <= roles:
             score = (
                 10 * ("quantity" in roles or {"quantity_packs", "units_per_pack"} <= roles)
                 + 4 * ("unit" in roles)

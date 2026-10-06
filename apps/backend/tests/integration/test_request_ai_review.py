@@ -18,6 +18,7 @@ from app.parsing import ai_review
 from app.parsing.ai_review import Correction, ReviewBatch
 from app.parsing.llm_client import LlmUnavailable
 from tests.test_ai_review import checked
+from tests.test_excel_first_sheet import workbook_bytes
 from tests.test_late_excel_header import (
     checked_covered_request,
     covered_request_mapping,
@@ -67,6 +68,102 @@ async def upload(client, filename="scanner.xlsx", rows=None):
     )
     assert result.status_code == 200, result.text
     return result.json()
+
+
+@pytest.mark.parametrize("mode", ["basic", "balanced"])
+async def test_rejected_mapping_with_zero_items_can_be_saved_and_completed_manually(
+    client, monkeypatch, mode
+):
+    from app.parsing import llm_table_classifier
+    from app.parsing.llm_table_classifier import ColumnMapping, TableMapping
+    from app.parsing.partner_extraction import PartnerEnvelope
+
+    await client.put("/api/me/extraction-preferences", json={"mode": mode})
+    # No usable name cells, plus an invalid AI mapping that assigns quantity twice.
+    mapper = Mock(return_value=TableMapping(
+        header_row_index=0,
+        columns=[
+            ColumnMapping(column_index=0, role="name", scope="request"),
+            ColumnMapping(column_index=1, role="quantity", scope="request"),
+            ColumnMapping(column_index=2, role="quantity", scope="request"),
+        ],
+    ))
+    monkeypatch.setattr(llm_table_classifier, "call_llm", mapper)
+    monkeypatch.setattr(ai_review, "call_llm", Mock(return_value=PartnerEnvelope(
+        partner_json='{"partner":null,"region":null,"contact":null}',
+    )))
+    body = await upload(client, "missing-names.xlsx", rows=[
+        ["Product", "Quantity", "Quantity"], [None, 7, 8],
+    ])
+    rid = body["requestId"]
+    try:
+        assert mapper.call_count == 1
+        assert body["items"] == []
+        assert body["sourceReferences"] == []
+        assert body["counts"]["total"] == 0
+        assert body["partner"]["confirmed"] is False
+        assert any("Columns could not be confirmed" in warning for warning in body["parserWarnings"])
+        assert any("No requested line items" in warning for warning in body["parserWarnings"])
+        reopened = await client.get(f"/api/requests/{rid}/review")
+        assert reopened.status_code == 200
+        assert reopened.json()["items"] == []
+        assert reopened.json()["parserWarnings"] == body["parserWarnings"]
+        async with async_session() as session:
+            request = await get_request_by_id(session, rid)
+            assert request.ai_review["sources"] == {}
+            assert request.workflow_status == "review"
+        manual = await client.post(f"/api/requests/{rid}/items", json={
+            "name": "Manual catheter", "quantity": 7, "unit": "pcs", "domain": "equipment",
+        })
+        assert manual.status_code == 201, manual.text
+        assert (await client.get(f"/api/requests/{rid}/review")).json()["counts"]["total"] == 1
+    finally:
+        await client.delete(f"/api/requests/{rid}")
+
+
+@pytest.mark.parametrize("mode", ["basic", "balanced"])
+@pytest.mark.parametrize("use_draft", [False, True])
+async def test_empty_first_sheet_warning_persists_for_both_upload_paths(
+    client, monkeypatch, mode, use_draft
+):
+    from app.parsing import llm_table_classifier
+    from app.parsing.partner_extraction import PartnerEnvelope
+
+    await client.put("/api/me/extraction-preferences", json={"mode": mode})
+    mapper = Mock(side_effect=AssertionError("No mapping for an empty sheet"))
+    monkeypatch.setattr(llm_table_classifier, "call_llm", mapper)
+    monkeypatch.setattr(ai_review, "call_llm", Mock(return_value=PartnerEnvelope(
+        partner_json='{"partner":null,"region":null,"contact":null}',
+    )))
+    rid = None
+    try:
+        endpoint = "/api/imports"
+        if use_draft:
+            created = await client.post("/api/requests")
+            assert created.status_code == 201, created.text
+            rid = created.json()["requestId"]
+            endpoint = f"/api/requests/{rid}/file"
+        result = await client.post(endpoint, files={"file": (
+            "multi-sheet.xlsx",
+            workbook_bytes([], [["Product", "Quantity", "Unit"], ["Later device", 5, "pcs"]]),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )})
+        assert result.status_code == 200, result.text
+        body = result.json()
+        if rid:
+            assert body["requestId"] == rid
+        rid = body["requestId"]
+        assert body["items"] == []
+        assert body["partner"]["confirmed"] is False
+        assert mapper.call_count == 0
+        assert any("delete the unnecessary sheets" in note for note in body["parserWarnings"])
+        reopened = await client.get(f"/api/requests/{rid}/review")
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["parserWarnings"] == body["parserWarnings"]
+        assert reopened.json()["items"] == []
+    finally:
+        if rid:
+            await client.delete(f"/api/requests/{rid}")
 
 
 async def test_balanced_cover_metadata_import_saves_real_rows_and_source_alignment(client, monkeypatch):

@@ -27,6 +27,10 @@ from app.parsing.table_parser import HEADER_SEARCH_LIMIT, HeaderLayout, cell_tex
 logger = logging.getLogger(__name__)
 
 
+class MappingRejected(ValueError):
+    """A mapping validation failure whose message contains no source values."""
+
+
 def layout_issues(rows, layout: HeaderLayout | None, *, check_headers: bool = True) -> list[str]:
     if layout is None:
         return ["No recognizable header"]
@@ -93,15 +97,26 @@ def validated_layout(rows, mapping: TableMapping) -> HeaderLayout:
     width = max(map(len, rows), default=0)
     header = mapping.header_row_index
     if header < -1 or header >= min(HEADER_SEARCH_LIMIT, len(rows)):
-        raise ValueError("Invalid header position")
+        raise MappingRejected("Invalid header position")
     if header >= len(rows) - 1:
-        raise ValueError("No data rows after header")
+        raise MappingRejected("No data rows after header")
     indices = [c.column_index for c in mapping.columns]
     if len(indices) != width or set(indices) != set(range(width)):
-        raise ValueError("Missing, duplicated or invalid column indices")
+        raise MappingRejected("Missing, duplicated or invalid column indices")
     cells = [cell_text(c) for c in rows[header]] if header >= 0 else [""] * width
-    if header >= 0 and any(strict_quantity(c) is not None for c in cells if c):
-        raise ValueError("Data row selected as header")
+    if header >= 0:
+        numeric_columns = {
+            col for col, cell in enumerate(cells) if cell and strict_quantity(cell) is not None
+        }
+        if numeric_columns and (
+            not {"name", "quantity"} <= {match_column_role(cell) for cell in cells}
+            or any(
+                column.column_index in numeric_columns
+                and column.role not in {"none", "ordinal"}
+                for column in mapping.columns
+            )
+        ):
+            raise MappingRejected("Data row selected as header")
     kept = classify_columns(cells)
     layout = HeaderLayout(row_index=header)
     for column in mapping.columns:
@@ -109,14 +124,14 @@ def validated_layout(rows, mapping: TableMapping) -> HeaderLayout:
         label = cells[col] if col < len(cells) else ""
         if column.scope != "request":
             if role not in {"none", "ordinal"}:
-                raise ValueError("Non-request field assigned a request role")
+                raise MappingRejected("Non-request field assigned a request role")
             if column.scope == "unknown" and any(
                 col < len(row) and cell_text(row[col]) for row in rows[header + 1 :]
             ):
-                raise ValueError("Populated column scope remains unresolved")
+                raise MappingRejected("Populated column scope remains unresolved")
             continue
         if col < len(kept) and label and not kept[col] and not is_ordinal_column(label):
-            raise ValueError("Explicit supplier/admin exclusion overridden")
+            raise MappingRejected("Explicit supplier/admin exclusion overridden")
         if role in {"none", "ordinal"}:
             continue
         layout.labels[col] = label or f"Column {col + 1}"
@@ -128,18 +143,18 @@ def validated_layout(rows, mapping: TableMapping) -> HeaderLayout:
             layout.extras[col] = extra_label
         else:
             if role in layout.roles.values():
-                raise ValueError("Duplicate core role")
+                raise MappingRejected("Duplicate core role")
             layout.roles[col] = role
     problems = layout_issues(rows, layout, check_headers=False)
     if problems:
-        raise ValueError("; ".join(problems))
+        raise MappingRejected("; ".join(problems))
     # A mapping that hides an entire populated request amount is not a resolution.
     if not (
         "quantity" in layout.roles.values()
         or {"quantity_packs", "units_per_pack"} <= set(layout.roles.values())
     ):
         if "Requested quantity column is unclear" in layout_issues(rows, layout):
-            raise ValueError("Requested quantity remains unresolved")
+            raise MappingRejected("Requested quantity remains unresolved")
     return layout
 
 
@@ -216,7 +231,8 @@ class MappingSession:
                 layout = validated_layout(rows, mapping)
                 used_llm = True
             except (LlmUnavailable, ValueError) as exc:
-                logger.warning("Table mapping unavailable at page=%s: %s", page, type(exc).__name__)
+                reason = str(exc) if isinstance(exc, MappingRejected) else type(exc).__name__
+                logger.warning("Table mapping unavailable at page=%s: %s", page, reason)
                 warnings = [
                     "Columns could not be confirmed; review basic extraction: " + "; ".join(issues)
                 ]
