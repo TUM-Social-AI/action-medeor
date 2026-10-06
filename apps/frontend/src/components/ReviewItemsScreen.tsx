@@ -160,6 +160,19 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const [removingItemId, setRemovingItemId] = useState<number | null>(null);
   const [itemError, setItemError] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Partial<ExtractedItem>>({});
+  const unitInferred = Boolean(editingItem?.inferredFields?.unit) && editValues.unit === editingItem?.unit;
+  const typeInferred = Boolean(editingItem?.inferredFields?.type) && editValues.domain === editingItem?.domain;
+  useEffect(() => {
+    if (!editingItem) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isSavingItem) {
+        event.preventDefault();
+        setEditingItem(null);
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [editingItem, isSavingItem]);
   const [editingPartner, setEditingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState<PartnerDetails | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -1068,9 +1081,12 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       </div>
 
       {editingItem && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
-          <div role="dialog" aria-modal="true" aria-labelledby="item-dialog-title" className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between">
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6"
+          onClick={event => {
+            if (event.target === event.currentTarget && !isSavingItem) setEditingItem(null);
+          }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="item-dialog-title" className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between shrink-0">
               <div>
                 <h3 id="item-dialog-title" className="text-gray-900">
                   {isNewItem ? 'Add Item Manually' : editingItem.manual ? 'Edit Manual Item' : editingItem.status === 'missing' ? 'Complete Missing Information' : 'Edit Extracted Item'}
@@ -1082,7 +1098,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               </button>
             </div>
 
-            <div className="px-6 py-5">
+            <div className="px-6 py-5 min-h-0 overflow-y-auto overscroll-contain">
               {itemError && <div className="mb-4"><ErrorPanel message={itemError} /></div>}
               <SourceReferencePanel item={editingItem} reference={sourceReferences[editingItem.id]} />
               <div className="space-y-4">
@@ -1147,11 +1163,14 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                    <label htmlFor="item-unit" className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
                       Unit
+                      {unitInferred && <span id="item-unit-inference" className="ml-2 text-amber-700 font-normal">AI inferred</span>}
                     </label>
                     <input
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                      id="item-unit"
+                      aria-describedby={unitInferred ? 'item-unit-inference' : undefined}
+                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] ${unitInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
                       value={editValues.unit ?? ''}
                       onChange={event => setEditValues(values => ({ ...values, unit: event.target.value }))}
                     />
@@ -1168,12 +1187,15 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                  <label htmlFor="item-type" className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
                     Product type (required)
+                    {typeInferred && <span id="item-type-inference" className="ml-2 text-amber-700 font-normal">AI inferred</span>}
                   </label>
                   <select
+                    id="item-type"
                     aria-label="Product type"
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white"
+                    aria-describedby={typeInferred ? 'item-type-inference' : undefined}
+                    className={`w-full border rounded-lg px-3 py-2 text-sm ${typeInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
                     value={editValues.domain ?? ''}
                     onChange={event => setEditValues(values => ({
                       ...values,
@@ -1205,7 +1227,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               </div>
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3 shrink-0">
               <button
                 disabled={isSavingItem}
                 onClick={() => setEditingItem(null)}
@@ -1337,7 +1359,6 @@ function SourceReferencePanel({
       >
         {reference?.excerpt ?? 'No source reference available'}
       </div>
-      <InferredFieldsDetails item={item} />
       {!!item.reviewReasons?.length && <ul className="mt-3 text-xs text-amber-800 list-disc pl-4">{item.reviewReasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
       <div className={`flex items-center gap-1.5 mt-2 text-xs ${isMissing ? 'text-red-600' : 'text-amber-600'}`}>
         <Info size={11} />
@@ -1356,19 +1377,4 @@ function partnerLabel(key: keyof Pick<PartnerDetails, 'partner' | 'region' | 're
     requestId: 'Request ID',
     contact: 'Contact',
   }[key];
-}
-
-
-export function InferredFieldsDetails({ item }: { item: ExtractedItem }) {
-  const fields = [
-    { key: 'type', label: 'Type', value: item.domain === 'equipment' ? 'Equipment' : item.domain === 'medicine' ? 'Medicine' : 'Not set' },
-    { key: 'unit', label: 'Unit', value: item.unit || 'Not set' },
-  ].filter(field => item.inferredFields?.[field.key]);
-  if (!fields.length) return null;
-  return <dl className="mt-3 text-xs text-gray-700 space-y-1">
-    {fields.map(field => <div key={field.key} className="flex items-center gap-2">
-      <dt className="font-semibold">{field.label}:</dt>
-      <dd>{field.value} <span className="ml-1 text-gray-500">(AI inferred)</span></dd>
-    </div>)}
-  </dl>;
 }

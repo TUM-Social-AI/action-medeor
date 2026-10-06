@@ -79,25 +79,10 @@ test('unresolved row issues are shown next to the source item', () => {
 });
 
 
-test('inferred details identify field values rather than repeating source evidence', () => {
-  const html = renderToStaticMarkup(React.createElement(exports.InferredFieldsDetails, { item: {
-    domain: 'equipment', unit: 'pcs', inferredFields: {
-      type: 'Blood and IV infusion Warmer', unit: 'Blood and IV infusion Warme',
-    },
-  }}));
-  assert.match(html, /Type:/);
-  assert.match(html, /Equipment/);
-  assert.match(html, /Unit:/);
-  assert.match(html, /pcs/);
-  assert.match(html, /AI inferred/);
-  assert.doesNotMatch(html, /Blood and IV/);
-});
-
-test('AI review locks the application while pending and removes the button after success', async () => {
+function interactiveScreen(initialData = data, client = {}) {
   const slots = [];
   let cursor = 0;
   let effects = [];
-  let resolveReview;
   const hooks = {
     ...React,
     useState(initial) {
@@ -120,29 +105,95 @@ test('AI review locks the application while pending and removes the button after
   new Function('require', 'exports', outputText)(name => {
     if (name === 'react') return hooks;
     if (name === 'react-dom') return { createPortal: element => element };
-    if (name === '../api/client') return { reviewWithAi: () => new Promise(resolve => { resolveReview = resolve; }) };
+    if (name === '../api/client') return client;
     if (name === './ScreenState' || name === './WorkflowStepper') return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
     return require(name);
   }, interactive);
+  return function renderTree() {
+    cursor = 0;
+    effects = [];
+    const tree = interactive.ReviewItemsScreen({ requestId: 'import-test', initialData, onContinue: () => {} });
+    for (const effect of effects) effect();
+    return tree;
+  };
+}
+
+function findElement(tree, predicate) {
+  if (!tree || typeof tree !== 'object') return undefined;
+  if (Array.isArray(tree)) return tree.map(child => findElement(child, predicate)).find(Boolean);
+  if (predicate(tree)) return tree;
+  return findElement(tree.props?.children, predicate);
+}
+
+test('inferred controls show their values, stop highlighting edited values, and the item dialog dismisses safely', () => {
+  const item = {
+    id: 1, name: 'Diagnostic scanner', quantity: 2, unit: 'pcs', domain: 'equipment', notes: '',
+    itemNumber: '', shelfLife: '', attributes: {}, priority: 'medium', confidence: 95,
+    status: 'verified', manual: false, verificationSource: 'ai', reviewReasons: [],
+    inferredFields: { type: 'Blood and IV infusion Warmer', unit: 'Blood and IV infusion Warme' },
+  };
+  const listeners = new Map();
+  const priorDocument = globalThis.document;
+  globalThis.document = {
+    addEventListener: (name, handler) => listeners.set(name, handler),
+    removeEventListener: (name, handler) => { if (listeners.get(name) === handler) listeners.delete(name); },
+  };
+  const renderTree = interactiveScreen({ ...data, items: [item] });
+  const dialog = tree => findElement(tree, element => element.props?.['aria-labelledby'] === 'item-dialog-title');
+  const open = () => {
+    findElement(renderTree(), element => element.type === 'button' && element.props.children === item.name).props.onClick();
+    return renderTree();
+  };
+  try {
+    let tree = open();
+    let unit = findElement(tree, element => element.props?.id === 'item-unit');
+    const type = findElement(tree, element => element.props?.id === 'item-type');
+    assert.equal(unit.props.value, 'pcs');
+    assert.equal(type.props.value, 'equipment');
+    assert.equal(unit.props['aria-describedby'], 'item-unit-inference');
+    assert.equal(type.props['aria-describedby'], 'item-type-inference');
+    assert.match(unit.props.className, /border-amber-400 bg-amber-50/);
+    assert.match(type.props.className, /border-amber-400 bg-amber-50/);
+    assert.doesNotMatch(renderToStaticMarkup(tree), /Blood and IV/);
+    assert.match(dialog(tree).props.className, /overflow-hidden/);
+    assert.doesNotMatch(dialog(tree).props.className, /overflow-y-auto/);
+    assert.ok(findElement(dialog(tree), element => element.props?.className?.includes('overflow-y-auto')));
+
+    unit.props.onChange({ target: { value: 'packs' } });
+    tree = renderTree();
+    unit = findElement(tree, element => element.props?.id === 'item-unit');
+    assert.equal(unit.props['aria-describedby'], undefined);
+    assert.doesNotMatch(unit.props.className, /bg-amber-50/);
+    assert.equal(findElement(tree, element => element.props?.id === 'item-type').props['aria-describedby'], 'item-type-inference');
+
+    const backdrop = findElement(tree, element => element.props?.className?.includes('bg-black/40') && element.props.onClick);
+    backdrop.props.onClick({ target: {}, currentTarget: backdrop });
+    assert.ok(dialog(renderTree()), 'clicking inside keeps the dialog open');
+    backdrop.props.onClick({ target: backdrop, currentTarget: backdrop });
+    assert.equal(dialog(renderTree()), undefined);
+    assert.equal(listeners.has('keydown'), false);
+
+    open();
+    listeners.get('keydown')({ key: 'Enter' });
+    assert.ok(dialog(renderTree()));
+    listeners.get('keydown')({ key: 'Escape', preventDefault() {} });
+    assert.equal(dialog(renderTree()), undefined);
+    assert.equal(listeners.has('keydown'), false);
+  } finally {
+    globalThis.document = priorDocument;
+  }
+});
+
+test('AI review locks the application while pending and removes the button after success', async () => {
+  let resolveReview;
+  const renderTree = interactiveScreen(data, { reviewWithAi: () => new Promise(resolve => { resolveReview = resolve; }) });
   const attributes = new Set();
   const appRoot = { hasAttribute: name => attributes.has(name), setAttribute: name => attributes.add(name), removeAttribute: name => attributes.delete(name) };
   const priorDocument = globalThis.document;
   const priorHTMLElement = globalThis.HTMLElement;
   globalThis.HTMLElement = class {};
   globalThis.document = { body: {}, activeElement: null, getElementById: () => appRoot };
-  function renderTree() {
-    cursor = 0;
-    effects = [];
-    const tree = interactive.ReviewItemsScreen({ requestId: 'import-test', initialData: data, onContinue: () => {} });
-    for (const effect of effects) effect();
-    return tree;
-  }
-  function findButton(tree) {
-    if (!tree || typeof tree !== 'object') return null;
-    if (Array.isArray(tree)) return tree.map(findButton).find(Boolean);
-    if (tree.type === 'button' && tree.props.children === 'Review with AI') return tree;
-    return findButton(tree.props?.children);
-  }
+  const findButton = tree => findElement(tree, element => element.type === 'button' && element.props.children === 'Review with AI');
   try {
     const button = findButton(renderTree());
     assert.ok(button);
