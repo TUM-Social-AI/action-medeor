@@ -19,6 +19,7 @@ from app.parsing.ai_review import Correction, ReviewBatch
 from app.parsing.llm_client import LlmUnavailable
 from tests.test_ai_review import checked
 from tests.test_parsing import build_xlsx
+from tests.test_partner_extraction import combined_response
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -41,14 +42,16 @@ async def client():
         await session.commit()
 
 
-async def upload(client):
+async def upload(client, filename="scanner.xlsx", rows=None):
     result = await client.post(
         "/api/imports",
         files={
             "file": (
-                "scanner.xlsx",
+                filename,
                 build_xlsx(
-                    [
+                    rows
+                    if rows is not None
+                    else [
                         ["Product", "Quantity", "Unit", "Type", "Notes"],
                         ["Diagnostic scanner model A", 2, "", "", "Original presentation"],
                     ]
@@ -59,6 +62,131 @@ async def upload(client):
     )
     assert result.status_code == 200, result.text
     return result.json()
+
+
+async def test_partner_suggestions_confirmation_edits_and_item_retry_are_independent(
+    client, monkeypatch
+):
+    call = Mock(side_effect=combined_response)
+    monkeypatch.setattr(ai_review, "call_llm", call)
+    body = await upload(client, "Anfrage 127 Somalia UHO.xlsx")
+    rid = body["requestId"]
+    try:
+        assert body["partner"]["partner"] == "UHO"
+        assert body["partner"]["region"] == "Somalia"
+        assert body["partner"]["contact"] == ""
+        assert body["partner"]["confirmed"] is False
+        assert call.call_count == 1
+        assert body["reviewSummary"]["status"] == "completed"
+        assert (await client.get(f"/api/requests/{rid}/review")).json()["partner"] == body[
+            "partner"
+        ]
+        confirmed = (await client.post(f"/api/requests/{rid}/partner/confirm")).json()
+        assert confirmed["confirmed"] is True
+        unchanged = await client.patch(f"/api/requests/{rid}/partner", json=confirmed)
+        assert unchanged.status_code == 200
+        assert unchanged.json()["confirmed"] is True
+        changed = await client.patch(
+            f"/api/requests/{rid}/partner",
+            json={
+                **confirmed,
+                "contact": "Human contact",
+                "requestId": "cannot-change-system-id",
+            },
+        )
+        assert changed.status_code == 200
+        assert changed.json()["confirmed"] is False
+        assert changed.json()["requestId"] == rid
+        expected = (await client.post(f"/api/requests/{rid}/partner/confirm")).json()
+        item_id = body["items"][0]["id"]
+        await client.patch(f"/api/requests/{rid}/items/{item_id}", json={"notes": "Human notes"})
+        reviewed = await client.post(f"/api/requests/{rid}/ai-review")
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["partner"] == expected
+        await client.post(f"/api/requests/{rid}/custom-columns", json={"displayName": "Notes"})
+        assert (await client.get(f"/api/requests/{rid}/review")).json()["partner"] == expected
+        assert call.call_count == 2
+    finally:
+        await client.delete(f"/api/requests/{rid}")
+
+
+async def test_basic_partner_document_labels_persist_without_ai_calls(client, monkeypatch):
+    await client.put("/api/me/extraction-preferences", json={"mode": "basic"})
+    call = Mock(side_effect=AssertionError("Basic metadata must not call AI"))
+    monkeypatch.setattr(ai_review, "call_llm", call)
+    body = await upload(
+        client,
+        "Anfrage 127 Somalia UHO.xlsx",
+        rows=[
+            ["Requester", "Health Relief"],
+            ["Country", "Uganda"],
+            ["Contact", "test@example.test"],
+            ["Product", "Quantity", "Unit", "Type"],
+            ["Diagnostic scanner", 2, "pcs", "Equipment"],
+        ],
+    )
+    rid = body["requestId"]
+    try:
+        assert {
+            key: body["partner"][key] for key in ("partner", "region", "contact", "confirmed")
+        } == {
+            "partner": "Health Relief",
+            "region": "Uganda",
+            "contact": "test@example.test",
+            "confirmed": False,
+        }
+        assert call.call_count == 0
+        assert (await client.get(f"/api/requests/{rid}/review")).json()["partner"] == body[
+            "partner"
+        ]
+        async with async_session() as session:
+            saved = await get_request_by_id(session, rid)
+            assert not saved.confirmed
+            assert saved.contact == "test@example.test"
+    finally:
+        await client.delete(f"/api/requests/{rid}")
+
+
+async def test_partner_edit_waits_for_confirmation_transaction_and_resets_it(client, monkeypatch):
+    from app.db import repository
+
+    monkeypatch.setattr(ai_review, "call_llm", Mock(side_effect=combined_response))
+    body = await upload(client, "Anfrage 127 Somalia UHO.xlsx")
+    rid = body["requestId"]
+    original = repository.get_request_by_id
+    entered = asyncio.Event()
+    locks = []
+
+    async def observed(session, request_id, *, lock=False):
+        if request_id == rid:
+            locks.append(lock)
+            entered.set()
+        return await original(session, request_id, lock=lock)
+
+    monkeypatch.setattr(repository, "get_request_by_id", observed)
+    task = None
+    try:
+        async with async_session() as session:
+            request = await original(session, rid, lock=True)
+            request.confirmed = True
+            task = asyncio.create_task(client.patch(f"/api/requests/{rid}/partner", json={
+                **body["partner"], "contact": "Later human edit",
+            }))
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert not task.done(), "the edit must wait for the confirmation transaction"
+            await session.commit()
+        response = await asyncio.wait_for(task, timeout=5)
+        assert response.status_code == 200, response.text
+        assert response.json()["confirmed"] is False
+        assert locks == [True, True]
+        async with async_session() as session:
+            saved = await original(session, rid)
+            assert not saved.confirmed and saved.contact == "Later human edit"
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await client.delete(f"/api/requests/{rid}")
 
 
 async def test_balanced_default_basic_preference_and_saved_review_cache(client, monkeypatch):

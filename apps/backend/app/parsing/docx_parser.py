@@ -8,6 +8,7 @@ configured - see free_text_parser.py).
 """
 
 from app.parsing.free_text_parser import extract_from_free_text
+from app.parsing.partner_extraction import capture_context
 from app.parsing.types import CustomColumnSpec, ParsedDocument
 
 
@@ -28,6 +29,7 @@ def parse_docx(content: bytes, custom_columns: list[CustomColumnSpec] | None = N
                 text_parts.append(row_text)
 
     full_text = "\n".join(text_parts)
+    capture_context(document, full_text)
     if not full_text.strip():
         document.warnings.append("Word document contained no readable text")
         return document

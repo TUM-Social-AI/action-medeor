@@ -65,6 +65,10 @@ async def save_parsed_request(
     request.parser_warnings = parsed.warnings
     request.table_mappings = parsed.table_mappings
     request.extraction_mode = parsed.extraction_mode
+    request.partner = parsed.partner.get("partner", "")
+    request.region = parsed.partner.get("region", "")
+    request.contact = parsed.partner.get("contact", "")
+    request.confirmed = False
     request.attribute_columns = parsed.attribute_columns
     request.available_columns = parsed.available_columns
     request.raw_file = raw_file
@@ -227,19 +231,24 @@ async def update_partner(
     request_id: str,
     payload: PartnerUpdate,
 ) -> ImportRequestRow | None:
-    request = await get_request_by_id(session, request_id)
+    request = await get_request_by_id(session, request_id, lock=True)
     if request is None:
         return None
-    request.partner = payload.partner
-    request.region = payload.region
-    request.contact = payload.contact
+    changed = any(
+        getattr(request, field) != getattr(payload, field)
+        for field in ("partner", "region", "contact")
+    )
+    for field in ("partner", "region", "contact"):
+        setattr(request, field, getattr(payload, field))
+    if changed:
+        request.confirmed = False
     await session.commit()
     await session.refresh(request)
     return request
 
 
 async def confirm_partner(session: AsyncSession, request_id: str) -> ImportRequestRow | None:
-    request = await get_request_by_id(session, request_id)
+    request = await get_request_by_id(session, request_id, lock=True)
     if request is None:
         return None
     request.confirmed = True

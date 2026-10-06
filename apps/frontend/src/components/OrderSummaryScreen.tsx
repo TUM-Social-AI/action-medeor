@@ -162,7 +162,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   };
 
   const savePartner = async () => {
-    if (!data) return;
+    if (!data || savingPartner) return;
     setSavingPartner(true);
     try {
       const updated = await updatePartner(requestId, { ...partnerDraft, requestId });
@@ -177,7 +177,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
   };
 
   const confirmPartnerDetails = async () => {
-    if (!data) return;
+    if (!data || savingPartner) return;
     setSavingPartner(true);
     try {
       const updated = await confirmPartner(requestId);
@@ -322,17 +322,17 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <div className="flex items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2"><Users size={15} className="text-gray-400" /><h2 className="text-sm text-gray-900 font-semibold">Partner & Request Details</h2></div>
-            {!data.partnerConfirmed && !editingPartner && <button type="button" title="Edit partner details" aria-label="Edit partner details" onClick={() => { setPartnerDraft({ partner: data.partner, region: data.region, contact: data.contact }); setEditingPartner(true); }} className="p-1 rounded text-gray-500 hover:bg-gray-100"><Pencil size={14} /></button>}
+            {!editingPartner && <button type="button" disabled={savingPartner} title="Edit partner details" aria-label="Edit partner details" onClick={() => { setPartnerDraft({ partner: data.partner, region: data.region, contact: data.contact }); setEditingPartner(true); }} className="p-1 rounded text-gray-500 hover:bg-gray-100"><Pencil size={14} /></button>}
           </div>
           {editingPartner ? <div className="space-y-3">
             {(['partner', 'region', 'contact'] as const).map(key => <label key={key} className="block text-xs text-gray-500">
               <span className="block mb-1">{key === 'partner' ? 'Organization' : key === 'region' ? 'Region' : 'Contact'}</span>
-              <input value={partnerDraft[key]} onChange={event => setPartnerDraft(draft => ({ ...draft, [key]: event.target.value }))} className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-xs text-gray-900" />
+              <input disabled={savingPartner} value={partnerDraft[key]} onChange={event => setPartnerDraft(draft => ({ ...draft, [key]: event.target.value }))} className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-xs text-gray-900" />
             </label>)}
             <div className="text-xs text-gray-500">System request ID: <span className="font-mono text-gray-700">{data.requestId}</span></div>
             <div className="flex gap-2 pt-1">
               <button type="button" disabled={savingPartner} onClick={() => setEditingPartner(false)} className="flex-1 rounded-lg border border-gray-200 px-2 py-1.5 text-xs">Cancel</button>
-              <button type="button" disabled={savingPartner} onClick={() => void savePartner()} className="flex-1 rounded-lg bg-[#1B4E8A] px-2 py-1.5 text-xs font-semibold text-white disabled:opacity-50">Save</button>
+              <button type="button" disabled={savingPartner} onClick={() => void savePartner()} className="flex-1 rounded-lg bg-[#1B4E8A] px-2 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{savingPartner ? 'Saving…' : 'Save'}</button>
             </div>
           </div> : <>
             <dl className="space-y-1.5">
@@ -346,7 +346,7 @@ export function OrderSummaryScreen({ requestId, onBack }: Props) {
               ].map(row => <div key={row.label}><dt className="text-xs text-gray-400">{row.label}</dt><dd className="text-xs text-gray-800 font-medium break-words">{row.value || 'Not specified'}</dd></div>)}
             </dl>
             {data.partnerConfirmed ? <div className="mt-4 flex items-center gap-1.5 text-xs font-medium text-green-700"><CheckCircle2 size={14} /> Details confirmed</div> :
-              <button type="button" disabled={savingPartner} onClick={() => void confirmPartnerDetails()} className="mt-4 w-full rounded-lg bg-[#1B4E8A] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Confirm Details</button>}
+              <button type="button" disabled={savingPartner} onClick={() => void confirmPartnerDetails()} className="mt-4 w-full rounded-lg bg-[#1B4E8A] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{savingPartner ? 'Confirming…' : 'Confirm Details'}</button>}
           </>}
         </div>
       </aside>

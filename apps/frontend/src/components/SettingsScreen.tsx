@@ -31,8 +31,8 @@ export function SettingsScreen() {
       <h2 id="extraction-preferences" className="text-gray-900 mb-2">AI assistance for imports</h2>
       <p className="text-sm text-gray-500 mb-4">Copy source values first, then choose how much AI checks. Your final confirmation is always required.</p>
       {([
-        ['balanced', 'Balanced — default', 'Column assistance plus a batched AI review. Clear gaps are filled and checked rows need no individual verification.'],
-        ['basic', 'Basic', 'Use AI only for unclear columns and free-text extraction. Verify extracted rows yourself.'],
+        ['balanced', 'Balanced — default', 'Column assistance plus a batched AI review of items and partner details. Clear gaps are filled and checked rows need no individual verification. Partner details always need your confirmation.'],
+        ['basic', 'Basic', 'Use AI only for unclear columns and free-text extraction. Partner details come from clear document labels and filename patterns. Verify extracted rows and confirm partner details yourself.'],
       ] as const).map(([value, label, description]) => <label key={value} className="flex gap-3 mb-4 cursor-pointer">
         <input type="radio" name="extraction-mode" value={value} checked={mode === value} disabled={busy} onChange={() => void save(value)} className="mt-1" />
         <span><span className="text-sm font-medium text-gray-900">{label}</span><span className="block text-sm text-gray-500">{description}</span></span>

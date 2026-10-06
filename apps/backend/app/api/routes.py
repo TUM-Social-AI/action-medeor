@@ -323,17 +323,15 @@ async def update_partner(
     payload: PartnerUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> PartnerDetails:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         if request.workflow_status == "draft":
             raise HTTPException(status_code=409, detail="Upload a file before editing partner details")
-        if request.confirmed:
-            raise HTTPException(status_code=409, detail="Partner details are already confirmed")
         updated = await repository.update_partner(session, request_id, payload)
         return repository.to_partner_details(updated)
 
     require_mock_request(request_id)
-    return PartnerDetails(**payload.model_dump(), confirmed=True)
+    return PartnerDetails(**payload.model_dump(exclude={"requestId"}), requestId=request_id, confirmed=False)
 
 
 @router.post("/requests/{request_id}/partner/confirm")
@@ -341,7 +339,7 @@ async def confirm_partner(
     request_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> PartnerDetails:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         if request.workflow_status == "draft":
             raise HTTPException(status_code=409, detail="Upload a file before confirming partner details")

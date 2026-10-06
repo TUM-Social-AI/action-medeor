@@ -12,6 +12,10 @@ const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
     jsx: ts.JsxEmit.ReactJSX },
 });
+const summarySource = await readFile(new URL('../src/components/OrderSummaryScreen.tsx', import.meta.url), 'utf8');
+const summaryOutput = ts.transpileModule(summarySource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+}).outputText;
 const exports = {};
 new Function('require', 'exports', outputText)(name => {
   if (name === '../api/client') return {};
@@ -79,7 +83,7 @@ test('unresolved row issues are shown next to the source item', () => {
 });
 
 
-function interactiveScreen(initialData = data, client = {}) {
+function interactiveScreen(initialData = data, client = {}, summary = false) {
   const slots = [];
   let cursor = 0;
   let effects = [];
@@ -102,20 +106,78 @@ function interactiveScreen(initialData = data, client = {}) {
     },
   };
   const interactive = {};
-  new Function('require', 'exports', outputText)(name => {
+  new Function('require', 'exports', summary ? summaryOutput : outputText)(name => {
     if (name === 'react') return hooks;
     if (name === 'react-dom') return { createPortal: element => element };
     if (name === '../api/client') return client;
+    if (summary && name === '../api/workflow') return { getRequestSummary: async () => initialData };
     if (name === './ScreenState' || name === './WorkflowStepper') return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
+    if (summary && name.startsWith('.')) return {
+      useOfferDateRefresh: () => {}, SharePointOfferSource: () => null,
+      CandidateAvailability: () => null, ProcessingProgress: () => null,
+    };
     return require(name);
   }, interactive);
   return function renderTree() {
     cursor = 0;
     effects = [];
-    const tree = interactive.ReviewItemsScreen({ requestId: 'import-test', initialData, onContinue: () => {} });
+    const tree = summary
+      ? interactive.OrderSummaryScreen({ requestId: 'import-test', onBack: async () => {} })
+      : interactive.ReviewItemsScreen({ requestId: 'import-test', initialData, onContinue: () => {} });
     for (const effect of effects) effect();
     return tree;
   };
+}
+
+for (const screen of ['review', 'summary']) {
+  test(`${screen} permits confirmed partner edits, preserves cancelled/failed drafts and requires reconfirmation`, async () => {
+    const partner = { ...data.partner, partner: 'Existing Partner', confirmed: true };
+    const initial = screen === 'review' ? { ...data, partner } : {
+      ...partner, status: 'finalized', partnerConfirmed: true, items: [], matchedCount: 0, unmatchedCount: 0,
+    };
+    let resolveSave, rejectSave, resolveConfirm;
+    const renderTree = interactiveScreen(initial, {
+      updatePartner: () => new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }),
+      confirmPartner: () => new Promise(resolve => { resolveConfirm = resolve; }),
+    }, screen === 'summary');
+    const button = (tree, label) => findElement(tree, element => element.type === 'button' && element.props.children === label);
+    const edit = tree => findElement(tree, element => element.props?.['aria-label'] === 'Edit partner details');
+    renderTree();
+    await Promise.resolve();
+    let tree = renderTree();
+    assert.ok(edit(tree));
+    assert.match(renderToStaticMarkup(tree), /Details confirmed/);
+    edit(tree).props.onClick();
+    button(renderTree(), 'Cancel').props.onClick();
+    tree = renderTree();
+    assert.match(renderToStaticMarkup(tree), /Details confirmed/);
+    edit(tree).props.onClick();
+    tree = renderTree();
+    findElement(tree, element => element.type === 'input' && element.props.value === 'Existing Partner')
+      .props.onChange({ target: { value: 'Edited Partner' } });
+    button(renderTree(), 'Save').props.onClick();
+    tree = renderTree();
+    assert.equal(button(tree, 'Saving…').props.disabled, true);
+    assert.equal(button(tree, 'Cancel').props.disabled, true);
+    rejectSave(new Error('Temporary save failure'));
+    await Promise.resolve();
+    tree = renderTree();
+    assert.ok(findElement(tree, element => element.type === 'input' && element.props.value === 'Edited Partner'));
+    button(tree, 'Save').props.onClick();
+    resolveSave({ ...partner, partner: 'Edited Partner', confirmed: false });
+    await Promise.resolve();
+    tree = renderTree();
+    assert.doesNotMatch(renderToStaticMarkup(tree), /Details confirmed/);
+    button(tree, 'Confirm Details').props.onClick();
+    tree = renderTree();
+    assert.equal(button(tree, 'Confirming…').props.disabled, true);
+    assert.equal(edit(tree).props.disabled, true);
+    resolveConfirm({ ...partner, partner: 'Edited Partner', confirmed: true });
+    await Promise.resolve();
+    tree = renderTree();
+    assert.match(renderToStaticMarkup(tree), /Details confirmed/);
+    assert.ok(edit(tree));
+  });
 }
 
 function findElement(tree, predicate) {

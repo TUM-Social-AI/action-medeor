@@ -3,6 +3,7 @@
 from app.parsing.csv_parser import parse_csv
 from app.parsing.docx_parser import parse_docx
 from app.parsing.excel_parser import parse_excel
+from app.parsing.partner_extraction import basic_partner
 from app.parsing.pdf_parser import parse_pdf
 from app.parsing.table_mapping import MappingSession
 from app.parsing.types import CustomColumnSpec, ParsedDocument
@@ -27,22 +28,24 @@ def parse_upload(
     mapping_session = MappingSession(persisted=table_mappings or {})
     try:
         if extension in ("xlsx", "xls"):
-            return parse_excel(
+            document = parse_excel(
                 content, filename, custom_columns=custom_columns, mapping_session=mapping_session
             )
-        if extension == "pdf":
-            return parse_pdf(
+        elif extension == "pdf":
+            document = parse_pdf(
                 content, custom_columns=custom_columns, mapping_session=mapping_session
             )
-        if extension == "docx":
-            return parse_docx(content, custom_columns=custom_columns)
-        if extension == "csv":
-            return parse_csv(
+        elif extension == "docx":
+            document = parse_docx(content, custom_columns=custom_columns)
+        elif extension == "csv":
+            document = parse_csv(
                 content, custom_columns=custom_columns, mapping_session=mapping_session
             )
+        else:
+            raise ParsingError(f"Unsupported file extension: .{extension}")
+        basic_partner(document, filename)
+        return document
     except ParsingError:
         raise
     except Exception as exc:  # noqa: BLE001 - convert any parser-library failure into ParsingError
         raise ParsingError(f"Could not read {filename}: {exc}") from exc
-
-    raise ParsingError(f"Unsupported file extension: .{extension}")

@@ -175,6 +175,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     return () => document.removeEventListener('keydown', handleEscape);
   }, [editingItem, isNewItem, isSavingItem]);
   const [editingPartner, setEditingPartner] = useState(false);
+  const [isSavingPartner, setIsSavingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState<PartnerDetails | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -479,24 +480,29 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   };
 
   const startEditPartner = () => {
-    if (partnerDetails && !partnerDetails.confirmed) {
+    if (partnerDetails && !isSavingPartner) {
       setPartnerDraft({ ...partnerDetails });
       setEditingPartner(true);
     }
   };
 
   const savePartner = async () => {
-    if (!partnerDraft) {
+    if (!partnerDraft || isSavingPartner) {
       return;
     }
 
+    setIsSavingPartner(true);
     try {
       const updated = requestId ? await updatePartner(requestId, {
         partner: partnerDraft.partner,
         region: partnerDraft.region,
         requestId: partnerDraft.requestId,
         contact: partnerDraft.contact,
-      }) : partnerDraft;
+      }) : {
+        ...partnerDraft,
+        confirmed: (['partner', 'region', 'contact'] as const).some(key => partnerDraft[key] !== partnerDetails?.[key])
+          ? false : partnerDetails?.confirmed ?? false,
+      };
       setPartnerDetails({
         ...partnerDraft,
         ...updated,
@@ -507,16 +513,22 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to save partner details');
+    } finally {
+      setIsSavingPartner(false);
     }
   };
 
   const confirmPartnerDetails = async () => {
+    if (isSavingPartner) return;
+    setIsSavingPartner(true);
     try {
       const updated = requestId ? await confirmPartner(requestId) : { confirmed: true };
       setPartnerDetails(details => details && { ...details, ...updated });
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to confirm partner details');
+    } finally {
+      setIsSavingPartner(false);
     }
   };
 
@@ -1013,8 +1025,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               </h3>
               <div className="flex items-center gap-1.5">
                 {partnerDetails.confirmed && !editingPartner && <CheckCircle2 size={14} className="text-green-500" />}
-                {!editingPartner && !partnerDetails.confirmed && (
+                {!editingPartner && (
                   <button
+                    disabled={isSavingPartner}
+                    aria-label="Edit partner details"
                     onClick={startEditPartner}
                     className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
                     title="Edit partner details"
@@ -1033,6 +1047,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     <input
                       className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
                       value={partnerDraft[key]}
+                      disabled={isSavingPartner}
                       onChange={event => setPartnerDraft(draft => draft && { ...draft, [key]: event.target.value })}
                     />
                   </div>
@@ -1040,6 +1055,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                 <div className="text-xs text-gray-500">{requestId ? <>System request ID: <span className="font-mono text-gray-700">{partnerDetails.requestId}</span></> : 'Request saved when you add the first item.'}</div>
                 <div className="flex gap-2 pt-1">
                   <button
+                    disabled={isSavingPartner}
                     onClick={() => setEditingPartner(false)}
                     className="flex-1 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-500 hover:bg-gray-50 transition-colors"
                     style={{ fontWeight: 500 }}
@@ -1047,11 +1063,12 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     Cancel
                   </button>
                   <button
+                    disabled={isSavingPartner}
                     onClick={() => void savePartner()}
                     className="flex-1 py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
                     style={{ fontWeight: 600 }}
                   >
-                    Save
+                    {isSavingPartner ? 'Saving…' : 'Save'}
                   </button>
                 </div>
               </div>
@@ -1067,18 +1084,19 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     <div key={row.label}>
                       <div className="text-xs text-gray-400">{row.label}</div>
                       <div className="text-xs text-gray-800" style={{ fontWeight: 500 }}>
-                        {row.value}
+                        {row.value || 'Not specified'}
                       </div>
                     </div>
                   ))}
                 </div>
                 {!partnerDetails.confirmed ? (
                   <button
+                    disabled={isSavingPartner}
                     onClick={() => void confirmPartnerDetails()}
                     className="w-full py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
                     style={{ fontWeight: 600 }}
                   >
-                    Confirm Details
+                    {isSavingPartner ? 'Confirming…' : 'Confirm Details'}
                   </button>
                 ) : (
                   <div className="flex items-center gap-1.5 text-xs text-green-700" style={{ fontWeight: 500 }}>

@@ -1,6 +1,7 @@
 """Extract usable grids locally, resolve uncertain column meanings, then copy source cells."""
 
 from app.parsing.free_text_parser import extract_from_free_text
+from app.parsing.partner_extraction import capture_context
 from app.parsing.table_mapping import MappingSession
 from app.parsing.table_parser import is_table_well_structured, parse_table_rows
 from app.parsing.types import CustomColumnSpec, ParsedDocument
@@ -22,6 +23,8 @@ def parse_pdf(
 
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for page_index, page in enumerate(pdf.pages, start=1):
+            page_text = page.extract_text() or ""
+            capture_context(document, page_text)
             candidates = page.find_tables()
             selected = (
                 max(candidates, key=lambda candidate: len(candidate.rows)) if candidates else None
@@ -33,7 +36,7 @@ def parse_pdf(
                 context = page.crop((0, 0, page.width, top)).extract_text() if top > 0 else ""
                 structured_pages.append((page_index, table, context or ""))
             else:
-                free_text_pages.append((page_index, page.extract_text() or ""))
+                free_text_pages.append((page_index, page_text))
 
     available_columns: list[str] = []
     if structured_pages:

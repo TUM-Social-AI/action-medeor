@@ -6,6 +6,7 @@ a CSV is the same underlying shape, just text-delimited instead of binary.
 import csv
 import io
 
+from app.parsing.partner_extraction import capture_rows
 from app.parsing.table_mapping import MappingSession
 from app.parsing.table_parser import extract_request_priority_hint, parse_table_rows
 from app.parsing.types import CustomColumnSpec, ParsedDocument
@@ -28,12 +29,14 @@ def parse_csv(
         return document
 
     default_priority = extract_request_priority_hint(rows)
-    return parse_table_rows(
+    document = parse_table_rows(
         rows,
         default_priority=default_priority,
         custom_columns=custom_columns,
         mapping_session=mapping_session,
     )
+    capture_rows(document, rows)
+    return document
 
 
 def _decode(content: bytes) -> str:

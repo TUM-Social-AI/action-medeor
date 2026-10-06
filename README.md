@@ -125,6 +125,15 @@ and units are marked beside their values in item details. Unclear packaging, con
 fields still require review. **Basic** retains selective column assistance and the existing
 free-text extraction path, without the extra review pass. Preferences affect future uploads only.
 
+New uploads also suggest Partner, Region and Contact from document metadata and the filename.
+Basic uses explicit requester labels and filenames such as `Anfrage 127 Somalia UHO.xlsx`,
+preserving partner abbreviations. Balanced includes requester metadata in the first item-review
+call when it fits, with one small metadata call only when it cannot share a batch. Unknown fields
+remain empty; supplier details and template branding are excluded. Suggestions are never
+automatically confirmed. Partner details can be edited after confirmation in both review and
+summary; saving changed values requires confirmation again. Item review retries and custom
+columns preserve partner details. Existing imports are not automatically backfilled.
+
 Use **Review with AI** on a saved request while it is in review. Human edits, human-confirmed fields
 and manual rows are protected; legacy nonempty values are preserved. Completed unchanged reviews
 are cached against source bytes, item values, protection and review version. Concurrent changes
