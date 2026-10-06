@@ -43,3 +43,36 @@ test('older review responses and clean imports render without a warning panel', 
   assert.doesNotMatch(render(data), /Import notes/);
   assert.doesNotMatch(render({ ...data, parserWarnings: [] }), /Import notes/);
 });
+
+test('AI checked rows show inference provenance and need no individual verification', () => {
+  const html = render({ ...data, items: [{
+    id: 1, name: 'Diagnostic scanner', quantity: 2, unit: 'pcs', notes: '', itemNumber: '', shelfLife: '',
+    attributes: {}, priority: 'medium', confidence: null, status: 'verified', domain: 'equipment', manual: false,
+    verificationSource: 'ai', inferredFields: { type: 'Diagnostic scanner', unit: 'Diagnostic scanner' }, reviewReasons: [],
+  }], reviewSummary: { status: 'completed', checked: 1, corrected: 1, unresolved: 0 } });
+  assert.match(html, /AI checked/);
+  assert.match(html, /AI inferred/);
+  assert.match(html, /1 rows AI checked/);
+  assert.match(html, /0 unresolved/);
+  assert.match(html, /Review with AI/);
+  assert.doesNotMatch(html, /Review Required/);
+  assert.doesNotMatch(html, /require manual review before/);
+});
+
+test('supplier column notes are informational and provider failures remain visible', () => {
+  const html = render({ ...data, parserWarnings: ['Ignored supplier/admin columns: Price'],
+    reviewSummary: { status: 'unavailable', checked: 0, message: 'Some rows could not be AI checked. Basic extraction has been retained; you can retry.' } });
+  assert.match(html, /Source column notes/);
+  assert.doesNotMatch(html, /Import notes/);
+  assert.match(html, /Basic extraction has been retained/);
+});
+
+test('unresolved row issues are shown next to the source item', () => {
+  const html = render({ ...data, items: [{
+    id: 1, name: 'Antibiotic', quantity: 2, unit: '', notes: '', itemNumber: '', shelfLife: '',
+    attributes: {}, priority: 'medium', confidence: null, status: 'needs_review', domain: 'medicine', manual: false,
+    reviewReasons: ['Medicine packaging is unclear'],
+  }] });
+  assert.match(html, /Medicine packaging is unclear/);
+  assert.match(html, /Review Required/);
+});

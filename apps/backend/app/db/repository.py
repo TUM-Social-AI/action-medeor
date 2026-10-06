@@ -19,10 +19,11 @@ from app.api.schemas import (
     SourceReference,
 )
 from app.db.models import ImportRequestRow, RequestItemRow, RequestSourceReferenceRow
+from app.parsing.ai_review import FIELDS, fingerprint
 from app.parsing.domain_inference import suggest_domain
 from app.parsing.keywords import match_column_role
 from app.parsing.service import parse_upload
-from app.parsing.types import CustomColumnSpec, ParsedDocument
+from app.parsing.types import CustomColumnSpec, ParsedDocument, ParsedLineItem
 
 
 def generate_request_id() -> str:
@@ -63,11 +64,11 @@ async def save_parsed_request(
     request.used_llm_fallback = parsed.used_llm_fallback
     request.parser_warnings = parsed.warnings
     request.table_mappings = parsed.table_mappings
+    request.extraction_mode = parsed.extraction_mode
     request.attribute_columns = parsed.attribute_columns
     request.available_columns = parsed.available_columns
     request.raw_file = raw_file
     request.workflow_status = "review"
-
 
     for position, parsed_item in enumerate(parsed.items):
         item = RequestItemRow(
@@ -83,7 +84,12 @@ async def save_parsed_request(
             priority=parsed_item.priority,
             confidence=parsed_item.confidence,
             status=parsed_item.status,
+            source_reference=None,
             domain=parsed_item.domain,
+            verification_source=parsed_item.verification_source,
+            inferred_fields=parsed_item.inferred_fields,
+            review_reasons=parsed_item.review_reasons,
+            protected_fields=parsed_item.protected_fields,
         )
         if parsed_item.excerpt:
             item.source_reference = RequestSourceReferenceRow(
@@ -95,6 +101,17 @@ async def save_parsed_request(
         request.items.append(item)
 
     session.add(request)
+    await session.flush()
+    sources = {
+        str(item.id): source.review_source
+        for item, source in zip(request.items, parsed.items, strict=True)
+    }
+    request.ai_review = {"summary": parsed.review_summary, "sources": sources}
+    saved_document = review_document_from_request(request)
+    request.ai_review = {
+        **request.ai_review,
+        "fingerprint": fingerprint(raw_file or b"", saved_document),
+    }
     await session.commit()
 
     # session.refresh(request, attribute_names=["items"]) reloads the items collection but does
@@ -107,7 +124,9 @@ async def save_parsed_request(
     return refreshed
 
 
-async def get_request_by_id(session: AsyncSession, request_id: str) -> ImportRequestRow | None:
+async def get_request_by_id(
+    session: AsyncSession, request_id: str, *, lock: bool = False
+) -> ImportRequestRow | None:
     statement = (
         select(ImportRequestRow)
         .where(ImportRequestRow.request_id == request_id)
@@ -115,22 +134,25 @@ async def get_request_by_id(session: AsyncSession, request_id: str) -> ImportReq
             selectinload(ImportRequestRow.items).selectinload(RequestItemRow.source_reference),
         )
     )
+    if lock:
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     result = await session.execute(statement)
     return result.scalar_one_or_none()
 
 
 async def suggest_missing_item_domains(
-    session: AsyncSession, request: ImportRequestRow
+    session: AsyncSession, request: ImportRequestRow, *, commit: bool = True
 ) -> None:
     """Fill suggestions for review rows uploaded before automatic classification existed."""
     if request.workflow_status != "review":
         return
     changed = False
     for item in request.items:
-        if item.domain is None:
+        if item.domain is None and not item.review_reasons:
             source_type = next(
                 (
-                    value for label, value in (item.attributes or {}).items()
+                    value
+                    for label, value in (item.attributes or {}).items()
                     if match_column_role(label) == "domain"
                 ),
                 "",
@@ -139,7 +161,7 @@ async def suggest_missing_item_domains(
             if domain:
                 item.domain = domain
                 changed = True
-    if changed:
+    if changed and commit:
         await session.commit()
 
 
@@ -155,9 +177,33 @@ async def update_item_fields(
     item = await get_item_by_id(session, item_id)
     if item is None:
         return None
+    actual_changes = {
+        _ITEM_UPDATE_FIELD_MAP.get(key, key)
+        for key, value in fields.items()
+        if getattr(item, _ITEM_UPDATE_FIELD_MAP.get(key, key)) != value
+    }
     for key, value in fields.items():
         setattr(item, _ITEM_UPDATE_FIELD_MAP.get(key, key), value)
     item.status = "verified"
+    item.verification_source = "human"
+    item.review_reasons = []
+    # Editing confirms the submitted values; a verification click confirms every core field.
+    changed_fields = {_ITEM_UPDATE_FIELD_MAP.get(key, key) for key in fields}
+    legacy = (
+        {field for field in FIELDS if getattr(item, field) not in (None, "")}
+        if item.protected_fields is None
+        else set(item.protected_fields)
+    )
+    item.protected_fields = sorted(legacy | changed_fields)
+    inferred = dict(item.inferred_fields or {})
+    for field in actual_changes:
+        inferred.pop(
+            {"domain": "type", "item_number": "itemNumber", "shelf_life": "shelfLife"}.get(
+                field, field
+            ),
+            None,
+        )
+    item.inferred_fields = inferred
     await session.commit()
     await session.refresh(item)
     return item
@@ -168,6 +214,9 @@ async def verify_item(session: AsyncSession, item_id: int) -> RequestItemRow | N
     if item is None:
         return None
     item.status = "verified"
+    item.verification_source = "human"
+    item.review_reasons = []
+    item.protected_fields = sorted(set(item.protected_fields or []) | set(FIELDS))
     await session.commit()
     await session.refresh(item)
     return item
@@ -321,6 +370,9 @@ def to_extracted_item(row: RequestItemRow) -> ExtractedItem:
         status=row.status,
         domain=row.domain,
         manual=bool(row.manual),
+        verificationSource=row.verification_source,
+        inferredFields=row.inferred_fields or {},
+        reviewReasons=row.review_reasons or [],
     )
 
 
@@ -365,6 +417,8 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
         availableColumns=row.available_columns or [],
         parserWarnings=row.parser_warnings or [],
         usedLlm=bool(row.used_llm_fallback),
+        extractionMode=row.extraction_mode,
+        reviewSummary=(row.ai_review or {}).get("summary", {}),
     )
 
 
@@ -391,15 +445,17 @@ async def create_draft_request(session: AsyncSession, *, manual: bool = False) -
     return saved
 
 
-def append_manual_item(
-    request: ImportRequestRow, payload: ManualItemCreate
-) -> RequestItemRow:
+def append_manual_item(request: ImportRequestRow, payload: ManualItemCreate) -> RequestItemRow:
     fields = payload.model_dump()
     item = RequestItemRow(
         request_id=request.request_id,
         position=max((row.position for row in request.items), default=-1) + 1,
         **{_ITEM_UPDATE_FIELD_MAP.get(key, key): value for key, value in fields.items()},
-        manual=True, status="verified", confidence=None,
+        manual=True,
+        status="verified",
+        confidence=None,
+        verification_source="human",
+        protected_fields=list(FIELDS),
     )
     item.name = item.name.strip()
     request.items.append(item)
@@ -495,3 +551,51 @@ async def list_requests(session: AsyncSession) -> list[ImportRequestRow]:
         .order_by(ImportRequestRow.created_at.desc(), ImportRequestRow.id.desc())
     )
     return list(result.scalars().all())
+
+
+def review_document_from_request(request: ImportRequestRow) -> ParsedDocument:
+    sources = (request.ai_review or {}).get("sources", {})
+    document = ParsedDocument(extraction_mode=request.extraction_mode)
+    for item in request.items:
+        reference = item.source_reference
+        document.items.append(
+            ParsedLineItem(
+                **{field: getattr(item, field) for field in FIELDS},
+                priority=item.priority,
+                attributes=dict(item.attributes or {}),
+                confidence=item.confidence,
+                status=item.status,
+                page=reference.page if reference else 0,
+                row=reference.row if reference else 0,
+                excerpt=reference.excerpt if reference else "",
+                review_id=str(item.id),
+                manual=item.manual,
+                verification_source=item.verification_source,
+                protected_fields=item.protected_fields,
+                inferred_fields=dict(item.inferred_fields or {}),
+                review_reasons=list(item.review_reasons or []),
+                review_source=sources.get(str(item.id), {}),
+            )
+        )
+    return document
+
+
+def apply_ai_review(request: ImportRequestRow, document: ParsedDocument) -> None:
+    items = {str(item.id): item for item in request.items}
+    for result in document.items:
+        item = items[result.review_id]
+        if item.manual:
+            continue
+        for field in FIELDS:
+            setattr(item, field, getattr(result, field))
+        item.status = result.status
+        item.confidence = result.confidence
+        item.verification_source = result.verification_source
+        item.inferred_fields = result.inferred_fields
+        item.review_reasons = result.review_reasons
+    request.used_llm_fallback = request.used_llm_fallback or document.used_llm_fallback
+    request.ai_review = {
+        "summary": document.review_summary,
+        "sources": {item.review_id: item.review_source for item in document.items},
+        "fingerprint": fingerprint(request.raw_file or b"", document),
+    }

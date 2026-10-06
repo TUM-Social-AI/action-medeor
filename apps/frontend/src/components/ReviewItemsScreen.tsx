@@ -23,6 +23,7 @@ import {
   confirmPartner,
   getReview,
   removeManualItem,
+  reviewWithAi,
   updateColumnLabel,
   updateItem,
   updatePartner,
@@ -87,7 +88,7 @@ const STATUS_CFG: Record<
 };
 
 function needsManualReview(item: ExtractedItem) {
-  return item.status === 'low_confidence' || item.status === 'missing' || !item.domain;
+  return item.status === 'low_confidence' || item.status === 'missing' || !item.domain || !!item.reviewReasons?.length;
 }
 
 /** A column header or attribute label that renames itself in place - click to edit, Enter/blur
@@ -171,6 +172,20 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   );
   const [newColumnName, setNewColumnName] = useState('');
   const [isAddingColumn, setIsAddingColumn] = useState(false);
+  const [isReviewingAi, setIsReviewingAi] = useState(false);
+  const runAiReview = async () => {
+    if (!requestId) return;
+    setIsReviewingAi(true);
+    setError(null);
+    try {
+      const reviewed = await reviewWithAi(requestId);
+      setData(reviewed);
+      setItems(reviewed.items);
+      setPartnerDetails(reviewed.partner);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to review with AI');
+    } finally { setIsReviewingAi(false); }
+  };
 
   // key is a core-field key ('name', 'quantity', ...) or an attribute column's own label - see
   // ReviewResponse.columnLabels. Optimistic: applies locally first so the header doesn't flicker
@@ -315,12 +330,13 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const missing = items.filter(item => item.status === 'missing').length;
   const manualCount = items.filter(item => item.manual).length;
   const isManualRequest = !!data && !data.source.fileName;
-  const itemMutationPending = isSavingItem || removingItemId !== null;
-  const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain)
+  const itemMutationPending = isReviewingAi || isSavingItem || removingItemId !== null;
+  const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain && !item.reviewReasons?.length)
     && !itemMutationPending && !isAddingColumn;
   const blockedItems = items.filter(needsManualReview);
 
   const openEdit = (item: ExtractedItem) => {
+    if (isReviewingAi) return;
     setIsNewItem(false);
     setItemError(null);
     setEditingItem(item);
@@ -488,14 +504,31 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       </div>
 
       {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
-      {!!data.parserWarnings?.length && (
+      {!!data.parserWarnings?.some(warning => !warning.startsWith('Ignored supplier/admin columns:')) && (
         <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <p className="font-semibold">Import notes — check the source before continuing</p>
           <ul className="mt-2 list-disc space-y-1 pl-5">
-            {data.parserWarnings.map((warning, index) => <li key={index}>{warning}</li>)}
+            {data.parserWarnings.filter(warning => !warning.startsWith('Ignored supplier/admin columns:')).map((warning, index) => <li key={index}>{warning}</li>)}
           </ul>
         </div>
       )}
+
+      {!!data.parserWarnings?.some(warning => warning.startsWith('Ignored supplier/admin columns:')) && <details className="mb-4 text-sm text-gray-500">
+        <summary className="cursor-pointer">Source column notes</summary>
+        {data.parserWarnings.filter(warning => warning.startsWith('Ignored supplier/admin columns:')).map((warning, index) => <p key={index} className="mt-2">{warning}</p>)}
+      </details>}
+      {!isManualRequest && <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4 flex items-center justify-between gap-4">
+        <div className="text-sm text-gray-700" role="status">
+          {data.reviewSummary?.status ? <>
+            <p>{data.reviewSummary.checked ?? 0} rows AI checked · {data.reviewSummary.corrected ?? 0} corrected · {items.filter(item => !item.manual && (item.status !== 'verified' || item.reviewReasons?.length)).length} unresolved</p>
+            {data.reviewSummary.message && <p className="text-amber-700 mt-1">{data.reviewSummary.message}</p>}
+          </> : <p>AI can check copied values and fill clear types and units.</p>}
+        </div>
+        <button type="button" onClick={() => void runAiReview()} disabled={!requestId || isReviewingAi || isAddingColumn || itemMutationPending || !!editingItem}
+          className="px-3 py-2 text-sm rounded-lg bg-[#1B4E8A] text-white disabled:opacity-50 flex-shrink-0">
+          {isReviewingAi ? 'Reviewing with AI…' : 'Review with AI'}
+        </button>
+      </div>}
 
       <div className="flex flex-col xl:flex-row gap-5 items-start">
         <div className="w-full flex-1 min-w-0">
@@ -565,7 +598,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   void submitNewColumn();
                 }
               }}
-              disabled={isAddingColumn || itemMutationPending}
+              disabled={isAddingColumn || isReviewingAi || itemMutationPending}
               className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] disabled:bg-gray-50"
             />
             <datalist id="available-columns-suggestions">
@@ -575,7 +608,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
             </datalist>
             <button
               onClick={() => void submitNewColumn()}
-              disabled={!newColumnName.trim() || isAddingColumn || itemMutationPending}
+              disabled={!newColumnName.trim() || isAddingColumn || isReviewingAi || itemMutationPending}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs flex-shrink-0 transition-colors ${
                 newColumnName.trim() && !isAddingColumn
                   ? 'bg-[#1B4E8A] text-white hover:bg-[#163d6d]'
@@ -681,6 +714,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                         >
                           {missingName ? '- Missing -' : item.name}
                         </button>
+                        {!!item.reviewReasons?.length && <ul className="text-xs text-amber-700 mt-1">{item.reviewReasons.map((reason, i) => <li key={i}>{reason}</li>)}</ul>}
                         {item.manual && (
                           <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-slate-100 text-slate-500 font-medium">
                             <PenLine size={10} /> Manual
@@ -690,6 +724,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       <td className="px-4 py-3">
                         <span className={`text-xs ${item.domain ? 'text-gray-700' : 'text-amber-700'}`}>
                           {item.domain ?? 'Choose in Edit'}
+                          {item.inferredFields?.type && <span title={`Inferred from: ${item.inferredFields.type}`} className="block text-gray-400">AI inferred</span>}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -704,7 +739,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       {showUnit && (
                         <td className="px-4 py-3">
                           {item.unit ? (
-                            <span className="text-sm text-gray-500">{item.unit}</span>
+                            <span className="text-sm text-gray-500">{item.unit}{item.inferredFields?.unit && <span title={`Inferred from: ${item.inferredFields.unit}`} className="block text-xs text-gray-400">AI inferred</span>}</span>
                           ) : (
                             <span className="text-sm text-gray-400 italic">-</span>
                           )}
@@ -765,7 +800,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${status.bg} ${status.color}`} style={{ fontWeight: 500 }}>
-                          {status.icon} {status.label}
+                          {status.icon} {item.verificationSource === 'ai' && item.status === 'verified' ? 'AI checked' : status.label}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -1276,11 +1311,15 @@ function SourceReferencePanel({
       >
         {reference?.excerpt ?? 'No source reference available'}
       </div>
+      {!!Object.keys(item.inferredFields ?? {}).length && <dl className="mt-3 text-xs text-gray-700 space-y-1">
+        {Object.entries(item.inferredFields ?? {}).map(([field, evidence]) => <div key={field}><dt className="font-semibold inline">AI inferred {field}: </dt><dd className="inline">{evidence}</dd></div>)}
+      </dl>}
+      {!!item.reviewReasons?.length && <ul className="mt-3 text-xs text-amber-800 list-disc pl-4">{item.reviewReasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
       <div className={`flex items-center gap-1.5 mt-2 text-xs ${isMissing ? 'text-red-600' : 'text-amber-600'}`}>
         <Info size={11} />
         {isMissing
           ? 'Item name extracted. Quantity could not be read. Please enter it manually.'
-          : `Extracted with ${item.confidence}% confidence`}
+          : item.verificationSource === 'ai' ? 'AI checked against the source' : item.confidence == null ? 'Check against the original source' : `Extracted with ${item.confidence}% confidence`}
       </div>
     </div>
   );

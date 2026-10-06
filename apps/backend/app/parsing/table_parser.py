@@ -235,6 +235,18 @@ def parse_table_rows(
                 item.status = "low_confidence" if uncertain else "needs_review"
         if row_issues:
             document.warnings.append(f"Page {page}, row {row_number}: " + "; ".join(row_issues))
+        item.review_reasons = row_issues
+        item.review_source = {
+            "headers": {str(c): label for c, label in layout.labels.items()},
+            "roles": {str(c): role for c, role in layout.roles.items()},
+            "context": context,
+            "cells": {
+                str(c): cell_text(cell)
+                for c, cell in enumerate(row)
+                if in_scope_columns is None or c in in_scope_columns
+            },
+            "mappingUncertain": uncertain or layout.row_index < 0,
+        }
         document.items.append(item)
 
     document.rows_detected = len(document.items)

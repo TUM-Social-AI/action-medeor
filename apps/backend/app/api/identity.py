@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import UserAvatarPreferenceRow
+from app.db.models import UserAvatarPreferenceRow, UserExtractionPreferenceRow
 from app.db.session import get_session
 
 router = APIRouter(prefix="/api/me")
@@ -74,6 +74,38 @@ async def put_avatar(
         user_id=_user_id(request), avatar_id=choice.avatarId
     ).on_conflict_do_update(
         index_elements=[UserAvatarPreferenceRow.user_id], set_={"avatar_id": choice.avatarId}
+    )
+    await session.execute(statement)
+    await session.commit()
+    return choice
+
+
+class ExtractionPreference(BaseModel):
+    mode: Literal["basic", "balanced"] = "balanced"
+
+
+async def extraction_mode(request: Request, session: AsyncSession) -> str:
+    preference = await session.get(UserExtractionPreferenceRow, _user_id(request))
+    return preference.mode if preference else "balanced"
+
+
+@router.get("/extraction-preferences")
+async def get_extraction_preferences(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> ExtractionPreference:
+    return ExtractionPreference(mode=await extraction_mode(request, session))
+
+
+@router.put("/extraction-preferences")
+async def put_extraction_preferences(
+    request: Request, choice: ExtractionPreference, session: AsyncSession = Depends(get_session)
+) -> ExtractionPreference:
+    statement = (
+        insert(UserExtractionPreferenceRow)
+        .values(user_id=_user_id(request), mode=choice.mode)
+        .on_conflict_do_update(
+            index_elements=[UserExtractionPreferenceRow.user_id], set_={"mode": choice.mode}
+        )
     )
     await session.execute(statement)
     await session.commit()

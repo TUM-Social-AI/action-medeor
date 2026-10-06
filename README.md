@@ -110,17 +110,30 @@ the extracted items. Word documents use the configured LLM. PDF and spreadsheet 
 column rules only when
 headers and data support an unambiguous mapping. Uncertain layouts receive one small LLM
 column-mapping call; rows are then copied locally. Repeated layouts share the mapping within
-an upload, and saved mappings are reused when adding columns. No routine second LLM check is made.
-Missing optional units remain blank; requested totals take precedence over pack arithmetic,
-and conflicting totals require review. An upload can still produce items through basic parsing
-if an LLM call fails,
-so an app upload alone does not prove that Foundry responded. The review screen displays import
-warnings, including failed column verification, and uncertain
-rows are not marked verified. The review API exposes `usedLlm` and `parserWarnings`; the
-`import_requests` table also stores the versioned `table_mappings`. Run `alembic upgrade head`
-before starting the updated backend. Existing saved results are not re-extracted automatically;
-re-upload a document to use the improved parser. Provider requests have a 60-second timeout,
-no SDK retries, and a JSON-mode retry only when structured output is explicitly unsupported.
+an upload, and saved mappings are reused when adding columns.
+
+**Balanced** is the default per-user extraction preference in Settings. After copying, it adds
+one compact AI review for ordinary documents, split at row boundaries into batches of at most
+100 items or 32,000 characters for larger imports. Clear gaps in product type and individual-device
+units are filled with inference provenance. Checked, complete rows show **AI checked** and need
+only the existing final confirmation. Unclear packaging, conflicting totals and missing required
+fields still require review. **Basic** retains selective column assistance and the existing
+free-text extraction path, without the extra review pass. Preferences affect future uploads only.
+
+Use **Review with AI** on a saved request while it is in review. Human edits, human-confirmed fields
+and manual rows are protected; legacy nonempty values are preserved. Completed unchanged reviews
+are cached against source bytes, item values, protection and review version. Concurrent changes
+or matching started during review reject stale results atomically. Adding custom columns preserves
+prior review and human edits, without rerunning the review automatically.
+
+Missing or failed providers retain basic extraction with a visible explanation and allow retry;
+successful batches remain usable. `GET/PUT /api/me/extraction-preferences` persists `basic` or
+`balanced`, and `POST /api/requests/{request_id}/ai-review` returns the updated review response.
+The API exposes `reviewSummary`, `extractionMode`, `verificationSource`, `inferredFields` and
+`reviewReasons`, alongside `usedLlm` and `parserWarnings`. Apply `alembic upgrade head` before
+starting the updated backend. Existing saved imports remain unchanged until explicitly reviewed
+or re-uploaded. Provider requests have a 60-second timeout, no SDK retries, and a JSON-mode retry
+only when structured output is explicitly unsupported.
 Backend logs record provider request duration and available token usage, without source contents.
 
 The example file is never loaded automatically. Docker Compose reads a separate root `.env`

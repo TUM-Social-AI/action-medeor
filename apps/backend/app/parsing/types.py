@@ -47,6 +47,13 @@ class ParsedLineItem:
     page: int = 0
     row: int = 0
     excerpt: str = ""
+    verification_source: str | None = None
+    inferred_fields: dict[str, str] = field(default_factory=dict)
+    review_reasons: list[str] = field(default_factory=list)
+    protected_fields: list[str] | None = field(default_factory=list)
+    review_id: str = ""
+    manual: bool = False
+    review_source: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -59,6 +66,8 @@ class ParsedDocument:
     used_llm_fallback: bool = False
     # Versioned, source-indexed layouts; no document cell values are stored here.
     table_mappings: dict = field(default_factory=dict)
+    extraction_mode: str = "basic"
+    review_summary: dict = field(default_factory=dict)
     # Ordered labels of the extra columns this document contributed, in source column order.
     # Columns that were empty for every row are dropped, so this reflects what's worth showing.
     attribute_columns: list[str] = field(default_factory=list)

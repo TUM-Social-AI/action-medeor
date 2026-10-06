@@ -82,6 +82,9 @@ export type ExtractedItem = {
   status: ItemStatus;
   domain?: 'medicine' | 'equipment' | null;
   manual: boolean;
+  verificationSource?: 'ai' | 'human' | null;
+  inferredFields?: Record<string, string>;
+  reviewReasons?: string[];
 };
 
 export type ReviewCounts = {
@@ -95,6 +98,14 @@ export type ReviewCounts = {
 export type ReviewResponse = {
   parserWarnings?: string[];
   usedLlm?: boolean;
+  extractionMode?: 'basic' | 'balanced';
+  reviewSummary?: {
+    status?: 'completed' | 'partial' | 'unavailable';
+    checked?: number;
+    corrected?: number;
+    unresolved?: number;
+    message?: string;
+  };
   requestId: string;
   source: SourceInfo;
   partner: PartnerDetails;
