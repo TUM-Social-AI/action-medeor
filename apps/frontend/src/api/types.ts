@@ -93,6 +93,8 @@ export type ReviewCounts = {
 };
 
 export type ReviewResponse = {
+  parserWarnings?: string[];
+  usedLlm?: boolean;
   requestId: string;
   source: SourceInfo;
   partner: PartnerDetails;

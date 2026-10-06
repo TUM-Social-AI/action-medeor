@@ -106,10 +106,22 @@ extraction uses another resource. The deployment name may differ from the model 
 `gpt-6-luna`; no extraction model version or vector dimensions are needed.
 
 Restart the backend after editing its `.env`, then upload a Word document in the app and review
-the extracted items. Word documents use the configured LLM; spreadsheets are primarily parsed
-with column rules. An upload can still produce items through basic parsing if an LLM call fails,
-so an app upload alone does not prove that Foundry responded. The `import_requests` table stores
-`used_llm_fallback` and `parser_warnings` for that check.
+the extracted items. Word documents use the configured LLM. PDF and spreadsheet tables use
+column rules only when
+headers and data support an unambiguous mapping. Uncertain layouts receive one small LLM
+column-mapping call; rows are then copied locally. Repeated layouts share the mapping within
+an upload, and saved mappings are reused when adding columns. No routine second LLM check is made.
+Missing optional units remain blank; requested totals take precedence over pack arithmetic,
+and conflicting totals require review. An upload can still produce items through basic parsing
+if an LLM call fails,
+so an app upload alone does not prove that Foundry responded. The review screen displays import
+warnings, including failed column verification, and uncertain
+rows are not marked verified. The review API exposes `usedLlm` and `parserWarnings`; the
+`import_requests` table also stores the versioned `table_mappings`. Run `alembic upgrade head`
+before starting the updated backend. Existing saved results are not re-extracted automatically;
+re-upload a document to use the improved parser. Provider requests have a 60-second timeout,
+no SDK retries, and a JSON-mode retry only when structured output is explicitly unsupported.
+Backend logs record provider request duration and available token usage, without source contents.
 
 The example file is never loaded automatically. Docker Compose reads a separate root `.env`
 if one exists, or uses exported environment variables and its defaults. The production Azure

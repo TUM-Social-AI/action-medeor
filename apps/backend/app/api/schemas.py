@@ -92,6 +92,8 @@ class ReviewCounts(BaseModel):
 
 
 class ReviewResponse(BaseModel):
+    parserWarnings: list[str] = Field(default_factory=list)
+    usedLlm: bool = False
     requestId: str
     source: SourceInfo
     partner: PartnerDetails

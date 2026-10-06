@@ -41,6 +41,7 @@ class ImportRequestRow(Base):
 
     used_llm_fallback: Mapped[bool] = mapped_column(default=False)
     parser_warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    table_mappings: Mapped[dict] = mapped_column(JSON, default=dict)
     # Ordered labels of the extra, file-specific columns this import contributed, so the review
     # table can render the same columns it extracted rather than a fixed set.
     attribute_columns: Mapped[list[str]] = mapped_column(JSON, default=list)

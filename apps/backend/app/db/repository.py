@@ -62,6 +62,7 @@ async def save_parsed_request(
     request.request_date = dt.date.today().isoformat()
     request.used_llm_fallback = parsed.used_llm_fallback
     request.parser_warnings = parsed.warnings
+    request.table_mappings = parsed.table_mappings
     request.attribute_columns = parsed.attribute_columns
     request.available_columns = parsed.available_columns
     request.raw_file = raw_file
@@ -232,9 +233,8 @@ async def add_custom_column(
     """Adds one more field to extract, requested from the review screen after the fact (see
     ReviewItemsScreen's "Add column" control) - re-parses the original file with every custom
     column requested so far (this one plus any earlier ones) and merges only the newly resolved
-    values into the already-persisted items, by position. Re-parsing the same bytes is
-    deterministic, so item order/count is stable across calls - existing items (including any
-    manual edits to their core fields) are otherwise left untouched."""
+    values into table items by page/row source reference. Stored layouts keep extraction stable;
+    existing items, including manual edits to their core fields, are left untouched."""
     request = await get_request_by_id(session, request_id)
     if request is None:
         return None
@@ -252,17 +252,32 @@ async def add_custom_column(
 
     all_specs = [*existing_specs, spec]
     parsed = parse_upload(
-        filename=request.source_file_name, content=request.raw_file, custom_columns=all_specs
+        filename=request.source_file_name, content=request.raw_file, custom_columns=all_specs,
+        table_mappings=request.table_mappings or {}
     )
 
+    tabular_file = request.source_file_name.lower().endswith((".xlsx", ".xls", ".csv"))
+    table_pages = parsed.table_mappings.get("tables", {})
+    by_source = {(item.page, item.row): item for item in parsed.items if item.row > 0}
     for item in request.items:
-        if item.manual or item.position >= len(parsed.items):
+        if item.manual:
             continue
-        value = parsed.items[item.position].attributes.get(spec.display_name)
+        reference = item.source_reference
+        table_item = tabular_file or (reference is not None and str(reference.page) in table_pages)
+        if table_item and reference and reference.row > 0:
+            source_item = by_source.get((reference.page, reference.row))
+        elif not table_item and item.position < len(parsed.items):
+            source_item = parsed.items[item.position]
+        else:
+            source_item = None
+        value = source_item.attributes.get(spec.display_name) if source_item else None
         if value:
             updated_attributes = dict(item.attributes or {})
             updated_attributes[spec.display_name] = value
             item.attributes = updated_attributes
+    request.table_mappings = parsed.table_mappings
+    request.parser_warnings = list(dict.fromkeys([*(request.parser_warnings or []), *parsed.warnings]))
+    request.used_llm_fallback = request.used_llm_fallback or parsed.used_llm_fallback
 
     request.custom_columns = [
         *(request.custom_columns or []),
@@ -348,6 +363,8 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
         attributeColumns=row.attribute_columns or [],
         columnLabels=row.column_labels or {},
         availableColumns=row.available_columns or [],
+        parserWarnings=row.parser_warnings or [],
+        usedLlm=bool(row.used_llm_fallback),
     )
 
 

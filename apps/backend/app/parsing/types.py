@@ -57,6 +57,8 @@ class ParsedDocument:
     rows_detected: int = 0
     warnings: list[str] = field(default_factory=list)
     used_llm_fallback: bool = False
+    # Versioned, source-indexed layouts; no document cell values are stored here.
+    table_mappings: dict = field(default_factory=dict)
     # Ordered labels of the extra columns this document contributed, in source column order.
     # Columns that were empty for every row are dropped, so this reflects what's worth showing.
     attribute_columns: list[str] = field(default_factory=list)

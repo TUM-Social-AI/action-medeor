@@ -488,6 +488,14 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       </div>
 
       {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
+      {!!data.parserWarnings?.length && (
+        <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-semibold">Import notes — check the source before continuing</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {data.parserWarnings.map((warning, index) => <li key={index}>{warning}</li>)}
+          </ul>
+        </div>
+      )}
 
       <div className="flex flex-col xl:flex-row gap-5 items-start">
         <div className="w-full flex-1 min-w-0">

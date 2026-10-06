@@ -2,6 +2,7 @@
 
 import io
 
+from app.parsing.table_mapping import MappingSession
 from app.parsing.table_parser import extract_request_priority_hint, parse_table_rows
 from app.parsing.types import CustomColumnSpec, ParsedDocument
 
@@ -10,6 +11,7 @@ def parse_excel(
     content: bytes,
     filename: str,
     custom_columns: list[CustomColumnSpec] | None = None,
+    mapping_session: MappingSession | None = None,
 ) -> ParsedDocument:
     if filename.lower().endswith(".xls"):
         rows = _read_xls(content)
@@ -22,7 +24,12 @@ def parse_excel(
         return document
 
     default_priority = extract_request_priority_hint(rows)
-    return parse_table_rows(rows, default_priority=default_priority, custom_columns=custom_columns)
+    return parse_table_rows(
+        rows,
+        default_priority=default_priority,
+        custom_columns=custom_columns,
+        mapping_session=mapping_session,
+    )
 
 
 def _read_xlsx(content: bytes) -> list[list[object]]:
