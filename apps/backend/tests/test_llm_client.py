@@ -6,7 +6,9 @@ structured-output/fallback-to-json_object logic in _run_openai_chat() (shared by
 openai SDK's chat.completions resource, rather than the SDK itself.
 """
 
+import httpx
 import pytest
+from openai import BadRequestError
 from pydantic import BaseModel
 
 from app.core.config import Settings, get_settings
@@ -21,6 +23,14 @@ def _reset_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+def unsupported_schema_error():
+    return BadRequestError(
+        "response_format json_schema is not supported",
+        body=None,
+        response=httpx.Response(400, request=httpx.Request("POST", "https://example.test")),
+    )
 
 
 class _Sample(BaseModel):
@@ -135,7 +145,7 @@ def test_run_openai_chat_uses_native_structured_output_when_available() -> None:
 
 def test_run_openai_chat_falls_back_to_json_object_mode_when_parse_unsupported() -> None:
     completions = _FakeCompletions(
-        parse_error=RuntimeError("this provider doesn't support response_format=schema"),
+        parse_error=unsupported_schema_error(),
         create_content='{"value": "fallback"}',
     )
     client = _FakeClient(completions)
@@ -147,7 +157,7 @@ def test_run_openai_chat_falls_back_to_json_object_mode_when_parse_unsupported()
 
 
 def test_run_openai_chat_raises_on_empty_fallback_content() -> None:
-    completions = _FakeCompletions(parse_error=RuntimeError("x"), create_content=None)
+    completions = _FakeCompletions(parse_error=unsupported_schema_error(), create_content=None)
     client = _FakeClient(completions)
 
     with pytest.raises(LlmUnavailable, match="empty response"):
@@ -155,7 +165,9 @@ def test_run_openai_chat_raises_on_empty_fallback_content() -> None:
 
 
 def test_run_openai_chat_raises_on_malformed_fallback_content() -> None:
-    completions = _FakeCompletions(parse_error=RuntimeError("x"), create_content="not json")
+    completions = _FakeCompletions(
+        parse_error=unsupported_schema_error(), create_content="not json"
+    )
     client = _FakeClient(completions)
 
     with pytest.raises(LlmUnavailable, match="did not match the expected schema"):
@@ -196,5 +208,41 @@ def test_azure_extraction_reuses_foundry_resource_and_chat_deployment(
     result = _call_azure_openai("prompt", _Sample, settings)
 
     assert result is parsed
-    assert client_options == {"api_key": "test-key", "base_url": expected_base_url}
+    assert client_options == {
+        "api_key": "test-key",
+        "base_url": expected_base_url,
+        "timeout": 60,
+        "max_retries": 0,
+    }
     assert completions.parse_kwargs["model"] == "luna-chat"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("malformed response"),
+        __import__("openai").AuthenticationError(
+            "unauthorized",
+            body=None,
+            response=httpx.Response(401, request=httpx.Request("POST", "https://example.test")),
+        ),
+        __import__("openai").RateLimitError(
+            "limited",
+            body=None,
+            response=httpx.Response(429, request=httpx.Request("POST", "https://example.test")),
+        ),
+        __import__("openai").APITimeoutError(request=httpx.Request("POST", "https://example.test")),
+    ],
+)
+def test_run_openai_chat_does_not_retry_other_failures(error):
+    completions = _FakeCompletions(parse_error=error)
+    with pytest.raises(LlmUnavailable):
+        _run_openai_chat(_FakeClient(completions), "model", "prompt", _Sample, "Test")
+    assert completions.create_called is False
+
+
+def test_empty_structured_response_is_not_retried():
+    completions = _FakeCompletions(parse_result=None)
+    with pytest.raises(LlmUnavailable):
+        _run_openai_chat(_FakeClient(completions), "model", "prompt", _Sample, "Test")
+    assert completions.create_called is False

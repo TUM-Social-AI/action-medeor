@@ -31,3 +31,13 @@ export function saveAvatar(avatarId: AvatarId) {
     body: JSON.stringify({ avatarId }),
   });
 }
+
+export type ExtractionMode = 'basic' | 'balanced';
+export function getExtractionPreferences() {
+  return requestJson<{ mode: ExtractionMode }>('/api/me/extraction-preferences');
+}
+export function saveExtractionPreferences(mode: ExtractionMode) {
+  return requestJson<{ mode: ExtractionMode }>('/api/me/extraction-preferences', {
+    method: 'PUT', body: JSON.stringify({ mode }),
+  });
+}

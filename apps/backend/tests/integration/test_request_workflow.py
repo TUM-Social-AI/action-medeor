@@ -410,10 +410,13 @@ async def test_saved_request_matches_and_reopens(monkeypatch, manual_addition) -
             assert confirmed_partner.status_code == 200
             assert confirmed_partner.json()["confirmed"] is True
             assert (await client.get(f"/api/requests/{request_id}/summary")).json()["partnerConfirmed"] is True
-            assert (await client.patch(
+            changed_partner = await client.patch(
                 f"/api/requests/{request_id}/partner",
-                json={"partner": "Too late", "region": "", "requestId": request_id, "contact": ""},
-            )).status_code == 409
+                json={"partner": "Updated partner", "region": "Updated region", "requestId": request_id, "contact": "New contact"},
+            )
+            assert changed_partner.status_code == 200
+            assert changed_partner.json()["confirmed"] is False
+            assert (await client.post(f"/api/requests/{request_id}/partner/confirm")).json()["confirmed"] is True
             listed = await client.get("/api/requests")
             history_row = next(row for row in listed.json() if row["requestId"] == request_id)
             assert history_row["status"] == "finalized"

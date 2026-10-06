@@ -15,7 +15,7 @@ import unicodedata
 
 def normalize(text: str) -> str:
     """Lowercase + strip accents, so "Désignation" and "Designation" compare equal."""
-    decomposed = unicodedata.normalize("NFKD", text.strip().lower())
+    decomposed = unicodedata.normalize("NFKD", " ".join(text.lower().split()))
     return "".join(char for char in decomposed if not unicodedata.combining(char))
 
 # Column role -> list of header substrings (lowercased) that identify it, across languages.
@@ -75,10 +75,10 @@ TRANSLATION_KEYWORDS = [
 # many packs/boxes/cartons, and separately how many individual units make up one pack. Checked
 # before the generic UNIT_KEYWORDS/QUANTITY_KEYWORDS below - "Units Per Pack" contains "unit" and
 # would otherwise be misread as the generic unit-of-measure-text role, which both steals the
-# wrong meaning AND (since it then already has a role) makes it unavailable as a candidate for
-# the LLM quantity gap-fill (see llm_table_classifier.py) that exists for less predictable
-# phrasings of this same pattern.
+# wrong meaning. Unfamiliar or conflicting labels are resolved by the constrained column
+# mapper in llm_table_classifier.py, then validated against the table data.
 QUANTITY_PACKS_KEYWORDS = [
+    "quantity of packs", "number of boxes", "quantity of boxes",
     "packs requested", "qty pack", "quantity pack", "number of packs", "boxes requested",
     "anzahl packungen", "colis demandés",
 ]
@@ -94,7 +94,7 @@ UNITS_PER_PACK_KEYWORDS = [
 COLUMN_KEYWORDS: dict[str, list[str]] = {
     "quantity_packs": QUANTITY_PACKS_KEYWORDS,
     "units_per_pack": UNITS_PER_PACK_KEYWORDS,
-    "quantity": QUANTITY_KEYWORDS,
+    "quantity": ["total units", "total quantity", "requested total"] + QUANTITY_KEYWORDS,
     "unit": UNIT_KEYWORDS,
     "notes": NOTES_KEYWORDS,
     "priority": PRIORITY_KEYWORDS,
@@ -182,6 +182,7 @@ def is_request_side(header_text: str) -> bool:
 # the review screen already shows, so it's dropped rather than surfaced as an extra column.
 # Matched on exact equality, so a descriptive header like "No. of units" is unaffected.
 ORDINAL_COLUMN_LABELS = {
+    "line item", "line number", "item line",
     "no", "no.", "nr", "nr.", "n", "n°", "#", "pos", "pos.", "position",
     "s/n", "sn", "sl", "sr", "seq", "line", "line no", "zeile", "lfd. nr", "lfd nr",
 }
@@ -238,8 +239,15 @@ def match_column_role(header_text: str) -> str | None:
     normalized = normalize(header_text)
     if not normalized:
         return None
+    if is_ordinal_column(header_text):
+        return None
     if match_item_number_column(header_text):
         return "item_number"
+    if normalized in {"original request text", "request text", "requested product", "requested item"}:
+        return "name"
+    # Description headers often include "technical specifications" as a qualifier.
+    if any(token in normalized for token in ("item description", "product description")):
+        return "name"
     # Check this before generic "item"/"article" name keywords. Avoid a bare substring
     # "type" so packaging/unit-type headers do not become product classifications.
     if normalized in {
@@ -253,6 +261,13 @@ def match_column_role(header_text: str) -> str | None:
         if any(normalize(keyword) in normalized for keyword in keywords):
             return role
     return None
+
+
+def is_total_quantity_column(header_text: str) -> bool:
+    normalized = normalize(header_text)
+    return match_column_role(header_text) == "quantity" and any(
+        phrase in normalized for phrase in ("total quantity", "total units", "requested total")
+    )
 
 
 def classify_columns(header_cells: list[str]) -> list[bool]:

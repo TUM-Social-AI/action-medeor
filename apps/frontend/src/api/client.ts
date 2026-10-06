@@ -144,3 +144,7 @@ export function getFileType(fileName: string): ImportFileType {
 export function firstMatch(matches: Record<string, ErpMatch[]>, itemId: number) {
   return matches[String(itemId)]?.[0]?.id ?? '';
 }
+
+export function reviewWithAi(requestId: string) {
+  return requestJson<ReviewResponse>(`/api/requests/${requestId}/ai-review`, { method: 'POST' });
+}

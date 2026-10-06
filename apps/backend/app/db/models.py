@@ -22,6 +22,12 @@ class UserAvatarPreferenceRow(Base):
     avatar_id: Mapped[str]
 
 
+class UserExtractionPreferenceRow(Base):
+    __tablename__ = "user_extraction_preferences"
+    user_id: Mapped[str] = mapped_column(primary_key=True)
+    mode: Mapped[str]
+
+
 class ImportRequestRow(Base):
     """One uploaded partner request file and the partner metadata collected for it."""
 
@@ -41,6 +47,9 @@ class ImportRequestRow(Base):
 
     used_llm_fallback: Mapped[bool] = mapped_column(default=False)
     parser_warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    table_mappings: Mapped[dict] = mapped_column(JSON, default=dict)
+    extraction_mode: Mapped[str] = mapped_column(default="basic")
+    ai_review: Mapped[dict] = mapped_column(JSON, default=dict)
     # Ordered labels of the extra, file-specific columns this import contributed, so the review
     # table can render the same columns it extracted rather than a fixed set.
     attribute_columns: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -98,6 +107,11 @@ class RequestItemRow(Base):
     status: Mapped[str] = mapped_column(default="needs_review")
     domain: Mapped[str | None] = mapped_column(default=None)
     manual: Mapped[bool] = mapped_column(default=False, server_default="false")
+    verification_source: Mapped[str | None] = mapped_column(default=None)
+    inferred_fields: Mapped[dict] = mapped_column(JSON, default=dict)
+    review_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # NULL distinguishes legacy imports whose nonempty values must be preserved.
+    protected_fields: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
     match_status: Mapped[str] = mapped_column(default="pending")
     match_error: Mapped[str | None] = mapped_column(default=None)
     current_match_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)

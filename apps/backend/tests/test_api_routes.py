@@ -417,7 +417,7 @@ async def test_verify_item_returns_verified_item() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_partner_confirms_details() -> None:
+async def test_update_partner_requires_separate_confirmation() -> None:
     response = await request(
         "PATCH",
         f"/api/requests/{REQUEST_ID}/partner",
@@ -430,7 +430,7 @@ async def test_update_partner_confirms_details() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["confirmed"] is True
+    assert response.json()["confirmed"] is False
 
 
 @pytest.mark.asyncio

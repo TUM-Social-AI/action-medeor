@@ -81,6 +81,9 @@ class ExtractedItem(BaseModel):
     status: ItemStatus
     domain: Literal["medicine", "equipment"] | None = None
     manual: bool = False
+    verificationSource: Literal["ai", "human"] | None = None
+    inferredFields: dict[str, str] = Field(default_factory=dict)
+    reviewReasons: list[str] = Field(default_factory=list)
 
 
 class ReviewCounts(BaseModel):
@@ -92,6 +95,10 @@ class ReviewCounts(BaseModel):
 
 
 class ReviewResponse(BaseModel):
+    parserWarnings: list[str] = Field(default_factory=list)
+    usedLlm: bool = False
+    extractionMode: Literal["basic", "balanced"] = "basic"
+    reviewSummary: dict = Field(default_factory=dict)
     requestId: str
     source: SourceInfo
     partner: PartnerDetails

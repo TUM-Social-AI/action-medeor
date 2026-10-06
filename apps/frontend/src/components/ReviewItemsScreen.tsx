@@ -1,5 +1,7 @@
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import {
+  Loader2,
   AlertCircle,
   AlertTriangle,
   ArrowRight,
@@ -23,6 +25,7 @@ import {
   confirmPartner,
   getReview,
   removeManualItem,
+  reviewWithAi,
   updateColumnLabel,
   updateItem,
   updatePartner,
@@ -87,7 +90,7 @@ const STATUS_CFG: Record<
 };
 
 function needsManualReview(item: ExtractedItem) {
-  return item.status === 'low_confidence' || item.status === 'missing' || !item.domain;
+  return item.status === 'low_confidence' || item.status === 'missing' || !item.domain || !!item.reviewReasons?.length;
 }
 
 /** A column header or attribute label that renames itself in place - click to edit, Enter/blur
@@ -156,8 +159,23 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const [isSavingItem, setIsSavingItem] = useState(false);
   const [removingItemId, setRemovingItemId] = useState<number | null>(null);
   const [itemError, setItemError] = useState<string | null>(null);
+  const [showItemValidation, setShowItemValidation] = useState(false);
   const [editValues, setEditValues] = useState<Partial<ExtractedItem>>({});
+  const unitInferred = Boolean(editingItem?.inferredFields?.unit) && editValues.unit === editingItem?.unit;
+  const typeInferred = Boolean(editingItem?.inferredFields?.type) && editValues.domain === editingItem?.domain;
+  useEffect(() => {
+    if (!editingItem || isNewItem) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isSavingItem) {
+        event.preventDefault();
+        setEditingItem(null);
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [editingItem, isNewItem, isSavingItem]);
   const [editingPartner, setEditingPartner] = useState(false);
+  const [isSavingPartner, setIsSavingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState<PartnerDetails | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -171,6 +189,33 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   );
   const [newColumnName, setNewColumnName] = useState('');
   const [isAddingColumn, setIsAddingColumn] = useState(false);
+  const [isReviewingAi, setIsReviewingAi] = useState(false);
+  const busyDialog = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!isReviewingAi) return;
+    const appRoot = document.getElementById('root');
+    const alreadyInert = appRoot?.hasAttribute('inert');
+    const previousFocus = document.activeElement;
+    appRoot?.setAttribute('inert', '');
+    busyDialog.current?.focus();
+    return () => {
+      if (!alreadyInert) appRoot?.removeAttribute('inert');
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, [isReviewingAi]);
+  const runAiReview = async () => {
+    if (!requestId || isReviewingAi) return;
+    setIsReviewingAi(true);
+    setError(null);
+    try {
+      const reviewed = await reviewWithAi(requestId);
+      setData(reviewed);
+      setItems(reviewed.items);
+      setPartnerDetails(reviewed.partner);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unable to review with AI');
+    } finally { setIsReviewingAi(false); }
+  };
 
   // key is a core-field key ('name', 'quantity', ...) or an attribute column's own label - see
   // ReviewResponse.columnLabels. Optimistic: applies locally first so the header doesn't flicker
@@ -315,14 +360,16 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const missing = items.filter(item => item.status === 'missing').length;
   const manualCount = items.filter(item => item.manual).length;
   const isManualRequest = !!data && !data.source.fileName;
-  const itemMutationPending = isSavingItem || removingItemId !== null;
-  const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain)
+  const itemMutationPending = isReviewingAi || isSavingItem || removingItemId !== null;
+  const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain && !item.reviewReasons?.length)
     && !itemMutationPending && !isAddingColumn;
   const blockedItems = items.filter(needsManualReview);
 
   const openEdit = (item: ExtractedItem) => {
+    if (isReviewingAi) return;
     setIsNewItem(false);
     setItemError(null);
+    setShowItemValidation(false);
     setEditingItem(item);
     setEditValues({
       name: item.name,
@@ -346,11 +393,20 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     setIsNewItem(true);
   };
 
-  const canSave = !!editValues.name?.trim() && Number.isInteger(editValues.quantity)
-    && (editValues.quantity ?? 0) > 0 && !!editValues.domain;
+  const validName = !!editValues.name?.trim();
+  const validQuantity = Number.isInteger(editValues.quantity) && (editValues.quantity ?? 0) > 0;
+  const validType = !!editValues.domain;
+  const canSave = validName && validQuantity && validType;
+  const nameInvalid = showItemValidation && !validName;
+  const quantityInvalid = showItemValidation && !validQuantity;
+  const typeInvalid = showItemValidation && !validType;
 
   const saveEdit = async () => {
-    if (!editingItem || isSavingItem || !canSave) {
+    if (!editingItem || isSavingItem) {
+      return;
+    }
+    if (!canSave) {
+      setShowItemValidation(true);
       return;
     }
 
@@ -424,24 +480,29 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   };
 
   const startEditPartner = () => {
-    if (partnerDetails && !partnerDetails.confirmed) {
+    if (partnerDetails && !isSavingPartner) {
       setPartnerDraft({ ...partnerDetails });
       setEditingPartner(true);
     }
   };
 
   const savePartner = async () => {
-    if (!partnerDraft) {
+    if (!partnerDraft || isSavingPartner) {
       return;
     }
 
+    setIsSavingPartner(true);
     try {
       const updated = requestId ? await updatePartner(requestId, {
         partner: partnerDraft.partner,
         region: partnerDraft.region,
         requestId: partnerDraft.requestId,
         contact: partnerDraft.contact,
-      }) : partnerDraft;
+      }) : {
+        ...partnerDraft,
+        confirmed: (['partner', 'region', 'contact'] as const).some(key => partnerDraft[key] !== partnerDetails?.[key])
+          ? false : partnerDetails?.confirmed ?? false,
+      };
       setPartnerDetails({
         ...partnerDraft,
         ...updated,
@@ -452,16 +513,22 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to save partner details');
+    } finally {
+      setIsSavingPartner(false);
     }
   };
 
   const confirmPartnerDetails = async () => {
+    if (isSavingPartner) return;
+    setIsSavingPartner(true);
     try {
       const updated = requestId ? await confirmPartner(requestId) : { confirmed: true };
       setPartnerDetails(details => details && { ...details, ...updated });
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to confirm partner details');
+    } finally {
+      setIsSavingPartner(false);
     }
   };
 
@@ -482,12 +549,48 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   }
 
   return (
-    <div className="p-6">
+    <div className="p-6" aria-busy={isReviewingAi}>
+      {isReviewingAi && createPortal(
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-6">
+          <div ref={busyDialog} role="dialog" aria-modal="true" aria-labelledby="ai-review-loading" tabIndex={-1}
+            onKeyDown={event => { if (event.key === 'Tab') event.preventDefault(); }}
+            className="rounded-2xl bg-white p-8 shadow-xl text-center outline-none">
+            <Loader2 size={32} className="animate-spin text-[#1B4E8A] mx-auto mb-4" aria-hidden="true" />
+            <h2 id="ai-review-loading" className="text-gray-900">Checking items with AI</h2>
+            <p className="text-sm text-gray-500 mt-2" role="status">Please wait while the copied values are checked.</p>
+          </div>
+        </div>, document.body,
+      )}
       <div className="bg-white rounded-xl border border-gray-200 px-6 py-4 mb-6">
         <WorkflowStepper currentStep="review" />
       </div>
 
       {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
+      {!!data.parserWarnings?.some(warning => !warning.startsWith('Ignored supplier/admin columns:')) && (
+        <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-semibold">Import notes — check the source before continuing</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {data.parserWarnings.filter(warning => !warning.startsWith('Ignored supplier/admin columns:')).map((warning, index) => <li key={index}>{warning}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {!!data.parserWarnings?.some(warning => warning.startsWith('Ignored supplier/admin columns:')) && <details className="mb-4 text-sm text-gray-500">
+        <summary className="cursor-pointer">Source column notes</summary>
+        {data.parserWarnings.filter(warning => warning.startsWith('Ignored supplier/admin columns:')).map((warning, index) => <p key={index} className="mt-2">{warning}</p>)}
+      </details>}
+      {!isManualRequest && <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4 flex items-center justify-between gap-4">
+        <div className="text-sm text-gray-700" role="status">
+          {data.reviewSummary?.status ? <>
+            <p>{data.reviewSummary.checked ?? 0} rows AI checked · {data.reviewSummary.corrected ?? 0} corrected · {items.filter(item => !item.manual && (item.status !== 'verified' || item.reviewReasons?.length)).length} unresolved</p>
+            {data.reviewSummary.message && <p className="text-amber-700 mt-1">{data.reviewSummary.message}</p>}
+          </> : <p>AI can check copied values and fill clear types and units.</p>}
+        </div>
+        {data.reviewSummary?.status !== 'completed' && <button type="button" onClick={() => void runAiReview()} disabled={!requestId || isReviewingAi || isAddingColumn || itemMutationPending || !!editingItem}
+          className="px-3 py-2 text-sm rounded-lg bg-[#1B4E8A] text-white disabled:opacity-50 flex-shrink-0">
+          {isReviewingAi ? 'Reviewing with AI…' : 'Review with AI'}
+        </button>}
+      </div>}
 
       <div className="flex flex-col xl:flex-row gap-5 items-start">
         <div className="w-full flex-1 min-w-0">
@@ -557,7 +660,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   void submitNewColumn();
                 }
               }}
-              disabled={isAddingColumn || itemMutationPending}
+              disabled={isAddingColumn || isReviewingAi || itemMutationPending}
               className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] disabled:bg-gray-50"
             />
             <datalist id="available-columns-suggestions">
@@ -567,7 +670,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
             </datalist>
             <button
               onClick={() => void submitNewColumn()}
-              disabled={!newColumnName.trim() || isAddingColumn || itemMutationPending}
+              disabled={!newColumnName.trim() || isAddingColumn || isReviewingAi || itemMutationPending}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs flex-shrink-0 transition-colors ${
                 newColumnName.trim() && !isAddingColumn
                   ? 'bg-[#1B4E8A] text-white hover:bg-[#163d6d]'
@@ -673,6 +776,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                         >
                           {missingName ? '- Missing -' : item.name}
                         </button>
+                        {!!item.reviewReasons?.length && <ul className="text-xs text-amber-700 mt-1">{item.reviewReasons.map((reason, i) => <li key={i}>{reason}</li>)}</ul>}
                         {item.manual && (
                           <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-slate-100 text-slate-500 font-medium">
                             <PenLine size={10} /> Manual
@@ -682,6 +786,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       <td className="px-4 py-3">
                         <span className={`text-xs ${item.domain ? 'text-gray-700' : 'text-amber-700'}`}>
                           {item.domain ?? 'Choose in Edit'}
+
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -757,7 +862,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${status.bg} ${status.color}`} style={{ fontWeight: 500 }}>
-                          {status.icon} {status.label}
+                          {status.icon} {item.verificationSource === 'ai' && item.status === 'verified' ? 'AI checked' : status.label}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -920,8 +1025,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               </h3>
               <div className="flex items-center gap-1.5">
                 {partnerDetails.confirmed && !editingPartner && <CheckCircle2 size={14} className="text-green-500" />}
-                {!editingPartner && !partnerDetails.confirmed && (
+                {!editingPartner && (
                   <button
+                    disabled={isSavingPartner}
+                    aria-label="Edit partner details"
                     onClick={startEditPartner}
                     className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
                     title="Edit partner details"
@@ -940,6 +1047,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     <input
                       className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
                       value={partnerDraft[key]}
+                      disabled={isSavingPartner}
                       onChange={event => setPartnerDraft(draft => draft && { ...draft, [key]: event.target.value })}
                     />
                   </div>
@@ -947,6 +1055,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                 <div className="text-xs text-gray-500">{requestId ? <>System request ID: <span className="font-mono text-gray-700">{partnerDetails.requestId}</span></> : 'Request saved when you add the first item.'}</div>
                 <div className="flex gap-2 pt-1">
                   <button
+                    disabled={isSavingPartner}
                     onClick={() => setEditingPartner(false)}
                     className="flex-1 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-500 hover:bg-gray-50 transition-colors"
                     style={{ fontWeight: 500 }}
@@ -954,11 +1063,12 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     Cancel
                   </button>
                   <button
+                    disabled={isSavingPartner}
                     onClick={() => void savePartner()}
                     className="flex-1 py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
                     style={{ fontWeight: 600 }}
                   >
-                    Save
+                    {isSavingPartner ? 'Saving…' : 'Save'}
                   </button>
                 </div>
               </div>
@@ -974,18 +1084,19 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     <div key={row.label}>
                       <div className="text-xs text-gray-400">{row.label}</div>
                       <div className="text-xs text-gray-800" style={{ fontWeight: 500 }}>
-                        {row.value}
+                        {row.value || 'Not specified'}
                       </div>
                     </div>
                   ))}
                 </div>
                 {!partnerDetails.confirmed ? (
                   <button
+                    disabled={isSavingPartner}
                     onClick={() => void confirmPartnerDetails()}
                     className="w-full py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
                     style={{ fontWeight: 600 }}
                   >
-                    Confirm Details
+                    {isSavingPartner ? 'Confirming…' : 'Confirm Details'}
                   </button>
                 ) : (
                   <div className="flex items-center gap-1.5 text-xs text-green-700" style={{ fontWeight: 500 }}>
@@ -999,21 +1110,26 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       </div>
 
       {editingItem && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
-          <div role="dialog" aria-modal="true" aria-labelledby="item-dialog-title" className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between">
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6"
+          onClick={event => {
+            if (event.target === event.currentTarget && !isNewItem && !isSavingItem) setEditingItem(null);
+          }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="item-dialog-title" className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between shrink-0">
               <div>
                 <h3 id="item-dialog-title" className="text-gray-900">
                   {isNewItem ? 'Add Item Manually' : editingItem.manual ? 'Edit Manual Item' : editingItem.status === 'missing' ? 'Complete Missing Information' : 'Edit Extracted Item'}
                 </h3>
                 <p className="text-gray-500 text-sm mt-0.5">{editingItem.manual ? 'Not linked to a source document' : `Row #${sourceReferences[editingItem.id]?.row ?? editingItem.id} in source document`}</p>
               </div>
-              <button disabled={isSavingItem} aria-label="Close item dialog" onClick={() => setEditingItem(null)} className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors">
-                <X size={18} />
-              </button>
+              {!isNewItem && (
+                <button disabled={isSavingItem} aria-label="Close item dialog" onClick={() => setEditingItem(null)} className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors">
+                  <X size={18} />
+                </button>
+              )}
             </div>
 
-            <div className="px-6 py-5">
+            <div className="px-6 py-5 min-h-0 overflow-y-auto overscroll-contain">
               {itemError && <div className="mb-4"><ErrorPanel message={itemError} /></div>}
               <SourceReferencePanel item={editingItem} reference={sourceReferences[editingItem.id]} />
               <div className="space-y-4">
@@ -1045,29 +1161,38 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
-                    Item Name
+                  <label htmlFor="item-name" className={`block text-xs mb-1 ${nameInvalid ? 'text-red-600' : 'text-gray-500'}`} style={{ fontWeight: 600 }}>
+                    Item Name (required)
                   </label>
                   <input
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                    id="item-name"
+                    className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ${nameInvalid ? 'border-red-500 bg-red-50 focus:ring-red-500/20 focus:border-red-500' : 'border-gray-300 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]'}`}
                     aria-label="Item Name"
+                    aria-required="true"
+                    aria-invalid={nameInvalid}
+                    aria-describedby={nameInvalid ? 'item-name-error' : undefined}
                     autoFocus={editingItem.manual}
                     placeholder={editingItem.manual ? 'e.g. Ceftriaxone 1g Powder for Injection' : ''}
                     value={editValues.name ?? ''}
                     onChange={event => setEditValues(values => ({ ...values, name: event.target.value }))}
                   />
+                  {nameInvalid && <p id="item-name-error" className="mt-1 text-xs text-red-600">Enter an item name.</p>}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
-                      Quantity
+                    <label htmlFor="item-quantity" className={`block text-xs mb-1 ${quantityInvalid ? 'text-red-600' : 'text-gray-500'}`} style={{ fontWeight: 600 }}>
+                      Quantity (required)
                     </label>
                     <input
                       type="number"
+                      id="item-quantity"
                       aria-label="Quantity"
+                      aria-required="true"
+                      aria-invalid={quantityInvalid}
+                      aria-describedby={quantityInvalid ? 'item-quantity-error' : undefined}
                       min={1}
                       step={1}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ${quantityInvalid ? 'border-red-500 bg-red-50 focus:ring-red-500/20 focus:border-red-500' : 'border-gray-300 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]'}`}
                       value={editValues.quantity ?? ''}
                       onChange={event =>
                         setEditValues(values => ({
@@ -1076,13 +1201,17 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                         }))
                       }
                     />
+                    {quantityInvalid && <p id="item-quantity-error" className="mt-1 text-xs text-red-600">Enter a positive whole-number quantity.</p>}
                   </div>
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                    <label htmlFor="item-unit" className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
                       Unit
+                      {unitInferred && <span id="item-unit-inference" className="ml-2 text-amber-700 font-normal">AI inferred</span>}
                     </label>
                     <input
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                      id="item-unit"
+                      aria-describedby={unitInferred ? 'item-unit-inference' : undefined}
+                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] ${unitInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
                       value={editValues.unit ?? ''}
                       onChange={event => setEditValues(values => ({ ...values, unit: event.target.value }))}
                     />
@@ -1099,12 +1228,17 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                  <label htmlFor="item-type" className={`block text-xs mb-1 ${typeInvalid ? 'text-red-600' : 'text-gray-500'}`} style={{ fontWeight: 600 }}>
                     Product type (required)
+                    {typeInferred && <span id="item-type-inference" className="ml-2 text-amber-700 font-normal">AI inferred</span>}
                   </label>
                   <select
+                    id="item-type"
                     aria-label="Product type"
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white"
+                    aria-required="true"
+                    aria-invalid={typeInvalid}
+                    aria-describedby={typeInvalid ? 'item-type-error' : typeInferred ? 'item-type-inference' : undefined}
+                    className={`w-full border rounded-lg px-3 py-2 text-sm ${typeInvalid ? 'border-red-500 bg-red-50' : typeInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
                     value={editValues.domain ?? ''}
                     onChange={event => setEditValues(values => ({
                       ...values,
@@ -1115,6 +1249,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     <option value="medicine">Medicine</option>
                     <option value="equipment">Equipment</option>
                   </select>
+                  {typeInvalid && <p id="item-type-error" className="mt-1 text-xs text-red-600">Choose a product type.</p>}
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
@@ -1136,7 +1271,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               </div>
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3 shrink-0">
               <button
                 disabled={isSavingItem}
                 onClick={() => setEditingItem(null)}
@@ -1147,7 +1282,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               </button>
               <button
                 onClick={() => void saveEdit()}
-                disabled={!canSave || isSavingItem}
+                disabled={isSavingItem || (!isNewItem && !canSave)}
                 className="px-5 py-2 bg-[#1B4E8A] text-white rounded-lg text-sm hover:bg-[#163d6d] transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
                 style={{ fontWeight: 600 }}
               >
@@ -1268,11 +1403,12 @@ function SourceReferencePanel({
       >
         {reference?.excerpt ?? 'No source reference available'}
       </div>
+      {!!item.reviewReasons?.length && <ul className="mt-3 text-xs text-amber-800 list-disc pl-4">{item.reviewReasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
       <div className={`flex items-center gap-1.5 mt-2 text-xs ${isMissing ? 'text-red-600' : 'text-amber-600'}`}>
         <Info size={11} />
         {isMissing
           ? 'Item name extracted. Quantity could not be read. Please enter it manually.'
-          : `Extracted with ${item.confidence}% confidence`}
+          : item.verificationSource === 'ai' ? `AI checked against the source${item.confidence == null ? '' : ` · ${item.confidence}% confidence`}` : item.confidence == null ? 'Check against the original source' : `Extracted with ${item.confidence}% confidence`}
       </div>
     </div>
   );

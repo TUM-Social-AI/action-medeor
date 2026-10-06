@@ -8,19 +8,23 @@ the remaining rows into ParsedLineItem records.
 
 from dataclasses import dataclass, field
 
-from app.parsing.keywords import SPECIAL_INFO_KEYWORDS, classify_columns, match_column_role
+from app.parsing.keywords import (
+    SPECIAL_INFO_KEYWORDS,
+    classify_columns,
+    is_total_quantity_column,
+    match_column_role,
+)
 from app.parsing.text_heuristics import (
     build_item,
     detect_priority,
     detect_priority_from_column_value,
     extract_quantity_and_unit,
-    parse_number,
 )
 from app.parsing.types import CustomColumnSpec, ParsedDocument, Priority
 
-# How many leading rows we're willing to scan looking for a header.
-_HEADER_SEARCH_WINDOW = 10
-# A header row must resolve at least a name column plus one of quantity/unit to be trusted.
+# Include cover notes and requester metadata, while keeping discovery bounded.
+HEADER_SEARCH_LIMIT = 200
+# A name candidate locates a possible header; semantic validation happens separately.
 _REQUIRED_ROLES = {"name"}
 
 
@@ -43,29 +47,59 @@ def cell_text(value: object) -> str:
 
 
 def _find_header_row(rows: list[list[object]]) -> HeaderLayout | None:
-    for row_index, row in enumerate(rows[:_HEADER_SEARCH_WINDOW]):
+    candidates = []
+    width = max(map(len, rows), default=0)
+    for row_index, row in enumerate(rows[:HEADER_SEARCH_LIMIT]):
         cells = [cell_text(cell) for cell in row]
+        # A merged document title is not a column header in a multi-column table.
+        if width > 1 and sum(bool(cell) for cell in cells) < 2:
+            continue
         keep_column = classify_columns(cells)
         layout = HeaderLayout(row_index=row_index)
 
         for col_index, text in enumerate(cells):
-            if not text or not keep_column[col_index]:
+            if not text or text.isdigit() or not keep_column[col_index]:
                 continue
             layout.labels[col_index] = text
             role = match_column_role(text)
-            if role and role not in layout.roles.values():
+            previous = next((col for col, mapped in layout.roles.items() if mapped == role), None)
+            if (
+                role == "quantity"
+                and previous is not None
+                and is_total_quantity_column(text)
+                and not is_total_quantity_column(layout.labels[previous])
+            ):
+                layout.extras[previous] = layout.labels[previous]
+                del layout.roles[previous]
+                layout.roles[col_index] = role
+            elif role and role not in layout.roles.values():
                 layout.roles[col_index] = role
             else:
-                layout.extras[col_index] = text
+                layout.extras[col_index] = (
+                    f"{text} ({col_index + 1})" if text in layout.extras.values() else text
+                )
 
-        if _REQUIRED_ROLES <= set(layout.roles.values()):
-            return layout
-    return None
+        roles = set(layout.roles.values())
+        # Some templates number a leading ancillary column in the header. Amounts
+        # after the product column still indicate data, not header labels.
+        numeric_columns = {index for index, text in enumerate(cells) if text.isdigit()}
+        if numeric_columns:
+            name_column = next((col for col, role in layout.roles.items() if role == "name"), -1)
+            if not {"name", "quantity"} <= roles or any(col > name_column for col in numeric_columns):
+                continue
+        if _REQUIRED_ROLES <= roles:
+            score = (
+                10 * ("quantity" in roles or {"quantity_packs", "units_per_pack"} <= roles)
+                + 4 * ("unit" in roles)
+                + len(roles)
+            )
+            candidates.append((score, -row_index, layout))
+    return max(candidates, key=lambda candidate: candidate[:2])[2] if candidates else None
 
 
 def is_table_well_structured(rows: list[list[object]]) -> bool:
     """Cheap check used by the PDF parser to decide between table heuristics and the LLM fallback."""
-    if _find_header_row(rows) is None:
+    if len(rows) < 2 or max(map(len, rows), default=0) < 2:
         return False
 
     non_empty_lengths = [len([c for c in row if cell_text(c)]) for row in rows if any(row)]
@@ -86,7 +120,7 @@ def extract_request_priority_hint(rows: list[list[object]]) -> Priority | None:
     derive a priority from whatever free text follows it on that row. Most files leave it empty
     today (no current sample has priority-signalling text there), so this usually returns None
     and the medium default in build_item() applies - it's a hook for when a file does carry one."""
-    for row in rows[:_HEADER_SEARCH_WINDOW]:
+    for row in rows[:HEADER_SEARCH_LIMIT]:
         cells = [cell_text(cell) for cell in row]
         for index, cell in enumerate(cells):
             lowered = cell.lower()
@@ -104,20 +138,21 @@ def parse_table_rows(
     default_priority: Priority | None = None,
     layout: HeaderLayout | None = None,
     custom_columns: list[CustomColumnSpec] | None = None,
+    mapping_session=None,
+    context: str = "",
 ) -> ParsedDocument:
     """layout, when given, skips heuristic header detection entirely - lets a caller hand in an
     already-computed layout instead of the keyword-derived one this module computes on its own."""
     document = ParsedDocument()
-    if layout is None:
-        layout = _find_header_row(rows)
-        # The heuristic scoped these columns as part of the partner's request but couldn't name
-        # a quantity role among them at all - e.g. quantity split across "packs requested" +
-        # "units per pack" columns, which no keyword list can name in advance. Only engages on a
-        # genuine gap, so it can enrich a layout but never override an already-successful match.
-        if layout is not None and layout.extras and not _has_quantity_role(layout):
-            layout = _try_fill_quantity_gap(rows, layout)
-            if _has_quantity_role(layout):
-                document.used_llm_fallback = True
+    from app.parsing.table_mapping import MappingSession, strict_quantity
+
+    mapping_session = mapping_session or MappingSession()
+    proposed = layout if layout is not None else _find_header_row(rows)
+    layout, mapping_warnings, used_llm = mapping_session.resolve(rows, proposed, page, context)
+    document.warnings.extend(mapping_warnings)
+    document.used_llm_fallback = used_llm
+    uncertain = bool(mapping_warnings)
+    document.table_mappings = mapping_session.export()
 
     if layout is None:
         document.warnings.append("No recognizable header row found; treated as headerless table")
@@ -127,7 +162,11 @@ def parse_table_rows(
     else:
         data_rows = rows[layout.row_index + 1 :]
         in_scope_columns = set(layout.labels)
-        skipped = _skipped_column_labels(rows[layout.row_index], in_scope_columns)
+        skipped = (
+            _skipped_column_labels(rows[layout.row_index], in_scope_columns)
+            if layout.row_index >= 0
+            else []
+        )
         if skipped:
             document.warnings.append(f"Ignored supplier/admin columns: {', '.join(skipped)}")
             document.available_columns = skipped
@@ -136,16 +175,27 @@ def parse_table_rows(
 
     for offset, row in enumerate(data_rows):
         row_number = start_index + offset + 1
-        values = {
-            role: cell_text(row[col]) for col, role in layout.roles.items() if col < len(row)
-        }
+        values = {role: cell_text(row[col]) for col, role in layout.roles.items() if col < len(row)}
         name = values.get("name", "")
-        if not name:
+        if not name or name.strip().lower() in {"total", "grand total", "subtotal"}:
             continue
+        row_issues = []
+        if not any(c.isalpha() for c in name):
+            row_issues.append("Product name appears to be an identifier")
 
         raw_quantity = values.get("quantity", "")
-        quantity = parse_number(raw_quantity) if raw_quantity else None
+        quantity = strict_quantity(raw_quantity) if raw_quantity else None
+        if raw_quantity and quantity is None:
+            row_issues.append("Requested quantity is not a valid whole number")
+        if quantity == 0:
+            row_issues.append("Requested quantity must be positive")
         unit = values.get("unit", "")
+        if quantity is not None and not unit:
+            _, source_unit = extract_quantity_and_unit(raw_quantity)
+            unit = source_unit or ""
+        if unit and not any(c.isalpha() for c in unit):
+            unit = ""
+            row_issues.append("Numeric value cannot be used as a unit")
 
         attributes = {
             label: cell_text(row[col])
@@ -153,25 +203,28 @@ def parse_table_rows(
             if col < len(row) and cell_text(row[col])
         }
 
-        # Some forms don't give a single total, only "quantity in packs" + "units per pack"
-        # (e.g. requesting 15 boxes of 100 - the total requested is what downstream matching
-        # needs, not the box count). Compute it, but keep the breakdown visible as attributes
-        # rather than silently collapsing it - a reviewer should be able to check the math.
-        if quantity is None:
-            packs_raw = values.get("quantity_packs", "")
-            per_pack_raw = values.get("units_per_pack", "")
-            packs = parse_number(packs_raw) if packs_raw else None
-            per_pack = parse_number(per_pack_raw) if per_pack_raw else None
-            if packs is not None and per_pack is not None:
-                quantity = packs * per_pack
-                attributes["Packs requested"] = packs_raw
-                attributes["Units per pack"] = per_pack_raw
+        packs_raw = values.get("quantity_packs", "")
+        per_pack_raw = values.get("units_per_pack", "")
+        packs = strict_quantity(packs_raw) if packs_raw else None
+        per_pack = strict_quantity(per_pack_raw) if per_pack_raw else None
+        if packs_raw:
+            attributes["Packs requested"] = packs_raw
+        if per_pack_raw:
+            attributes["Units per pack"] = per_pack_raw
+        if (packs_raw and packs is None) or (per_pack_raw and per_pack is None):
+            row_issues.append("Invalid pack quantity")
+        if packs is not None and per_pack is not None:
+            computed = packs * per_pack
+            if quantity is not None and quantity != computed:
+                row_issues.append("Requested total conflicts with packs × units per pack")
+            elif quantity is None and not raw_quantity:
+                quantity = computed
 
-        if quantity is None and not unit:
-            # Some files put "2000 pcs" straight into the name/description column.
+        if quantity is None and not unit and not raw_quantity:
+            # Require an explicit quantity/unit expression, never the first dosage or model number.
             inferred_quantity, inferred_unit = extract_quantity_and_unit(name)
-            quantity = quantity or inferred_quantity
-            unit = unit or (inferred_unit or "")
+            if inferred_unit:
+                quantity, unit = inferred_quantity, inferred_unit
 
         notes = values.get("notes", "")
         translation = values.get("translation", "")
@@ -191,23 +244,40 @@ def parse_table_rows(
             for col, text in ((col, cell_text(cell)) for col, cell in enumerate(row))
             if text and (in_scope_columns is None or col in in_scope_columns)
         )
-        document.items.append(
-            build_item(
-                name=name,
-                quantity=quantity,
-                unit=unit,
-                notes=notes,
-                item_number=values.get("item_number", ""),
-                shelf_life=values.get("shelf_life", ""),
-                attributes=attributes,
-                priority=mapped_priority,
-                default_priority=default_priority,
-                page=page,
-                row=row_number,
-                excerpt=excerpt,
-                source_type=values.get("domain", ""),
-            )
+        item = build_item(
+            name=name,
+            quantity=quantity,
+            unit=unit,
+            notes=notes,
+            item_number=values.get("item_number", ""),
+            shelf_life=values.get("shelf_life", ""),
+            attributes=attributes,
+            priority=mapped_priority,
+            default_priority=default_priority,
+            page=page,
+            row=row_number,
+            excerpt=excerpt,
+            source_type=values.get("domain", ""),
         )
+        if row_issues or uncertain:
+            item.confidence = min(item.confidence or 40, 40 if uncertain else 60)
+            if item.status != "missing":
+                item.status = "low_confidence" if uncertain else "needs_review"
+        if row_issues:
+            document.warnings.append(f"Page {page}, row {row_number}: " + "; ".join(row_issues))
+        item.review_reasons = row_issues
+        item.review_source = {
+            "headers": {str(c): label for c, label in layout.labels.items()},
+            "roles": {str(c): role for c, role in layout.roles.items()},
+            "context": context,
+            "cells": {
+                str(c): cell_text(cell)
+                for c, cell in enumerate(row)
+                if in_scope_columns is None or c in in_scope_columns
+            },
+            "mappingUncertain": uncertain or layout.row_index < 0,
+        }
+        document.items.append(item)
 
     document.rows_detected = len(document.items)
     document.attribute_columns = _surviving_attribute_columns(document)
@@ -245,19 +315,3 @@ def _surviving_attribute_columns(document: ParsedDocument) -> list[str]:
             if label not in ordered:
                 ordered.append(label)
     return ordered
-
-
-def _has_quantity_role(layout: HeaderLayout) -> bool:
-    values = layout.roles.values()
-    return "quantity" in values or ("quantity_packs" in values and "units_per_pack" in values)
-
-
-def _try_fill_quantity_gap(rows: list[list[object]], layout: HeaderLayout) -> HeaderLayout:
-    # Imported lazily: llm_table_classifier imports HeaderLayout/cell_text from this module, so
-    # a module-level import here would be circular.
-    from app.parsing.llm_table_classifier import LlmUnavailable, fill_quantity_gap_with_llm
-
-    try:
-        return fill_quantity_gap_with_llm(rows, layout)
-    except LlmUnavailable:
-        return layout

@@ -1,127 +1,477 @@
-"""Tests for the LLM-assisted quantity gap-filler.
+"""Behavior and cost regressions for semantic table mapping; no network calls."""
 
-Only engages when the heuristic scoped columns as part of the partner's request but found no
-quantity signal among them at all - the merge logic (_apply_gap_fill) is pure and tested
-directly without any network call. The "no key configured" path is exercised end to end through
-parse_table_rows, mirroring force_llm_unavailable's use elsewhere in this suite.
-"""
+import io
+import json
+from unittest.mock import Mock
 
-from app.parsing.llm_table_classifier import (
-    _apply_gap_fill,
-    _QuantityColumnClassification,
-    _QuantityGapResult,
+import pytest
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Table, TableStyle
+
+from app.parsing import llm_table_classifier
+from app.parsing.llm_client import LlmUnavailable
+from app.parsing.llm_table_classifier import ColumnMapping, TableMapping
+from app.parsing.pdf_parser import parse_pdf
+from app.parsing.service import parse_upload
+from app.parsing.table_mapping import MappingSession, validated_layout
+from app.parsing.table_parser import parse_table_rows
+from app.parsing.types import CustomColumnSpec
+from tests.test_parsing import build_xlsx
+
+HEADERS = [
+    "Line Item",
+    "ITEM DESCRIPTION and REQUESTED TECHNICAL\nSPECIFICATIONS",
+    "QUANTITY OF\nPACKS",
+    "UNITS PER\nPACK",
+    "TOTAL UNITS",
+    "QUANTITY OF\nPACKS",
+    "UNITS PER\nPACK",
+    "TOTAL UNITS",
+    "UNIT OF\nMEASURE\nOFFERED",
+    "UNIT PRICE\n(EUR)",
+    "PACK PRICE\n(EUR)",
+    "TOTAL PRICE\n(EUR)",
+    "DATE\nMANUFACTURE",
+    "EXPIRY DATE",
+    "ORIGIN",
+    "DELIVERY\nDATE",
+]
+NAMES = [f"Clinical device model {i}, full specification" for i in range(1, 13)]
+QUANTITIES = [2, 2, 4, 2, 1, 4, 2, 3, 4, 1, 1, 2]
+
+
+def mapping(roles, width, header=0, suppliers=()):
+    return TableMapping(
+        header_row_index=header,
+        columns=[
+            ColumnMapping(
+                column_index=i,
+                role=roles.get(i, "none"),
+                scope="supplier" if i in suppliers else "request",
+            )
+            for i in range(width)
+        ],
+    )
+
+
+def rfq_rows():
+    return (
+        [HEADERS]
+        + [
+            [str(i), name, qty, 1, qty] + [""] * 11
+            for i, (name, qty) in enumerate(zip(NAMES, QUANTITIES), 1)
+        ]
+        + [["TOTAL"] + [""] * 15]
+    )
+
+
+def rfq_mapping():
+    return mapping(
+        {0: "ordinal", 1: "name", 2: "quantity_packs", 3: "units_per_pack", 4: "quantity"},
+        16,
+        suppliers=range(5, 16),
+    )
+
+
+def stub(monkeypatch, result):
+    call = Mock(return_value=result)
+    monkeypatch.setattr(llm_table_classifier, "call_llm", call)
+    return call
+
+
+def build_rfq_pdf(pages=1):
+    # Synthetic, wide PDF with the original layout but no partner/product data.
+    from reportlab.platypus import PageBreak
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape((1200, 1600)),
+        leftMargin=20,
+        rightMargin=20,
+        topMargin=20,
+        bottomMargin=20,
+    )
+    style = getSampleStyleSheet()["Normal"]
+    style.fontSize = 7
+    story = []
+    for page in range(pages):
+        if page:
+            story.append(PageBreak())
+        story.append(Paragraph("Request for clinical devices: supplier quotation section", style))
+        table = Table(
+            [[Paragraph(str(c).replace("\n", "<br/>"), style) for c in row] for row in rfq_rows()],
+            colWidths=[45, 370] + [80] * 14,
+        )
+        table.setStyle(
+            TableStyle(
+                [("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("VALIGN", (0, 0), (-1, -1), "TOP")]
+            )
+        )
+        story.append(table)
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def test_pdf_rfq_extracts_twelve_names_and_requested_totals(monkeypatch):
+    call = stub(monkeypatch, rfq_mapping())
+    document = parse_pdf(build_rfq_pdf())
+    assert [item.name for item in document.items] == NAMES
+    assert [item.quantity for item in document.items] == QUANTITIES
+    assert all(item.unit == "" and item.status != "verified" for item in document.items)
+    assert all(item.notes == "" for item in document.items)
+    assert document.used_llm_fallback is True
+    assert call.call_count == 1
+    assert all(item.attributes["Units per pack"] == "1" for item in document.items)
+
+
+def test_repeated_pdf_pages_reuse_mapping(monkeypatch):
+    call = stub(monkeypatch, rfq_mapping())
+    document = parse_pdf(build_rfq_pdf(pages=2))
+    assert len(document.items) == 24
+    assert {item.page for item in document.items} == {1, 2}
+    assert call.call_count == 1
+
+
+def test_clear_reordered_multiline_table_needs_no_call(monkeypatch):
+    call = stub(monkeypatch, None)
+    document = parse_table_rows(
+        [
+            ["Unit", "TOTAL\nUNITS", "ITEM DESCRIPTION and TECHNICAL SPECIFICATIONS", "Line Item"],
+            ["pcs", 12, "Clinical device", 1],
+            ["", 5, "Other device", 2],
+        ]
+    )
+    assert call.call_count == 0
+    assert document.items[0].name == "Clinical device"
+    assert document.items[0].quantity == 12
+    assert document.items[1].unit == ""
+    assert document.table_mappings["version"] == 1
+
+
+def test_cover_title_and_metadata_do_not_hide_a_late_clear_header(monkeypatch):
+    call = stub(monkeypatch, None)
+    preamble = [
+        ["Emergency Medical Supply Request"],
+        ["Partner", "Example Relief"],
+        ["Region", "Example country"],
+        ["Contact", "Dr. Example"],
+        *[["Field request note"] for _ in range(30)],
+    ]
+    document = parse_upload(filename="request.xlsx", content=build_xlsx([
+        *preamble,
+        ["#", "Original request text", "Qty", "Unit", "Destination"],
+        [1, "Example antibiotic 500mg capsules", 2000, "caps", "Field pharmacy"],
+        [2, "Sterile gloves", 500, "pairs", "Field pharmacy"],
+    ]))
+    assert call.call_count == 0
+    assert [item.name for item in document.items] == ["Example antibiotic 500mg capsules", "Sterile gloves"]
+    assert [item.quantity for item in document.items] == [2000, 500]
+    assert document.items[0].row == len(preamble) + 2
+    assert document.partner == {"partner": "Example Relief", "region": "Example country", "contact": "Dr. Example"}
+    assert not document.partner_conflicts
+
+
+def test_late_unfamiliar_header_is_in_mapping_samples_and_can_be_validated(monkeypatch):
+    rows = [["Medical supply request"]] + [["Cover note"] for _ in range(25)] + [
+        ["Label A", "Label B", "Label C"],
+        ["Sterile catheter", 20, "pcs"],
+        ["Sterile gloves", 30, "pairs"],
+    ]
+    call = stub(monkeypatch, mapping({0: "name", 1: "quantity", 2: "unit"}, 3, header=26))
+    result = parse_table_rows(rows)
+    payload = json.loads(call.call_args.args[0].split("INPUT:\n", 1)[1])
+    assert any(row["row_index"] == 26 and row["cells"] == rows[26] for row in payload["rows"])
+    assert [item.quantity for item in result.items] == [20, 30]
+    assert [item.row for item in result.items] == [28, 29]
+    assert call.call_count == 1
+
+
+def test_supplier_values_never_become_request_quantity(monkeypatch):
+    call = stub(monkeypatch, rfq_mapping())
+    rows = rfq_rows()
+    rows[1][5:10] = [900, 500, 450000, "boxes", 123]
+    result = parse_table_rows(rows)
+    assert result.items[0].quantity == 2
+    assert "450000" not in result.items[0].excerpt
+    assert result.items[0].unit == ""
+    assert call.call_count == 1
+
+
+def regional_request_rows():
+    return [
+        [None, None, "Request template instructions"],
+        [None, 1, "Requester Code", "Requester Source Code", "Requester Product Description",
+         "Region A Quantity (each)", "Region B Quantity (each)", "Total Quantity (each)",
+         "Supplier Item No.", "Supplier Item Description", "Quantity of packs offered"],
+        [None, "Internal routing", "CODE-A", "REF-A", "Example medicine 5mg tablet",
+         10, 20, 30, "SUPPLIER-CODE", "Supplier substitute", 999],
+        [None, None, "CODE-B", "REF-B", "Sterile device", 3, 4, 7, None, None, 700],
+        # Preallocated spreadsheet rows contain supplier formulas but no request items.
+        [None] * 10 + [0],
+    ]
+
+
+def test_numeric_template_marker_allows_header_mapping_and_requested_totals(monkeypatch):
+    call = stub(monkeypatch, mapping(
+        {2: "item_number", 3: "attribute", 4: "name", 5: "attribute",
+         6: "attribute", 7: "quantity"}, 11, header=1, suppliers=range(8, 11),
+    ))
+    document = parse_upload(
+        filename="regional-request.xlsx", content=build_xlsx(regional_request_rows()),
+    )
+    assert call.call_count == 1
+    payload = json.loads(call.call_args.args[0].split("INPUT:\n", 1)[1])
+    assert payload["tentative_header_row_index"] == 1
+    assert payload["tentative_roles"]["7"] == "quantity"
+    assert [(item.name, item.quantity) for item in document.items] == [
+        ("Example medicine 5mg tablet", 30), ("Sterile device", 7),
+    ]
+    assert [item.row for item in document.items] == [3, 4]
+    assert all(item.unit == "" for item in document.items)
+    assert all("Supplier substitute" not in item.excerpt for item in document.items)
+    assert not any("Columns could not be confirmed" in note for note in document.warnings)
+
+
+def test_regional_quantities_fall_back_to_explicit_total_when_mapping_unavailable(monkeypatch):
+    call = Mock(side_effect=LlmUnavailable("offline"))
+    monkeypatch.setattr(llm_table_classifier, "call_llm", call)
+    document = parse_table_rows(regional_request_rows())
+    assert call.call_count == 1
+    assert [item.quantity for item in document.items] == [30, 7]
+    assert all(item.status != "verified" for item in document.items)
+    assert any("Columns could not be confirmed" in note for note in document.warnings)
+
+
+def test_mapping_validation_still_rejects_numeric_quantity_data_as_header():
+    rows = [["Product", 30, "Quantity"], ["Sterile device", 7, "pcs"]]
+    with pytest.raises(ValueError, match="Data row selected as header"):
+        validated_layout(rows, mapping({0: "name", 1: "quantity", 2: "unit"}, 3))
+
+
+def test_clear_header_with_leading_numeric_marker_needs_no_call(monkeypatch):
+    call = stub(monkeypatch, None)
+    result = parse_table_rows([
+        [None, 1, "Product", "Quantity", "Unit"],
+        [None, None, "Sterile device", 20, "pcs"],
+    ])
+    assert call.call_count == 0
+    assert [(item.name, item.quantity, item.unit) for item in result.items] == [
+        ("Sterile device", 20, "pcs"),
+    ]
+
+
+def test_numeric_amount_after_product_text_still_does_not_look_like_header(monkeypatch):
+    call = stub(monkeypatch, mapping({0: "name", 1: "quantity", 2: "notes"}, 3))
+    result = parse_table_rows([
+        ["Label A", "Label B", "Label C"],
+        ["Medicine description", 20, "Quantity for clinic"],
+    ])
+    payload = json.loads(call.call_args.args[0].split("INPUT:\n", 1)[1])
+    assert payload["tentative_header_row_index"] == -1
+    assert result.items[0].name == "Medicine description"
+    assert result.items[0].quantity == 20
+
+
+def test_mapping_rejection_logs_safe_validation_reason(monkeypatch, caplog):
+    stub(monkeypatch, mapping({0: "name", 1: "quantity", 2: "quantity"}, 3))
+    parse_table_rows([["Product", "Quantity", "Quantity"], ["Private source value", 7, 8]])
+    assert "Duplicate core role" in caplog.text
+    assert "Private source value" not in caplog.text
+
+
+def test_arbitrary_provider_error_details_are_not_logged(monkeypatch, caplog):
+    monkeypatch.setattr(
+        llm_table_classifier, "call_llm", Mock(side_effect=ValueError("Private source value")),
+    )
+    parse_table_rows([["Product", "Quantity", "Quantity"], ["Device", 7, 8]])
+    assert "ValueError" in caplog.text
+    assert "Private source value" not in caplog.text
+
+
+def test_unknown_headers_and_quantity_gap_are_resolved(monkeypatch):
+    call = stub(monkeypatch, mapping({0: "name", 1: "quantity_packs", 2: "units_per_pack"}, 3))
+    result = parse_table_rows(
+        [["Product", "Boxes Wanted", "Contents Per Box"], ["Device", 15, 100]]
+    )
+    assert result.items[0].quantity == 1500
+    assert call.call_count == 1
+
+
+def test_headerless_table_uses_mapping_without_dropping_first_item(monkeypatch):
+    call = stub(monkeypatch, mapping({0: "quantity", 1: "name", 2: "unit"}, 3, header=-1))
+    result = parse_table_rows([[20, "Sterile gauze", "pcs"], [30, "Sterile catheter", "pcs"]])
+    assert [item.quantity for item in result.items] == [20, 30]
+    assert result.items[0].row == 1
+    assert call.call_count == 1
+
+
+def test_group_headers_are_supplied_and_last_header_is_used(monkeypatch):
+    result_mapping = mapping({0: "name", 1: "quantity"}, 3, header=1, suppliers=[2])
+    call = stub(monkeypatch, result_mapping)
+    result = parse_table_rows(
+        [
+            ["Requested products", None, "Supplier offer"],
+            ["Product", "Quantity", "Quantity"],
+            ["Catheter", 12, 900],
+        ]
+    )
+    assert result.items[0].quantity == 12
+    assert result.items[0].row == 3
+    assert "Supplier offer" in call.call_args.args[0]
+
+
+@pytest.mark.parametrize("failure", [LlmUnavailable("SECRET provider response"), ValueError("bad")])
+def test_failed_mapping_has_visible_safe_warning_and_low_confidence(monkeypatch, failure):
+    call = stub(monkeypatch, None)
+    call.side_effect = failure
+    session = MappingSession()
+    first = parse_table_rows(rfq_rows(), page=1, mapping_session=session)
+    second = parse_table_rows(rfq_rows(), page=2, mapping_session=session)
+    assert first.items[0].name == NAMES[0]  # improved basic parser still works
+    assert all(item.status != "verified" for item in first.items)
+    assert first.warnings and "SECRET" not in " ".join(first.warnings)
+    assert second.warnings
+    assert call.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["duplicate_role", "duplicate_index", "out_of_range", "supplier", "numeric_unit", "header"],
 )
-from app.parsing.table_parser import HeaderLayout, parse_table_rows
-from tests.test_parsing import force_llm_unavailable
+def test_invalid_model_assignments_are_rejected(change):
+    rows = [
+        ["Product", "Quantity", "Unit", "Supplier I", "Quantity on offer"],
+        ["Catheter", 12, "pcs", "Vendor", 900],
+    ]
+    candidate = mapping({0: "name", 1: "quantity", 2: "unit"}, 5, suppliers=[3, 4])
+    if change == "duplicate_role":
+        candidate.columns[2].role = "quantity"
+    elif change == "duplicate_index":
+        candidate.columns[2].column_index = 1
+    elif change == "out_of_range":
+        candidate.columns[2].column_index = 100
+    elif change == "supplier":
+        candidate.columns[1].role = "none"
+        candidate.columns[4].scope = "request"
+        candidate.columns[4].role = "quantity"
+    elif change == "numeric_unit":
+        candidate.columns[1].role = "unit"
+        candidate.columns[2].role = "none"
+    else:
+        candidate.header_row_index = 1
+    with pytest.raises(ValueError):
+        validated_layout(rows, candidate)
 
 
-def _layout_with_gap() -> HeaderLayout:
-    return HeaderLayout(
-        row_index=0,
-        roles={0: "name"},
-        extras={1: "Packs Requested", 2: "Units Per Pack", 3: "Manufacturer"},
-        labels={0: "Product", 1: "Packs Requested", 2: "Units Per Pack", 3: "Manufacturer"},
-    )
-
-
-def test_apply_gap_fill_promotes_pack_pair_to_roles() -> None:
-    result = _QuantityGapResult(
-        columns=[
-            _QuantityColumnClassification(column_index=1, role="quantity_packs"),
-            _QuantityColumnClassification(column_index=2, role="units_per_pack"),
-            _QuantityColumnClassification(column_index=3, role="none"),
+def test_explicit_total_wins_and_conflicting_pack_math_needs_review(monkeypatch):
+    call = stub(monkeypatch, None)
+    result = parse_table_rows(
+        [
+            ["Product", "Total units", "Packs requested", "Units per pack", "Unit"],
+            ["Catheter", 120, 2, 100, "pcs"],
         ]
     )
-
-    updated = _apply_gap_fill(_layout_with_gap(), candidate_columns=[1, 2, 3], result=result)
-
-    assert updated.roles[1] == "quantity_packs"
-    assert updated.roles[2] == "units_per_pack"
-    assert 1 not in updated.extras
-    assert 2 not in updated.extras
-    assert 3 in updated.extras  # "none" stays an attribute, not dropped
+    assert result.items[0].quantity == 120
+    assert result.items[0].attributes["Packs requested"] == "2"
+    assert result.items[0].status == "needs_review"
+    assert "conflicts" in " ".join(result.warnings)
+    assert call.call_count == 0
 
 
-def test_apply_gap_fill_ignores_duplicate_role_assignment() -> None:
-    # If the model assigns quantity_packs to two columns, the first (lowest index) wins.
-    result = _QuantityGapResult(
-        columns=[
-            _QuantityColumnClassification(column_index=1, role="quantity_packs"),
-            _QuantityColumnClassification(column_index=2, role="quantity_packs"),
-        ]
+def test_no_quantity_is_inferred_from_dosage_or_model_number(monkeypatch):
+    stub(monkeypatch, None)
+    result = parse_table_rows([["Description"], ["Amoxicillin 500mg"], ["Scale model 354"]])
+    assert all(item.quantity is None for item in result.items)
+
+
+def test_persisted_mapping_is_reused_for_custom_columns(monkeypatch):
+    call = stub(monkeypatch, rfq_mapping())
+    content = build_xlsx(rfq_rows())
+    first = parse_upload(filename="sample.xlsx", content=content)
+    second = parse_upload(
+        filename="sample.xlsx",
+        content=content,
+        table_mappings=first.table_mappings,
+        custom_columns=[CustomColumnSpec("Pack size", "UNITS PER PACK")],
     )
-
-    updated = _apply_gap_fill(_layout_with_gap(), candidate_columns=[1, 2], result=result)
-
-    assert updated.roles[1] == "quantity_packs"
-    assert 2 not in updated.roles
-    assert 2 in updated.extras
+    assert call.call_count == 1
+    assert second.items[0].attributes["Pack size"] == "1"
+    assert [item.row for item in second.items] == [item.row for item in first.items]
 
 
-def test_apply_gap_fill_original_layout_untouched() -> None:
-    original = _layout_with_gap()
-    result = _QuantityGapResult(
-        columns=[_QuantityColumnClassification(column_index=1, role="quantity_packs")]
+def test_reused_layout_checks_new_page_data_without_another_call(monkeypatch):
+    call = stub(monkeypatch, rfq_mapping())
+    session = MappingSession()
+    parse_table_rows(rfq_rows(), page=1, mapping_session=session)
+    rows = rfq_rows()
+    rows[1][4] = "unreadable"
+    result = parse_table_rows(rows, page=2, mapping_session=session)
+    assert call.call_count == 1
+    assert result.items[0].quantity is None
+    assert result.items[0].status != "verified"
+    assert result.warnings
+
+
+def test_same_headers_with_different_scope_headings_are_distinct_layouts(monkeypatch):
+    call = stub(monkeypatch, rfq_mapping())
+    session = MappingSession()
+    parse_table_rows(
+        rfq_rows(),
+        page=1,
+        mapping_session=session,
+        context="Requested amounts then supplier quotation",
     )
+    parse_table_rows(
+        rfq_rows(),
+        page=2,
+        mapping_session=session,
+        context="Supplier quotation then requested amounts",
+    )
+    assert call.call_count == 2
 
-    _apply_gap_fill(original, candidate_columns=[1], result=result)
 
-    # The function must return a new layout, not mutate the one it was given.
-    assert 1 not in original.roles
+def test_unlabelled_pages_do_not_share_a_mapping_by_column_count(monkeypatch):
+    call = stub(monkeypatch, mapping({0: "quantity", 1: "name", 2: "unit"}, 3, header=-1))
+    session = MappingSession()
+    parse_table_rows([[20, "Catheter", "pcs"]], page=1, mapping_session=session)
+    parse_table_rows([[30, "Gauze", "pcs"]], page=2, mapping_session=session)
+    assert call.call_count == 2
 
 
-def test_parse_table_rows_recognizes_common_pack_phrasing_without_any_llm_call() -> None:
-    # "Packs Requested" / "Units Per Pack" are common enough phrasings to be worth naming
-    # directly in keywords.py (QUANTITY_PACKS_KEYWORDS/UNITS_PER_PACK_KEYWORDS) - deterministic,
-    # free, and it also keeps "Units Per Pack" from being misread as the generic unit-of-measure
-    # role (it contains "unit"), which would otherwise make it unavailable as a gap-fill
-    # candidate for less predictable phrasings of the same pattern.
-    rows = [
-        ["Product", "Packs Requested", "Units Per Pack"],
-        ["Item one", 15, 100],
-    ]
+def test_unknown_scope_on_populated_columns_is_not_treated_as_verified():
+    candidate = rfq_mapping()
+    candidate.columns[4].scope = "unknown"
+    candidate.columns[4].role = "none"
+    with pytest.raises(ValueError, match="unresolved"):
+        validated_layout(rfq_rows(), candidate)
 
+
+def test_bad_data_outside_mapping_sample_is_flagged(monkeypatch):
+    call = stub(monkeypatch, None)
+    rows = [["Product", "Quantity", "Unit"]] + [[f"Device {i}", 10, "pcs"] for i in range(20)]
+    rows[17][1] = "unreadable"
+    call.side_effect = LlmUnavailable("offline")
     result = parse_table_rows(rows)
-    item = result.items[0]
-
-    assert result.used_llm_fallback is False
-    assert item.quantity == 1500
-    assert item.attributes["Packs requested"] == "15"
-    assert item.attributes["Units per pack"] == "100"
+    assert result.items[16].quantity is None
+    assert result.items[16].status != "verified"
+    assert any("row 18" in warning for warning in result.warnings)
 
 
-def test_parse_table_rows_leaves_quantity_missing_for_novel_phrasing_without_llm_key(
-    monkeypatch,
-) -> None:
-    force_llm_unavailable(monkeypatch)
-
-    # Phrasing that matches none of the deterministic keyword lists, so this genuinely exercises
-    # the gap-fill path (unlike the common "Packs Requested" phrasing above).
-    rows = [
-        ["Product", "Boxes Wanted", "Contents Per Box"],
-        ["Item one", 15, 100],
-    ]
-
-    result = parse_table_rows(rows)
-    item = result.items[0]
-
-    # No LLM key -> gap-fill silently unavailable -> falls through to the existing "no quantity
-    # column found" behavior (status missing), same as before this feature existed.
-    assert item.quantity is None
-    assert item.status == "missing"
-
-
-def test_parse_table_rows_does_not_attempt_gap_fill_when_quantity_already_found(monkeypatch) -> None:
-    # A quantity role was already found heuristically - the gap-filler must not even be invoked,
-    # so this must pass regardless of LLM key configuration. Force-unavailable anyway to prove
-    # the call path doesn't depend on it.
-    force_llm_unavailable(monkeypatch)
-
-    rows = [
-        ["Item", "Quantity", "Unit"],
-        ["Amoxicillin 500mg Capsules", 2000, "caps"],
-    ]
-
-    result = parse_table_rows(rows)
-
+@pytest.mark.parametrize("value", ["2,000 pcs", "2000pcs"])
+def test_explicit_quantity_and_unit_in_amount_cell_need_no_llm(monkeypatch, value):
+    call = stub(monkeypatch, None)
+    result = parse_table_rows([["Product", "Quantity"], ["Gauze", value]])
     assert result.items[0].quantity == 2000
+    assert result.items[0].unit == "pcs"
+    assert call.call_count == 0
+
+
+def test_zero_requested_amount_is_not_verified(monkeypatch):
+    call = stub(monkeypatch, None)
+    result = parse_table_rows([["Product", "Quantity", "Unit"], ["Gauze", 0, "pcs"]])
+    assert result.items[0].status == "needs_review"
+    assert result.warnings
+    assert call.call_count == 0

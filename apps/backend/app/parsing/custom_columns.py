@@ -12,7 +12,7 @@ Two mechanisms, in order:
 2. LLM match: any requests left unresolved (no hint, or the hint didn't match anything) go into
    one batched call that sees every column header + sample data and picks the best match per
    request, or "not found". Only engages when there's an actual gap, same pattern as the
-   quantity gap-fill in llm_table_classifier.py.
+   uncertain-layout mapping in llm_table_classifier.py.
 """
 
 from typing import Literal
@@ -54,6 +54,7 @@ def apply_custom_columns(
     if unresolved:
         try:
             resolved.update(_match_with_llm(rows, header_row_index, header_cells, unresolved))
+            document.used_llm_fallback = True
         except LlmUnavailable as exc:
             document.warnings.append(f"Custom column matching unavailable ({exc})")
 

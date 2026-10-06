@@ -1,9 +1,10 @@
-
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api import fixtures
+from app.api.identity import extraction_mode
 from app.api.matched_results_export import build_matched_results_workbook, results_filename
 from app.api.request_workflow import (
     latest_snapshot_id,
@@ -42,6 +43,8 @@ from app.matching.api import get_matching_service
 from app.matching.auto_select import auto_select_item
 from app.matching.contracts import DecisionType, MatchDecisionRequestV1
 from app.parsing import ParsingError, parse_upload
+from app.parsing.ai_review import fingerprint, review_document
+from app.parsing.review_sources import fill_legacy_sources
 
 router = APIRouter(prefix="/api")
 
@@ -90,17 +93,20 @@ async def recent_imports() -> list[RecentImport]:
 
 @router.post("/imports")
 async def create_import(
+    http_request: Request,
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
-    file_name, content, parsed = await _parse_request_file(file)
+    mode = await extraction_mode(http_request, session)
+    await session.commit()
+    file_name, content, parsed = await _parse_request_file(file, mode)
     request = await repository.save_parsed_request(
         session, parsed=parsed, file_name=file_name, raw_file=content
     )
     return repository.to_review_response(request)
 
 
-async def _parse_request_file(file: UploadFile):
+async def _parse_request_file(file: UploadFile, mode: str = "basic"):
     file_name = file.filename or ""
     file_extension = file_name.lower().rsplit(".", maxsplit=1)[-1] if "." in file_name else ""
 
@@ -119,7 +125,10 @@ async def _parse_request_file(file: UploadFile):
             raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
 
     try:
-        parsed = parse_upload(filename=file_name, content=bytes(content))
+        parsed = await run_in_threadpool(parse_upload, filename=file_name, content=bytes(content))
+        parsed.extraction_mode = mode
+        if mode == "balanced":
+            parsed = await run_in_threadpool(review_document, parsed)
     except ParsingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -184,6 +193,7 @@ async def get_request(request_id: str, session: AsyncSession = Depends(get_sessi
 
 @router.post("/requests/{request_id}/file")
 async def upload_request_file(
+    http_request: Request,
     request_id: str,
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
@@ -193,7 +203,9 @@ async def upload_request_file(
         raise HTTPException(status_code=404, detail="Request not found")
     if request.workflow_status != "draft":
         raise HTTPException(status_code=409, detail="This request already has an uploaded file")
-    file_name, content, parsed = await _parse_request_file(file)
+    mode = await extraction_mode(http_request, session)
+    await session.commit()
+    file_name, content, parsed = await _parse_request_file(file, mode)
     saved = await repository.save_parsed_request(
         session, parsed=parsed, file_name=file_name, raw_file=content, request_id=request_id
     )
@@ -202,7 +214,7 @@ async def upload_request_file(
 
 @router.get("/requests/{request_id}/review")
 async def review(request_id: str, session: AsyncSession = Depends(get_session)) -> ReviewResponse:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         await repository.suggest_missing_item_domains(session, request)
         return repository.to_review_response(request)
@@ -217,7 +229,7 @@ async def add_manual_item(
     payload: ManualItemCreate,
     session: AsyncSession = Depends(get_session),
 ) -> ExtractedItem:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
     if request.workflow_status != "review":
@@ -232,7 +244,7 @@ async def remove_manual_item(
     item_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
     item = next((item for item in request.items if item.id == item_id), None)
@@ -254,7 +266,7 @@ async def update_item(
     payload: ItemUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> ExtractedItem:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         if not any(item.id == item_id for item in request.items):
             raise HTTPException(status_code=404, detail="Item not found")
@@ -265,12 +277,16 @@ async def update_item(
         if item.manual:
             # Keep manual items complete when editing them, just as on creation.
             try:
-                ManualItemCreate.model_validate({
-                    **repository.to_extracted_item(item).model_dump(), **update,
-                })
+                ManualItemCreate.model_validate(
+                    {
+                        **repository.to_extracted_item(item).model_dump(),
+                        **update,
+                    }
+                )
             except ValueError as exc:
                 raise HTTPException(
-                    status_code=422, detail="Manual items require a name, positive quantity and product type"
+                    status_code=422,
+                    detail="Manual items require a name, positive quantity and product type",
                 ) from exc
         updated = await repository.update_item_fields(session, item_id, update)
         return repository.to_extracted_item(updated)
@@ -287,7 +303,7 @@ async def verify_item(
     item_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> ExtractedItem:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         if not any(item.id == item_id for item in request.items):
             raise HTTPException(status_code=404, detail="Item not found")
@@ -307,17 +323,15 @@ async def update_partner(
     payload: PartnerUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> PartnerDetails:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         if request.workflow_status == "draft":
             raise HTTPException(status_code=409, detail="Upload a file before editing partner details")
-        if request.confirmed:
-            raise HTTPException(status_code=409, detail="Partner details are already confirmed")
         updated = await repository.update_partner(session, request_id, payload)
         return repository.to_partner_details(updated)
 
     require_mock_request(request_id)
-    return PartnerDetails(**payload.model_dump(), confirmed=True)
+    return PartnerDetails(**payload.model_dump(exclude={"requestId"}), requestId=request_id, confirmed=False)
 
 
 @router.post("/requests/{request_id}/partner/confirm")
@@ -325,7 +339,7 @@ async def confirm_partner(
     request_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> PartnerDetails:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         if request.workflow_status == "draft":
             raise HTTPException(status_code=409, detail="Upload a file before confirming partner details")
@@ -370,7 +384,7 @@ async def add_custom_column(
     if not payload.displayName.strip():
         raise HTTPException(status_code=400, detail="Column name is required")
 
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         if request.workflow_status != "review":
             raise HTTPException(status_code=409, detail="Review is locked after matching starts")
@@ -401,27 +415,42 @@ async def start_matching(
     response: Response,
     session: AsyncSession = Depends(get_session),
 ) -> RequestMatchingState | MatchingResponse:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is None:
         require_mock_request(request_id)
         response.status_code = 200
         selected = {
             item.id: fixtures.ERP_MATCHES[item.id][0].id
-            for item in fixtures.REQUESTED_ITEMS if fixtures.ERP_MATCHES.get(item.id)
+            for item in fixtures.REQUESTED_ITEMS
+            if fixtures.ERP_MATCHES.get(item.id)
         }
         return MatchingResponse(
-            requestId=request_id, requestedItems=fixtures.REQUESTED_ITEMS,
-            matches=fixtures.ERP_MATCHES, selectedMatches=selected,
+            requestId=request_id,
+            requestedItems=fixtures.REQUESTED_ITEMS,
+            matches=fixtures.ERP_MATCHES,
+            selectedMatches=selected,
         )
-    if request.workflow_status in {"matching_queued", "matching", "match_review", "complete", "finalized"}:
+    if request.workflow_status in {
+        "matching_queued",
+        "matching",
+        "match_review",
+        "complete",
+        "finalized",
+    }:
         state = await matching_state(session, request_id)
         assert state is not None
         return state
     if request.workflow_status not in {"review", "matching_failed"}:
-        raise HTTPException(status_code=409, detail="Upload a file or create a manual request before matching")
-    await repository.suggest_missing_item_domains(session, request)
-    if not request.items or any(item.status != "verified" or not item.domain for item in request.items):
-        raise HTTPException(status_code=422, detail="Verify and classify every item before matching")
+        raise HTTPException(
+            status_code=409, detail="Upload a file or create a manual request before matching"
+        )
+    await repository.suggest_missing_item_domains(session, request, commit=False)
+    if not request.items or any(
+        item.status != "verified" or not item.domain for item in request.items
+    ):
+        raise HTTPException(
+            status_code=422, detail="Verify and classify every item before matching"
+        )
     for item in request.items:
         try:
             to_inquiry_line(request, item)
@@ -701,3 +730,47 @@ async def create_offer(
 @router.get("/trends")
 async def trends() -> TrendsResponse:
     return fixtures.TREND_RESPONSE
+
+
+@router.post("/requests/{request_id}/ai-review")
+async def ai_review(
+    request_id: str, session: AsyncSession = Depends(get_session)
+) -> ReviewResponse:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if request.workflow_status != "review":
+        raise HTTPException(status_code=409, detail="AI review is only available during review")
+    if not request.raw_file:
+        raise HTTPException(
+            status_code=422, detail="The original file is unavailable; re-upload it for AI review"
+        )
+    document = repository.review_document_from_request(request)
+    content = request.raw_file
+    file_name = request.source_file_name
+    table_mappings = request.table_mappings
+    before = fingerprint(content, document)
+    cached = request.ai_review or {}
+    if (
+        cached.get("fingerprint") == before
+        and cached.get("summary", {}).get("status") == "completed"
+    ):
+        return repository.to_review_response(request)
+    # Release the read transaction during provider work so edits and matching can proceed.
+    await session.commit()
+    await run_in_threadpool(fill_legacy_sources, document, file_name, content, table_mappings)
+    await run_in_threadpool(review_document, document)
+    current = await repository.get_request_by_id(session, request_id, lock=True)
+    if (
+        current is None
+        or current.workflow_status != "review"
+        or fingerprint(current.raw_file or b"", repository.review_document_from_request(current))
+        != before
+    ):
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="Request changed during AI review. Reload and try again."
+        )
+    repository.apply_ai_review(current, document)
+    await session.commit()
+    return repository.to_review_response(current)
