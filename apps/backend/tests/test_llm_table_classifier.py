@@ -1,6 +1,7 @@
 """Behavior and cost regressions for semantic table mapping; no network calls."""
 
 import io
+import json
 from unittest.mock import Mock
 
 import pytest
@@ -148,6 +149,44 @@ def test_clear_reordered_multiline_table_needs_no_call(monkeypatch):
     assert document.items[0].quantity == 12
     assert document.items[1].unit == ""
     assert document.table_mappings["version"] == 1
+
+
+def test_cover_title_and_metadata_do_not_hide_a_late_clear_header(monkeypatch):
+    call = stub(monkeypatch, None)
+    preamble = [
+        ["Emergency Medical Supply Request"],
+        ["Partner", "Example Relief"],
+        ["Region", "Example country"],
+        ["Contact", "Dr. Example"],
+        *[["Field request note"] for _ in range(30)],
+    ]
+    document = parse_upload(filename="request.xlsx", content=build_xlsx([
+        *preamble,
+        ["#", "Original request text", "Qty", "Unit", "Destination"],
+        [1, "Example antibiotic 500mg capsules", 2000, "caps", "Field pharmacy"],
+        [2, "Sterile gloves", 500, "pairs", "Field pharmacy"],
+    ]))
+    assert call.call_count == 0
+    assert [item.name for item in document.items] == ["Example antibiotic 500mg capsules", "Sterile gloves"]
+    assert [item.quantity for item in document.items] == [2000, 500]
+    assert document.items[0].row == len(preamble) + 2
+    assert document.partner == {"partner": "Example Relief", "region": "Example country", "contact": "Dr. Example"}
+    assert not document.partner_conflicts
+
+
+def test_late_unfamiliar_header_is_in_mapping_samples_and_can_be_validated(monkeypatch):
+    rows = [["Medical supply request"]] + [["Cover note"] for _ in range(25)] + [
+        ["Label A", "Label B", "Label C"],
+        ["Sterile catheter", 20, "pcs"],
+        ["Sterile gloves", 30, "pairs"],
+    ]
+    call = stub(monkeypatch, mapping({0: "name", 1: "quantity", 2: "unit"}, 3, header=26))
+    result = parse_table_rows(rows)
+    payload = json.loads(call.call_args.args[0].split("INPUT:\n", 1)[1])
+    assert any(row["row_index"] == 26 and row["cells"] == rows[26] for row in payload["rows"])
+    assert [item.quantity for item in result.items] == [20, 30]
+    assert [item.row for item in result.items] == [28, 29]
+    assert call.call_count == 1
 
 
 def test_supplier_values_never_become_request_quantity(monkeypatch):

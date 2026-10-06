@@ -63,13 +63,29 @@ INPUT:
 
 
 def map_table_with_llm(rows, layout, context: str) -> TableMapping:
-    from app.parsing.table_parser import cell_text
+    from app.parsing.table_parser import HEADER_SEARCH_LIMIT, cell_text
 
     header = layout.row_index if layout else -1
-    start = header + 1 if layout else min(10, len(rows))
+    start = header + 1 if layout else 0
     # Header candidates/preamble plus representative data, not the whole document.
-    indices = list(range(min(start, 10, len(rows))))
-    data_indices = list(range(start, len(rows))) if layout else list(range(len(rows)))
+    if layout:
+        indices = [*range(min(header, 4)), *range(max(0, header - 5), header + 1)]
+    else:
+        # Unknown labels can follow a long preamble too. Sample likely header rows near
+        # the transition to numeric data, rather than only the first ten document rows.
+        candidates = []
+        for index, row in enumerate(rows[:HEADER_SEARCH_LIMIT]):
+            texts = [cell_text(cell) for cell in row if cell_text(cell)]
+            if len(texts) >= 2 and not any(text.isdigit() for text in texts):
+                following = rows[index + 1:index + 4]
+                numeric_data = sum(any(cell_text(cell).isdigit() for cell in later) for later in following)
+                candidates.append((numeric_data, len(texts), -index))
+        likely = [-candidate[2] for candidate in sorted(candidates, reverse=True)[:3]]
+        indices = list(range(min(4, len(rows))))
+        for index in sorted(likely):
+            indices.extend(range(max(0, index - 1), min(len(rows), index + 2)))
+        start = min(likely) + 1 if likely else 0
+    data_indices = list(range(start, len(rows)))
     if data_indices:
         indices += [data_indices[round(i * (len(data_indices) - 1) / 5)] for i in range(6)]
     payload = {

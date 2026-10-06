@@ -18,6 +18,11 @@ from app.parsing import ai_review
 from app.parsing.ai_review import Correction, ReviewBatch
 from app.parsing.llm_client import LlmUnavailable
 from tests.test_ai_review import checked
+from tests.test_late_excel_header import (
+    checked_covered_request,
+    covered_request_mapping,
+    covered_request_rows,
+)
 from tests.test_parsing import build_xlsx
 from tests.test_partner_extraction import combined_response
 
@@ -62,6 +67,39 @@ async def upload(client, filename="scanner.xlsx", rows=None):
     )
     assert result.status_code == 200, result.text
     return result.json()
+
+
+async def test_balanced_cover_metadata_import_saves_real_rows_and_source_alignment(client, monkeypatch):
+    from app.parsing import llm_table_classifier
+
+    mapper = Mock(return_value=covered_request_mapping())
+    reviewer = Mock(side_effect=checked_covered_request)
+    monkeypatch.setattr(llm_table_classifier, "call_llm", mapper)
+    monkeypatch.setattr(ai_review, "call_llm", reviewer)
+    body = await upload(client, "covered-request.xlsx", rows=covered_request_rows())
+    rid = body["requestId"]
+    try:
+        assert body["extractionMode"] == "balanced"
+        assert body["counts"]["total"] == 8
+        assert body["reviewSummary"]["checked"] == 8
+        assert body["reviewSummary"]["unresolved"] == 2
+        assert body["partner"]["region"] == "Example Region"
+        assert body["partner"]["confirmed"] is False
+        assert [reference["row"] for reference in body["sourceReferences"]] == list(range(12, 20))
+        added = await client.post(f"/api/requests/{rid}/custom-columns", json={
+            "displayName": "Source reviewer note", "hint": "Reviewer note",
+        })
+        assert added.status_code == 200, added.text
+        assert mapper.call_count == reviewer.call_count == 1
+        assert [item["attributes"]["Source reviewer note"] for item in added.json()["items"]] == [
+            row[7] for row in covered_request_rows()[11:]
+        ]
+        assert added.json()["partner"] == body["partner"]
+        assert added.json()["reviewSummary"] == body["reviewSummary"]
+        reopened = await client.get(f"/api/requests/{rid}/review")
+        assert reopened.json()["items"] == added.json()["items"]
+    finally:
+        await client.delete(f"/api/requests/{rid}")
 
 
 async def test_partner_suggestions_confirmation_edits_and_item_retry_are_independent(

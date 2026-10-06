@@ -22,7 +22,7 @@ from app.parsing.llm_table_classifier import (
     TableMapping,
     map_table_with_llm,
 )
-from app.parsing.table_parser import HeaderLayout, cell_text
+from app.parsing.table_parser import HEADER_SEARCH_LIMIT, HeaderLayout, cell_text
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def strict_quantity(value: object) -> int | None:
 def validated_layout(rows, mapping: TableMapping) -> HeaderLayout:
     width = max(map(len, rows), default=0)
     header = mapping.header_row_index
-    if header < -1 or header >= min(10, len(rows)):
+    if header < -1 or header >= min(HEADER_SEARCH_LIMIT, len(rows)):
         raise ValueError("Invalid header position")
     if header >= len(rows) - 1:
         raise ValueError("No data rows after header")

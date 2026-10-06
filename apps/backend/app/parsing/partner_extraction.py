@@ -54,10 +54,18 @@ def capture_context(document: ParsedDocument, text: str) -> None:
 
 def capture_rows(document: ParsedDocument, rows: list[list[object]]) -> None:
     item_rows = {item.row for item in document.items}
+    headers = document.items[0].review_source.get("headers", {}) if document.items else {}
+
+    def is_header(row):
+        return bool(headers) and all(
+            int(column) < len(row) and normal(str(row[int(column)] or "")) == normal(label)
+            for column, label in headers.items()
+        )
+
     text = "\n".join(
         " | ".join(str(cell).strip() for cell in row if cell is not None)
         for index, row in enumerate(rows, 1)
-        if index not in item_rows
+        if index not in item_rows and not is_header(row)
     )
     capture_context(document, text)
 

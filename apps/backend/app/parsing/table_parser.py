@@ -17,8 +17,8 @@ from app.parsing.text_heuristics import (
 )
 from app.parsing.types import CustomColumnSpec, ParsedDocument, Priority
 
-# How many leading rows we're willing to scan looking for a header.
-_HEADER_SEARCH_WINDOW = 10
+# Include cover notes and requester metadata, while keeping discovery bounded.
+HEADER_SEARCH_LIMIT = 200
 # A name candidate locates a possible header; semantic validation happens separately.
 _REQUIRED_ROLES = {"name"}
 
@@ -42,8 +42,13 @@ def cell_text(value: object) -> str:
 
 
 def _find_header_row(rows: list[list[object]]) -> HeaderLayout | None:
-    for row_index, row in enumerate(rows[:_HEADER_SEARCH_WINDOW]):
+    candidates = []
+    width = max(map(len, rows), default=0)
+    for row_index, row in enumerate(rows[:HEADER_SEARCH_LIMIT]):
         cells = [cell_text(cell) for cell in row]
+        # A merged document title is not a column header in a multi-column table.
+        if width > 1 and sum(bool(cell) for cell in cells) < 2:
+            continue
         # Numeric amounts alongside product text indicate data, not header labels.
         if any(text.isdigit() for text in cells):
             continue
@@ -63,8 +68,14 @@ def _find_header_row(rows: list[list[object]]) -> HeaderLayout | None:
                 )
 
         if _REQUIRED_ROLES <= set(layout.roles.values()):
-            return layout
-    return None
+            roles = set(layout.roles.values())
+            score = (
+                10 * ("quantity" in roles or {"quantity_packs", "units_per_pack"} <= roles)
+                + 4 * ("unit" in roles)
+                + len(roles)
+            )
+            candidates.append((score, -row_index, layout))
+    return max(candidates, key=lambda candidate: candidate[:2])[2] if candidates else None
 
 
 def is_table_well_structured(rows: list[list[object]]) -> bool:
@@ -90,7 +101,7 @@ def extract_request_priority_hint(rows: list[list[object]]) -> Priority | None:
     derive a priority from whatever free text follows it on that row. Most files leave it empty
     today (no current sample has priority-signalling text there), so this usually returns None
     and the medium default in build_item() applies - it's a hook for when a file does carry one."""
-    for row in rows[:_HEADER_SEARCH_WINDOW]:
+    for row in rows[:HEADER_SEARCH_LIMIT]:
         cells = [cell_text(cell) for cell in row]
         for index, cell in enumerate(cells):
             lowered = cell.lower()
