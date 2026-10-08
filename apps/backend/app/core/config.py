@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOCAL_CORS_ORIGINS = [
@@ -19,6 +19,9 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://allocura:allocura@localhost:5432/allocura"
     )
     cors_origins: str = ""
+    matching_lexical_weight: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    matching_min_semantic_score: float = Field(default=0.65, ge=0, le=1, allow_inf_nan=False)
+    matching_vector_weight: float = Field(default=2.0, gt=0, allow_inf_nan=False)
     embedding_provider: str = ""
     embedding_model_name: str = ""
     embedding_model_version: str = ""

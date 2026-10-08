@@ -265,7 +265,15 @@ components and [`ranking/ranker.py`](ranking/ranker.py) applies the deterministi
 
 ERP articles and standalone SharePoint offers share lexical and embedding score channels.
 Within each channel, raw similarity scores determine ranks across the combined pool; equal
-similarities receive equal ranks. Reciprocal rank fusion combines these ranks, and the final
+similarities receive equal ranks. Weighted reciprocal rank fusion combines these ranks:
+`lexical_weight / (60 + lexical_rank) + vector_weight / (60 + vector_rank)`;
+a missing channel contributes nothing. Defaults are lexical **1.0**, vector **2.0**.
+Configure `MATCHING_LEXICAL_WEIGHT` and `MATCHING_VECTOR_WEIGHT` as finite positive numbers
+in the backend environment and restart the backend/worker. Use vector weights 1, 2, or 3
+with lexical weight 1 to compare equal, double, or triple semantic influence.
+Effective weights are saved in candidate score components. This applies to new v6 runs;
+existing runs keep their saved scores. Descriptions and embeddings are unchanged and
+lexical-only retrieval remains supported. The final
 ranking score is normalized to 0–100. Candidate keys break ties deterministically.
 
 Review status, attribute agreement and stock remain visible but do not boost or penalize ranking.
@@ -460,3 +468,25 @@ but it must not be described as semantically validated.
 The detailed rationale and test expectations for every phase are in
 [`README_DETAILED.md`](README_DETAILED.md). The repository-level commands and Azure rollout are in
 [`../../../../README.md`](../../../../README.md).
+
+### Displayed search similarity
+
+The UI displays `search_similarity`, a candidate-local weighted average of available lexical
+and vector scores multiplied by 100. It does not rescale against the best candidate. Negative
+cosine scores contribute zero; raw channel scores remain visible. Missing channels are omitted
+from the average and shown as unavailable. Legacy runs use saved weights, or equal weights
+when no weights were recorded. This is a search indicator, not calibrated match confidence.
+Weighted RRF still determines order; the internal relative `ranking_score` remains for
+backward compatibility and is not displayed. Linked historical request text overlap is shown
+as evidence only; standalone historical offers use lexical/vector scores just like catalog items.
+
+### Minimum semantic score
+
+New v7 runs filter catalog articles and historical offers by raw vector cosine score before
+selecting top-k. `MATCHING_MIN_SEMANTIC_SCORE` defaults to **0.65** (inclusive). Candidates
+without vector evidence are omitted while enabled, including exact-reference-only candidates.
+Set it to **0** to disable filtering and restore lexical-only fallback. Values must be finite
+and between 0 and 1. Restart the backend/worker after changing the setting. Zero qualifying
+candidates is a valid result; the UI does not fill unused slots. Existing saved runs and
+decisions are preserved; create a new request to evaluate the cutoff. This experimental
+threshold is not a substitute for ingredient, strength or dosage-form checks.

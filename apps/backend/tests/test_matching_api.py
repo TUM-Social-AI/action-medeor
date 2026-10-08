@@ -19,6 +19,7 @@ from tests.matching.factories import item, line
 @pytest.mark.asyncio
 async def test_matching_api_creates_and_reads_run() -> None:
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository(
             [item("410001001", "Foley urinary catheter sterile CH18")]
         ),

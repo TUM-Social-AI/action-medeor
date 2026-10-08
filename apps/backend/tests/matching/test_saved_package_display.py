@@ -28,6 +28,7 @@ async def test_saved_package_display_uses_original_snapshot_without_rewriting(
         inquiry_line=line(), catalog_snapshot_id=snapshot_id if pinned else None,
     )
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([product]),
         history_repository=InMemoryHistoryRepository(),
         run_repository=InMemoryMatchRunRepository(), policy=load_default_policy(),

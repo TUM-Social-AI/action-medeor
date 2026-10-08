@@ -37,3 +37,23 @@ def description_similarity(requested: str, descriptions: tuple[str, ...]) -> flo
          for description in descriptions),
         default=0.0,
     )
+
+
+def search_similarity_components(components: dict[str, float]) -> dict[str, float]:
+    """Candidate-local similarity, independent of the other retrieved candidates.
+
+    Only available lexical/vector scores participate. Cosine values below zero
+    contribute zero; original channel scores remain unchanged for inspection.
+    Legacy runs without recorded weights used equal channel weights.
+    """
+    weighted = 0.0
+    total = 0.0
+    for channel in ("lexical", "vector"):
+        if channel not in components:
+            continue
+        weight = components.get(f"{channel}_weight", 1.0)
+        weighted += weight * max(0.0, min(1.0, components[channel]))
+        total += weight
+    if not total:
+        return {}
+    return {"search_similarity": 100 * weighted / total}

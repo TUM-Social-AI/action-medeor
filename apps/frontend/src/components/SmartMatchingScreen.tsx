@@ -60,6 +60,15 @@ function OfferFollowUp({ candidate }: { candidate: MatchCandidateV1 }) {
   return <p className="mt-3 text-xs font-semibold text-rose-700">Contact the supplier to receive a new offer.</p>;
 }
 
+function ScoreBreakdown({ candidate }: { candidate: MatchCandidateV1 }) {
+  const components = candidate.score_components;
+  const raw = (key: string) => typeof components[key] === 'number' ? components[key].toFixed(3) : 'Not available';
+  return <div className="mb-3 space-y-1 text-xs text-gray-600">
+    <div>Lexical: {raw('lexical')}</div>
+    <div>Semantic: {raw('vector')}</div>
+  </div>;
+}
+
 function CandidateCard({
   candidate, selected, disabled, onSelect, onInfo,
 }: {
@@ -74,7 +83,7 @@ function CandidateCard({
   const muted = offer && status.muted;
   const name = candidate.descriptions[0] || candidate.item_number || 'Supplier offer';
   const firstWarning = offer ? undefined : candidate.constraints.find(value => value.outcome !== 'pass')?.message;
-  const rankingScore = candidate.score_components.ranking_score;
+  const rankingScore = candidate.score_components.search_similarity;
   const packSize = getCandidatePackSize(candidate);
   return <div className={'relative flex h-full flex-col overflow-hidden rounded-xl border-2 transition-colors ' + (muted
     ? (selected ? 'border-[#1B4E8A] shadow-sm ' : 'border-dashed border-gray-300 hover:border-gray-400 ') + 'bg-[repeating-linear-gradient(135deg,#f9fafb_0_8px,#f3f4f6_8px_16px)]'
@@ -89,13 +98,14 @@ function CandidateCard({
             {selected && <span className="h-2 w-2 rounded-full bg-white" />}
           </span>
           <span className={"text-2xl font-extrabold leading-none " + (muted ? "text-gray-400" : "text-gray-900")}>{typeof rankingScore === 'number' ? formatRankingScore(rankingScore) : '—'}</span>
-          <span className="text-xs leading-tight text-gray-500">/100<br />Ranking score</span>
+          <span className="text-xs leading-tight text-gray-500">/100<br />Search similarity</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {candidate.rank === 1 && !muted ? <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">BEST FIT</span> : null}
+          {candidate.rank === 1 && !muted ? <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">TOP RANKED</span> : null}
           {offer && <OfferBadge candidate={candidate} />}
         </div>
       </div>
+      <ScoreBreakdown candidate={candidate} />
       <div title={name} className={"mb-2 h-[2.75em] shrink-0 line-clamp-2 break-words text-sm font-bold leading-snug " + (muted ? "text-gray-500" : "text-gray-900")}>{name}</div>
       {offer ? <div className="space-y-1.5 text-xs">
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">SUPPLIER</span><span className="font-medium text-gray-700">{candidate.supplier || 'Not specified'}</span></div>
@@ -117,7 +127,7 @@ function CandidateCard({
 }
 
 function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1; onInfo: () => void }) {
-  const score = candidate.score_components.ranking_score;
+  const score = candidate.score_components.search_similarity;
   const offer = candidate.candidate_type === 'historical_offer';
   const status = getOfferStatus(candidate);
   const muted = offer && status.muted;
@@ -143,6 +153,7 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
         </>}
       </div>
     </div>
+    <div className="order-4 w-full"><ScoreBreakdown candidate={candidate} /></div>
     <div className="order-2 ml-auto flex items-center gap-2 sm:order-3">
       <button type="button" onClick={onInfo} aria-label={'Details for ' + name} className="rounded-full p-1.5 text-[#1B4E8A] hover:bg-blue-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Info size={17} /></button>
     </div>
@@ -331,7 +342,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
             {line.error && <div className="mb-3"><ErrorPanel message={line.error} /></div>}
             {(line.status === 'pending' || line.status === 'running') && <LoadingPanel label={line.status === 'running' ? 'Matching this item' : 'Waiting for matching worker'} />}
             {line.status === 'completed' && <>
-              {line.candidates.length === 0 && <p className="text-sm text-gray-500">No candidates were found for this item.</p>}
+              {line.candidates.length === 0 && <p className="text-sm text-gray-500">No candidates meet the current matching criteria. With semantic filtering enabled, candidates must meet the minimum semantic score; candidates without a semantic score are omitted.</p>}
               <div className={'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 ' + (line.decisionType === 'no_match' ? 'opacity-65' : '')}>
                 {visible.map(candidate => <CandidateCard
                   key={candidate.candidate_id}
@@ -397,12 +408,12 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
           <div><dt className="text-gray-500">Automated checks</dt><dd>{details.candidate.review_status === 'pass' ? 'No configured issue found' : details.candidate.review_status.replace(/_/g, ' ')}</dd></div>
           {details.candidate.manufacturer && <div><dt className="text-gray-500">Manufacturer</dt><dd>{details.candidate.manufacturer}</dd></div>}
           <div><dt className="text-gray-500">Packaging</dt><dd>{details.candidate.packaging.basis || details.candidate.packaging.status.replace(/_/g, ' ')}</dd></div>
-          <div><dt className="text-gray-500">Ranking score</dt><dd>{typeof details.candidate.score_components.ranking_score === 'number' ? formatRankingScore(details.candidate.score_components.ranking_score) : '—'}</dd></div>
+          <div><dt className="text-gray-500">Search similarity /100</dt><dd>{typeof details.candidate.score_components.search_similarity === 'number' ? formatRankingScore(details.candidate.score_components.search_similarity) : '—'}</dd></div>
           <div><dt className="text-gray-500">Exact reference</dt><dd>{details.candidate.score_components.exact_reference ? 'Yes' : 'No'}</dd></div>
           <div><dt className="text-gray-500">Attribute agreement</dt><dd>{typeof details.candidate.score_components.attribute_match_ratio === 'number' ? Math.round(details.candidate.score_components.attribute_match_ratio * 100) + '%' : 'No comparable attributes'}</dd></div>
           <div><dt className="text-gray-500">Fused retrieval</dt><dd>{details.candidate.score_components.rrf?.toFixed(4) ?? '—'}</dd></div>
         </dl>
-        <p className="text-xs text-gray-500 mb-5">The ranking score is computed before sorting from the matcher’s priority rules: checks, exact references, attribute agreement, fused retrieval, availability, and article number. It preserves that priority order. The best evaluated candidate is 100. Scores are scaled across all evaluated candidates; the lowest may be outside the displayed top options. This relative scale is not a confidence percentage. Checks cover configured attributes only.</p>
+        <p className="text-xs text-gray-500 mb-3">Search similarity is the weighted average of available lexical and semantic scores, on a 0–100 scale. Missing channels are omitted; negative semantic scores contribute zero. It is not a confidence percentage or a compatibility guarantee. Candidate order uses weighted retrieval ranks, so similarity scores may not decrease in order. Checks cover configured attributes only.</p>
         <p className="text-xs text-gray-500 mb-3">Name similarity: {typeof details.candidate.score_components.name_similarity === 'number' ? Math.round(details.candidate.score_components.name_similarity * 100) + '/100' : 'unavailable'}</p>
         <h3 className="text-sm font-semibold mb-2">Retrieval evidence</h3>
         {details.candidate.retrieval_evidence.length ? <ul className="space-y-1 mb-5 text-sm text-gray-700">{details.candidate.retrieval_evidence.map((evidence, index) => <li key={index} className="rounded-lg bg-gray-50 p-2">

@@ -93,6 +93,7 @@ async def test_legacy_stock_display_uses_historical_inventory_without_rewriting_
     })
     runs = PostgresMatchRunRepository(session)
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=PostgresCatalogRepository(session),
         history_repository=InMemoryHistoryRepository(), run_repository=runs,
         policy=load_default_policy(),

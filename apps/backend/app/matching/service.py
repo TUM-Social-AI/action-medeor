@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import isfinite
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from app.matching.constraints.engine import ConstraintEngine, MatchingPolicy
@@ -35,7 +36,7 @@ from app.matching.ports import (
     OfferSearchRepository,
     VectorRepository,
 )
-from app.matching.ranking.features import description_similarity
+from app.matching.ranking.features import description_similarity, search_similarity_components
 from app.matching.ranking.ranker import calculate_ranking_scores, rank_candidates
 from app.matching.representation import represent_inquiry
 from app.matching.retrieval.exact import ExactRetriever
@@ -45,7 +46,7 @@ from app.matching.retrieval.lexical import LexicalRetriever
 from app.matching.retrieval.vector import VectorRetriever
 from app.matching.validation import validate_inquiry
 
-ALGORITHM_VERSION = "allocura-matching-v5"
+ALGORITHM_VERSION = "allocura-matching-v7"
 
 
 class MatchingService:
@@ -59,7 +60,16 @@ class MatchingService:
         vector_repository: VectorRepository | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         offer_search_repository: OfferSearchRepository | None = None,
+        lexical_weight: float = 1.0,
+        vector_weight: float = 2.0,
+        min_semantic_score: float = 0.65,
     ) -> None:
+        if any(not isfinite(weight) or weight <= 0 for weight in (lexical_weight, vector_weight)):
+            raise ValueError("Retrieval weights must be finite and positive")
+        if not isfinite(min_semantic_score) or not 0 <= min_semantic_score <= 1:
+            raise ValueError("Semantic cutoff must be finite and between 0 and 1")
+        self._min_semantic_score = min_semantic_score
+        self._retrieval_weights = {"lexical": lexical_weight, "vector": vector_weight}
         self._catalog = catalog_repository
         self._history = history_repository
         self._runs = run_repository
@@ -215,9 +225,9 @@ class MatchingService:
                 (
                     key,
                     sum(
-                        1 / (60 + hit.rank)
+                        self._retrieval_weights[hit.retriever] / (60 + hit.rank)
                         for hit in hits
-                        if hit.retriever in {"lexical", "vector"}
+                        if hit.retriever in self._retrieval_weights
                     ),
                     hits,
                 )
@@ -271,6 +281,8 @@ class MatchingService:
                             retrieval_evidence=tuple(hit.as_evidence() for hit in state.evidence),
                             score_components={
                                 **state.score_components,
+                                **{f"{channel}_weight": weight
+                                   for channel, weight in self._retrieval_weights.items()},
                                 "name_similarity": description_similarity(
                                     request.inquiry_line.raw_description, state.item.descriptions
                                 ),
@@ -322,6 +334,8 @@ class MatchingService:
                             retrieval_evidence=tuple(hit.as_evidence() for hit in evidence),
                             score_components={
                                 "rrf": fused_score,
+                                **{f"{channel}_weight": weight
+                                   for channel, weight in self._retrieval_weights.items()},
                                 **{
                                     hit.retriever: hit.score
                                     for hit in evidence
@@ -348,6 +362,14 @@ class MatchingService:
                     )
                 )
 
+            # Filter both catalog and historical offers before choosing top-k.
+            # Missing vector evidence cannot establish the configured minimum.
+            if self._min_semantic_score > 0:
+                candidate_rows = [
+                    row for row in candidate_rows
+                    if row[1].score_components.get("vector", float("-inf"))
+                    >= self._min_semantic_score
+                ]
             scores = calculate_ranking_scores(
                 [
                     (
@@ -367,6 +389,8 @@ class MatchingService:
                         "rank": rank,
                         "score_components": {
                             **candidate.score_components,
+                            **search_similarity_components(candidate.score_components),
+                            "min_semantic_score": self._min_semantic_score,
                             "ranking_score": scores[key],
                             "ranking_score_normalized": 1.0,
                         },
@@ -395,7 +419,18 @@ class MatchingService:
             raise
 
     async def get_run(self, run_id: UUID) -> MatchRunResponseV1 | None:
-        return await self._runs.get_run(run_id)
+        run = await self._runs.get_run(run_id)
+        if run is None:
+            return None
+        return run.model_copy(update={
+            "candidates": tuple(
+                candidate.model_copy(update={"score_components": {
+                    **candidate.score_components,
+                    **search_similarity_components(candidate.score_components),
+                }})
+                for candidate in run.candidates
+            ),
+        })
 
     async def save_decision(self, decision: MatchDecisionRequestV1) -> MatchDecisionResponseV1:
         return await self._runs.save_decision(decision)

@@ -19,7 +19,7 @@ from app.matching.contracts import (
     SourceReferenceV1,
     SourceType,
 )
-from app.matching.ranking.features import description_similarity
+from app.matching.ranking.features import description_similarity, search_similarity_components
 from app.matching.ranking.ranker import calculate_ranking_scores
 
 
@@ -110,6 +110,9 @@ async def matching_state(session: AsyncSession, request_id: str) -> RequestMatch
                     for candidate in run.candidates
                 ])
                 for candidate in candidates:
+                    candidate["score_components"].update(
+                        search_similarity_components(candidate["score_components"])
+                    )
                     candidate["score_components"].setdefault(
                         "name_similarity",
                         description_similarity(item.name, tuple(candidate["descriptions"])),
