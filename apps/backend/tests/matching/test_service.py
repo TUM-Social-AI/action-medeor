@@ -72,7 +72,7 @@ async def test_known_stock_is_preserved_when_request_conversion_is_unknown(reque
     )
     result = await service.match(MatchRequestV1(inquiry_line=inquiry))
     matched = result.candidates[0]
-    assert matched.available_quantity == Decimal("50")
+    assert matched.available_quantity == Decimal("70")
     assert matched.stock_unit == "PAKET"
     assert matched.availability_status is expected
     assert matched.required_stock_quantity == (
@@ -80,7 +80,7 @@ async def test_known_stock_is_preserved_when_request_conversion_is_unknown(reque
     )
     assert len(matched.warnings) == (1 if expected is AvailabilityStatus.UNKNOWN else 0)
     payload = result.model_dump(mode="json")
-    assert MatchRunResponseV1.model_validate(payload).candidates[0].available_quantity == Decimal("50")
+    assert MatchRunResponseV1.model_validate(payload).candidates[0].available_quantity == Decimal("70")
     assert MatchRunResponseV1.model_validate(payload).candidates[0].required_stock_quantity == matched.required_stock_quantity
     payload["candidates"][0].pop("available_quantity")
     payload["candidates"][0].pop("required_stock_quantity")

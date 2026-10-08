@@ -519,7 +519,7 @@ Möglichkeiten erhält die Entscheidung und macht sie nachvollziehbar.
 
 ### Was geschieht
 
-Der Import berechnet `available_raw = on_hand - incoming_purchase_order + committed_order` und bewahrt
+Der Import berechnet `available_raw = on_hand + incoming_purchase_order - committed_order` und bewahrt
 negative Ergebnisse als operativen Nachweis. Das Matching verwendet
 `fulfillable_quantity = max(0, available_raw)` nur, wenn die Einheit nachweislich mit der angefragten
 Menge vergleichbar ist. Verpackungsanzahlen können ebenfalls verglichen werden, wenn der Bestand

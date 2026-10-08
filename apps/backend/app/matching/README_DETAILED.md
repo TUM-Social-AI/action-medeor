@@ -519,7 +519,7 @@ be a hidden business decision. Returning both options preserves the decision and
 
 ### What happens
 
-The importer calculates `available_raw = on_hand - incoming_purchase_order + committed_order` and
+The importer calculates `available_raw = on_hand + incoming_purchase_order - committed_order` and
 preserves negative results as operational evidence. Matching uses
 `fulfillable_quantity = max(0, available_raw)` only when its unit is confirmed comparable with the
 requested quantity. It can also compare package counts when stock is explicitly measured in packages
@@ -1122,7 +1122,7 @@ Use a disposable staging copy to prove each change type before automating real e
 | Upload exact same pair | No new versions/snapshots/jobs | `idempotent_replay=true` |
 | Upload fewer than half the previous identities | No change committed | HTTP 422 with `suspicious_row_drop` |
 
-Availability is stored as `Lagerbestand - Menge in Bestellung + Menge in Auftrag`.
+Availability is stored as `Lagerbestand + Menge in Bestellung - Menge in Auftrag`.
 Purchasing inquiries are not confirmed stock. The negative raw result is auditable; only the
 fulfillable amount is clamped to zero.
 

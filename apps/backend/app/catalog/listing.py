@@ -19,8 +19,8 @@ async def list_catalogue_articles(session: AsyncSession) -> list[CatalogueArticl
                    v.attributes, v.family_id,
                    i.unit, i.on_hand, CASE WHEN i.id IS NULL THEN NULL ELSE
                        GREATEST(0, COALESCE(i.on_hand, 0)
-                           - COALESCE(i.incoming_purchase_order, 0)
-                           + COALESCE(i.committed_order, 0)) END AS stock,
+                           + COALESCE(i.incoming_purchase_order, 0)
+                           - COALESCE(i.committed_order, 0)) END AS stock,
                    EXISTS (SELECT 1 FROM product_embeddings e
                            WHERE e.catalog_item_version_id = v.id) AS embedded
             FROM catalog_items c

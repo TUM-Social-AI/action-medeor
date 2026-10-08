@@ -39,7 +39,7 @@ case-insensitive `ja` activates a restriction. Blank and unexpected values defau
 unexpected nonempty values produce import warnings. Existing database versions lacking these flags
 continue to work as unblocked articles. Old-format uploads are rejected.
 
-Inventory refreshes for every article. Stock is `Lagerbestand - Menge in Bestellung + Menge in
+Inventory refreshes for every article. Stock is `Lagerbestand + Menge in Bestellung - Menge in
 Auftrag`, clamped to zero for sellable availability while retaining the raw negative result in
 article detail. Article numbers ending in `00` without `Nummer 2` are **Stammartikel**. Their
 availability cell shows that label instead of misleading zero stock. They remain visible and never
@@ -47,9 +47,10 @@ match, including articles imported under the previous `000` rule.
 
 Read-only local database audit on 5 October 2026: the imported checksum matched the original
 `Artikeldaten.csv`. All 2,773 articles' latest on-hand, purchase-order, and sales-order quantities
-matched that CSV exactly. With the corrected availability formula, 2,193 have zero sellable stock;
+matched that CSV exactly. With the availability formula used at that time, 2,193 had zero sellable stock;
 1,136 of those are Stammartikel, and 72 articles have negative raw availability. The stored source
-quantities showed no import discrepancies. This audit did not import the newer exports.
+quantities showed no import discrepancies. This audit did not import the newer exports. These
+availability counts predate the correction to add purchase orders and subtract sales orders.
 
 Restricted articles remain visible with **Suspended**, **Sales blocked**, and **Purchasing blocked**
 badges. The **Suspended** filter includes all three restrictions. Fully blocked and sales-blocked

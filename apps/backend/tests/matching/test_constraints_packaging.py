@@ -3,13 +3,13 @@ from decimal import Decimal
 import pytest
 
 from app.matching.constraints.engine import ConstraintEngine, load_default_policy
-from app.matching.contracts import AvailabilityStatus, QuantityValue, RuleOutcome
+from app.matching.contracts import AvailabilityStatus, QuantityValue, RuleOutcome, StockSnapshot
 from app.matching.packaging import (
     calculate_packaging,
     observed_availability,
     required_stock_quantity,
 )
-from tests.matching.factories import item, line
+from tests.matching.factories import NOW, item, line
 
 
 def test_mismatched_medical_size_requires_review_not_guessed_exclusion() -> None:
@@ -51,15 +51,28 @@ def test_observed_stock_is_unknown_when_stock_basis_is_missing() -> None:
     assert warning and "not confirmed" in warning
 
 
-def test_availability_uses_on_hand_minus_purchase_orders_plus_sales_orders() -> None:
-    candidate = item("410001001", "Foley catheter", on_hand=Decimal("10"))
+@pytest.mark.parametrize(
+    "on_hand,incoming,committed,raw,fulfillable,status",
+    [
+        (100, 20, 30, 90, 90, AvailabilityStatus.ON_HAND_SUFFICIENT),
+        (10, 20, 5, 25, 25, AvailabilityStatus.ON_HAND_PARTIAL),
+        (10, 5, 20, -5, 0, AvailabilityStatus.PROCUREMENT_INDICATED),
+        (10, 5, 15, 0, 0, AvailabilityStatus.PROCUREMENT_INDICATED),
+        (0, 60, 0, 60, 60, AvailabilityStatus.ON_HAND_SUFFICIENT),
+    ],
+)
+def test_availability_uses_on_hand_plus_purchase_orders_minus_sales_orders(
+    on_hand, incoming, committed, raw, fulfillable, status
+) -> None:
+    candidate = item("410001001", "Foley catheter", on_hand=Decimal(on_hand))
     assert candidate.stock is not None
     candidate = candidate.model_copy(
         update={
             "stock": candidate.stock.model_copy(
                 update={
-                    "incoming_purchase_order": Decimal("20"),
-                    "committed_order": Decimal("5"),
+                    "incoming_purchase_order": Decimal(incoming),
+                    "committed_order": Decimal(committed),
+                    "purchasing_inquiry": Decimal("1000"),
                 }
             )
         }
@@ -68,10 +81,21 @@ def test_availability_uses_on_hand_minus_purchase_orders_plus_sales_orders() -> 
 
     availability, warning = observed_availability(line().quantity, candidate, packaging)
 
-    assert candidate.stock.available_raw == Decimal("-5")
-    assert candidate.stock.fulfillable_quantity == Decimal("0")
-    assert availability is AvailabilityStatus.PROCUREMENT_INDICATED
+    assert candidate.stock.available_raw == Decimal(raw)
+    assert candidate.stock.fulfillable_quantity == Decimal(fulfillable)
+    assert availability is status
     assert warning is None
+
+
+def test_missing_order_quantities_default_to_zero_and_missing_on_hand_stays_unknown() -> None:
+    stock = StockSnapshot(on_hand=Decimal("10"), captured_at=NOW)
+    assert stock.available_raw == Decimal("10")
+    assert stock.fulfillable_quantity == Decimal("10")
+    unknown = StockSnapshot(
+        incoming_purchase_order=Decimal("20"), committed_order=Decimal("5"), captured_at=NOW
+    )
+    assert unknown.available_raw is None
+    assert unknown.fulfillable_quantity is None
 
 
 @pytest.mark.parametrize(

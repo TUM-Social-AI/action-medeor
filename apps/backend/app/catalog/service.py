@@ -52,11 +52,11 @@ class CatalogImportService:
                        v.descriptions, v.family_id, v.attributes,
                        i.on_hand, i.incoming_purchase_order, i.committed_order,
                        CASE WHEN i.id IS NULL THEN NULL
-                            ELSE i.on_hand - COALESCE(i.incoming_purchase_order, 0)
-                                 + COALESCE(i.committed_order, 0) END AS available_raw,
+                            ELSE i.on_hand + COALESCE(i.incoming_purchase_order, 0)
+                                 - COALESCE(i.committed_order, 0) END AS available_raw,
                        CASE WHEN i.id IS NULL THEN NULL
-                            ELSE GREATEST(0, i.on_hand - COALESCE(i.incoming_purchase_order, 0)
-                                 + COALESCE(i.committed_order, 0)) END AS fulfillable_quantity
+                            ELSE GREATEST(0, i.on_hand + COALESCE(i.incoming_purchase_order, 0)
+                                 - COALESCE(i.committed_order, 0)) END AS fulfillable_quantity
                 FROM catalog_items c
                 LEFT JOIN latest_version v ON TRUE
                 LEFT JOIN latest_inventory i ON TRUE
