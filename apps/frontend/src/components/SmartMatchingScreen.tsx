@@ -61,9 +61,9 @@ function OfferFollowUp({ candidate }: { candidate: MatchCandidateV1 }) {
 function ScoreBreakdown({ candidate }: { candidate: MatchCandidateV1 }) {
   const components = candidate.score_components;
   const raw = (key: string) => typeof components[key] === 'number' ? components[key].toFixed(3) : 'Not available';
-  return <div className="mb-3 space-y-1 text-xs text-gray-600">
-    <div>Lexical: {raw('lexical')}</div>
-    <div>Semantic: {raw('vector')}</div>
+  return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600">
+    <div className="whitespace-nowrap">Lexical: {raw('lexical')}</div>
+    <div className="whitespace-nowrap">Semantic: {raw('vector')}</div>
   </div>;
 }
 
@@ -91,21 +91,21 @@ function CandidateCard({
       : 'border-gray-200 hover:border-gray-300 hover:shadow-sm')}>
     <button type="button" onClick={onSelect} disabled={disabled} aria-label={'Select ' + name} aria-pressed={selected}
       className="flex w-full flex-1 flex-col p-4 pr-11 text-left disabled:cursor-wait">
-      <div className="mb-3 flex items-start justify-between gap-2">
+      {candidate.rank === 1 && !muted && !ingredientFallback ? <span className="absolute right-11 top-4 rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">BEST FIT</span> : null}
+      <div className={"mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 " + (candidate.rank === 1 && !muted && !ingredientFallback ? "pr-14" : "")}>
         <div className="flex items-center gap-2">
           <span className={'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ' + (selected ? 'border-[#1B4E8A] bg-[#1B4E8A]' : 'border-gray-300 bg-white')}>
             {selected && <span className="h-2 w-2 rounded-full bg-white" />}
           </span>
           <span className={"text-2xl font-extrabold leading-none " + (muted ? "text-gray-400" : "text-gray-900")}>{typeof rankingScore === 'number' ? formatRankingScore(rankingScore) : '—'}</span>
-          <span className="text-xs leading-tight text-gray-500">/100<br />Search similarity</span>
+          <span className="text-xs text-gray-500" title="Search similarity">/100</span>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {candidate.rank === 1 && !muted && !ingredientFallback ? <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">TOP RANKED</span> : null}
+        <ScoreBreakdown candidate={candidate} />
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           {offer && <OfferBadge candidate={candidate} />}
         </div>
       </div>
       {ingredientFallback && <p className="mb-2 text-xs font-semibold text-amber-700">Ingredient not confirmed - Manual review required</p>}
-      <ScoreBreakdown candidate={candidate} />
       <div title={name} className={"mb-2 h-[2.75em] shrink-0 line-clamp-2 break-words text-sm font-bold leading-snug " + (muted ? "text-gray-500" : "text-gray-900")}>{name}</div>
       {offer ? <div className="space-y-1.5 text-xs">
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">SUPPLIER</span><span className="font-medium text-gray-700">{candidate.supplier || 'Not specified'}</span></div>
@@ -134,10 +134,11 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
   const name = candidate.descriptions[0] || candidate.item_number || 'Supplier offer';
   const packSize = getCandidatePackSize(candidate);
   return <div className={"flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border-2 border-[#1B4E8A] px-4 py-3 " + (muted ? "bg-gray-100" : "bg-blue-50/40")}>
-    <div className="order-1 flex shrink-0 items-center gap-2">
+    <div className="order-1 flex flex-wrap items-center gap-2">
       <span className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-[#1B4E8A] bg-[#1B4E8A]"><span className="h-2 w-2 rounded-full bg-white" /></span>
       <span className="text-xl font-extrabold leading-none text-gray-900">{typeof score === 'number' ? formatRankingScore(score) : '—'}</span>
-      <span className="text-xs text-gray-500">/100</span>
+      <span className="text-xs text-gray-500" title="Search similarity">/100</span>
+      <ScoreBreakdown candidate={candidate} />
     </div>
     <div className="order-3 w-full min-w-0 sm:order-2 sm:w-auto sm:flex-1">
       <div className={"mb-1.5 flex items-start gap-2 text-sm font-bold " + (muted ? "text-gray-500" : "text-gray-900")}><span title={name} className="min-w-0 flex-1 line-clamp-2 break-words leading-snug">{name}</span>{offer && <span className="shrink-0"><OfferBadge candidate={candidate} /></span>}</div>
@@ -153,10 +154,7 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
         </>}
       </div>
     </div>
-    <div className="order-4 w-full">
-      {candidate.score_components.ingredient_fallback === 1 && <p className="mb-2 text-xs font-semibold text-amber-700">Ingredient not confirmed - Manual review required</p>}
-      <ScoreBreakdown candidate={candidate} />
-    </div>
+    {candidate.score_components.ingredient_fallback === 1 && <p className="order-4 w-full text-xs font-semibold text-amber-700">Ingredient not confirmed - Manual review required</p>}
     <div className="order-2 ml-auto flex items-center gap-2 sm:order-3">
       <button type="button" onClick={onInfo} aria-label={'Details for ' + name} className="rounded-full p-1.5 text-[#1B4E8A] hover:bg-blue-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Info size={17} /></button>
     </div>

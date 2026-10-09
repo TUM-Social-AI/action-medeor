@@ -485,7 +485,7 @@ as evidence only; standalone historical offers use lexical/vector scores just li
 ### Minimum semantic score
 
 New v7 runs filter catalog articles and historical offers by raw vector cosine score before
-selecting top-k. `MATCHING_MIN_SEMANTIC_SCORE` defaults to **0.60** (inclusive). Candidates
+selecting top-k. `MATCHING_MIN_SEMANTIC_SCORE` defaults to **0.50** (inclusive). Candidates
 without vector evidence are omitted while enabled, including exact-reference-only candidates.
 Set it to **0** to disable filtering and restore lexical-only fallback. Values must be finite
 and between 0 and 1. Restart the backend/worker after changing the setting. Zero qualifying
@@ -508,4 +508,4 @@ Combination medicines must have the same ingredient labels; structured active_in
 attributes take precedence. Labels are compared literally; brands and synonyms are not resolved.
 Dose/form wording locates ingredient boundaries but no new strength or form comparison is made.
 Pre-existing structured attribute checks retain their original policy. Weights remain 1:2 and
-semantic cutoff 0.60. Existing saved runs remain unchanged; test with a new request.
+semantic cutoff 0.50. Existing saved runs remain unchanged; test with a new request.

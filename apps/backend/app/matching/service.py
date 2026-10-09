@@ -68,7 +68,7 @@ class MatchingService:
         offer_search_repository: OfferSearchRepository | None = None,
         lexical_weight: float = 1.0,
         vector_weight: float = 2.0,
-        min_semantic_score: float = 0.60,
+        min_semantic_score: float = 0.50,
     ) -> None:
         if any(not isfinite(weight) or weight <= 0 for weight in (lexical_weight, vector_weight)):
             raise ValueError("Retrieval weights must be finite and positive")
