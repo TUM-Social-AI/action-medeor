@@ -483,10 +483,27 @@ as evidence only; standalone historical offers use lexical/vector scores just li
 ### Minimum semantic score
 
 New v7 runs filter catalog articles and historical offers by raw vector cosine score before
-selecting top-k. `MATCHING_MIN_SEMANTIC_SCORE` defaults to **0.65** (inclusive). Candidates
+selecting top-k. `MATCHING_MIN_SEMANTIC_SCORE` defaults to **0.60** (inclusive). Candidates
 without vector evidence are omitted while enabled, including exact-reference-only candidates.
 Set it to **0** to disable filtering and restore lexical-only fallback. Values must be finite
 and between 0 and 1. Restart the backend/worker after changing the setting. Zero qualifying
 candidates is a valid result; the UI does not fill unused slots. Existing saved runs and
 decisions are preserved; create a new request to evaluate the cutoff. This experimental
 threshold is not a substitute for ingredient, strength or dosage-form checks.
+
+### Medicine ingredient preference and fallback (v12)
+
+Catalog restrictions, other constraint exclusions and the configured semantic cutoff always
+apply. After those filters, medicine catalog articles and standalone historical offers with
+confirmed matching normalized ingredient labels take precedence: if any remain, only these
+are returned. If none remain, the pre-ingredient-check pool is returned (up to top-k) with
+`ingredient_fallback=1`, review status, and an explicit ingredient-not-confirmed label.
+Ingredient failures remain inspectable as review findings. Fallbacks cannot be automatically
+selected, even for an exact item-number reference. No empty result is filled with candidates
+that fail other exclusions or the semantic cutoff. Equipment behavior is unchanged.
+
+Combination medicines must have the same ingredient labels; structured active_ingredient
+attributes take precedence. Labels are compared literally; brands and synonyms are not resolved.
+Dose/form wording locates ingredient boundaries but no new strength or form comparison is made.
+Pre-existing structured attribute checks retain their original policy. Weights remain 1:2 and
+semantic cutoff 0.60. Existing saved runs remain unchanged; test with a new request.

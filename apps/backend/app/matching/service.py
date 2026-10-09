@@ -7,6 +7,7 @@ from math import isfinite
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from app.matching.constraints.engine import ConstraintEngine, MatchingPolicy
+from app.matching.constraints.medicine_specs import ingredient_review_results, medicine_checks
 from app.matching.contracts import (
     AvailabilityStatus,
     CandidateType,
@@ -18,6 +19,7 @@ from app.matching.contracts import (
     MatchRunResponseV1,
     MatchRunStatus,
     PackagingResult,
+    ProductDomain,
     RuleOutcome,
     ValidationStatus,
 )
@@ -46,7 +48,7 @@ from app.matching.retrieval.lexical import LexicalRetriever
 from app.matching.retrieval.vector import VectorRetriever
 from app.matching.validation import validate_inquiry
 
-ALGORITHM_VERSION = "allocura-matching-v7"
+ALGORITHM_VERSION = "allocura-matching-v12"
 
 
 class MatchingService:
@@ -62,7 +64,7 @@ class MatchingService:
         offer_search_repository: OfferSearchRepository | None = None,
         lexical_weight: float = 1.0,
         vector_weight: float = 2.0,
-        min_semantic_score: float = 0.65,
+        min_semantic_score: float = 0.60,
     ) -> None:
         if any(not isfinite(weight) or weight <= 0 for weight in (lexical_weight, vector_weight)):
             raise ValueError("Retrieval weights must be finite and positive")
@@ -241,7 +243,9 @@ class MatchingService:
                 if item is None:
                     continue
                 state = CandidateState(item=item, fused_score=fused_score, evidence=evidence)
-                state.constraints = self._constraints.evaluate(request.inquiry_line, item)
+                state.constraints = ingredient_review_results(
+                    self._constraints.evaluate(request.inquiry_line, item)
+                )
                 state.packaging = calculate_packaging(request.inquiry_line.quantity, item)
                 state.warnings.extend(state.packaging.warnings)
                 states.append(state)
@@ -308,6 +312,12 @@ class MatchingService:
             for offer, _ in standalone:
                 fused_score, evidence = fused_by_key[f"offer:{offer.record_id}"]
                 description = offer.offered_description or offer.raw_request_text
+                medicine_results = (
+                    ingredient_review_results(medicine_checks(request.inquiry_line, (description,)))
+                    if request.inquiry_line.domain is ProductDomain.MEDICINE else []
+                )
+                if any(result.outcome is RuleOutcome.EXCLUDE for result in medicine_results):
+                    continue
                 candidate_rows.append(
                     (
                         f"offer:{offer.record_id}",
@@ -346,6 +356,7 @@ class MatchingService:
                                 ),
                             },
                             constraints=(
+                                *medicine_results,
                                 ConstraintResult(
                                     code="supplier_offer_unverified",
                                     outcome=RuleOutcome.REVIEW,
@@ -370,6 +381,30 @@ class MatchingService:
                     if row[1].score_components.get("vector", float("-inf"))
                     >= self._min_semantic_score
                 ]
+            if request.inquiry_line.domain is ProductDomain.MEDICINE:
+                confirmed = [
+                    row for row in candidate_rows
+                    if any(check.code == "medicine_active_ingredient_match"
+                           and check.outcome is RuleOutcome.PASS
+                           for check in row[1].constraints)
+                ]
+                if confirmed:
+                    candidate_rows = confirmed
+                else:
+                    fallback_check = ConstraintResult(
+                        code="medicine_ingredient_fallback", outcome=RuleOutcome.REVIEW,
+                        message="Ingredient not confirmed—fallback suggestion. Manual review required.",
+                        attribute="active_ingredient",
+                    )
+                    candidate_rows = [
+                        (key, candidate.model_copy(update={
+                            "review_status": RuleOutcome.REVIEW,
+                            "constraints": (fallback_check, *candidate.constraints),
+                            "warnings": (*candidate.warnings, fallback_check.message),
+                            "score_components": {**candidate.score_components, "ingredient_fallback": 1.0},
+                        }))
+                        for key, candidate in candidate_rows
+                    ]
             scores = calculate_ranking_scores(
                 [
                     (

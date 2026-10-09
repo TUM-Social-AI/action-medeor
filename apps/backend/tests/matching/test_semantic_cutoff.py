@@ -50,7 +50,7 @@ def test_settings_reject_invalid_semantic_cutoffs(value):
         Settings(_env_file=None, matching_min_semantic_score=value)
 
 
-@pytest.mark.parametrize("score,count", [(0.64, 0), (0.65, 1)])
+@pytest.mark.parametrize("score,count", [(0.59, 0), (0.60, 1)])
 async def test_historical_offers_follow_same_cutoff(score, count):
     offer = historical_offer("unused").model_copy(update={"item_number": None})
     search = AsyncMock()

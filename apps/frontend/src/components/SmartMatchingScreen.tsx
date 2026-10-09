@@ -17,6 +17,7 @@ import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh
 import { WorkflowStepper } from './WorkflowStepper';
 import { SharePointOfferSource } from './SharePointOfferSource';
 import { CandidateAvailability } from './CandidateAvailability';
+import { CandidateChecks } from './CandidateChecks';
 
 type Props = { requestId: string; onContinue: () => Promise<void> };
 type CandidateDetails = { line: SavedMatchLine; candidate: MatchCandidateV1 } | null;
@@ -29,9 +30,6 @@ function selectionLabel(line: SavedMatchLine) {
   return line.status;
 }
 
-function checkLabel(outcome: string) {
-  return ({ pass: 'Confirmed', review: 'Needs review', warning: 'Warning', unknown: 'Unconfirmed', exclude: 'Excluded' } as Record<string, string>)[outcome] ?? outcome;
-}
 
 function OfferBadge({ candidate }: { candidate: MatchCandidateV1 }) {
   const status = getOfferStatus(candidate);
@@ -82,6 +80,7 @@ function CandidateCard({
   const status = getOfferStatus(candidate);
   const muted = offer && status.muted;
   const name = candidate.descriptions[0] || candidate.item_number || 'Supplier offer';
+  const ingredientFallback = candidate.score_components.ingredient_fallback === 1;
   const firstWarning = offer ? undefined : candidate.constraints.find(value => value.outcome !== 'pass')?.message;
   const rankingScore = candidate.score_components.search_similarity;
   const packSize = getCandidatePackSize(candidate);
@@ -101,10 +100,11 @@ function CandidateCard({
           <span className="text-xs leading-tight text-gray-500">/100<br />Search similarity</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {candidate.rank === 1 && !muted ? <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">TOP RANKED</span> : null}
+          {candidate.rank === 1 && !muted && !ingredientFallback ? <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">TOP RANKED</span> : null}
           {offer && <OfferBadge candidate={candidate} />}
         </div>
       </div>
+      {ingredientFallback && <p className="mb-2 text-xs font-semibold text-amber-700">Ingredient not confirmed - Manual review required</p>}
       <ScoreBreakdown candidate={candidate} />
       <div title={name} className={"mb-2 h-[2.75em] shrink-0 line-clamp-2 break-words text-sm font-bold leading-snug " + (muted ? "text-gray-500" : "text-gray-900")}>{name}</div>
       {offer ? <div className="space-y-1.5 text-xs">
@@ -115,7 +115,7 @@ function CandidateCard({
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">PACK SIZE</span><span className={packSize ? 'text-gray-700' : 'text-gray-400'} title={candidate.package?.package_label || candidate.packaging.basis || undefined}>{packSize || 'Not recorded'}</span></div>
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">AVAIL.</span><CandidateAvailability candidate={candidate} /></div>
       </div>}
-      {firstWarning && <p className="mt-3 line-clamp-2 text-xs leading-snug text-amber-700">{firstWarning}</p>}
+      {firstWarning && !ingredientFallback && <p className="mt-3 line-clamp-2 text-xs leading-snug text-amber-700">{firstWarning}</p>}
     </button>
     {offer ? <SharePointOfferSource provenance={candidate.provenance} candidateType={candidate.candidate_type} variant="footer" muted={muted} className="mt-auto" />
       : <SharePointOfferSource provenance={candidate.provenance} candidateType={candidate.candidate_type} className="mt-auto px-4 pb-4 pr-11" />}
@@ -153,7 +153,10 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
         </>}
       </div>
     </div>
-    <div className="order-4 w-full"><ScoreBreakdown candidate={candidate} /></div>
+    <div className="order-4 w-full">
+      {candidate.score_components.ingredient_fallback === 1 && <p className="mb-2 text-xs font-semibold text-amber-700">Ingredient not confirmed - Manual review required</p>}
+      <ScoreBreakdown candidate={candidate} />
+    </div>
     <div className="order-2 ml-auto flex items-center gap-2 sm:order-3">
       <button type="button" onClick={onInfo} aria-label={'Details for ' + name} className="rounded-full p-1.5 text-[#1B4E8A] hover:bg-blue-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Info size={17} /></button>
     </div>
@@ -420,8 +423,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
           {evidence.retriever} rank {evidence.rank}{typeof evidence.score === 'number' ? ' · score ' + evidence.score.toFixed(3) : ''}
           {typeof evidence.details.model_id === 'string' ? ' · ' + evidence.details.model_id : ''}
         </li>)}</ul> : <p className="text-sm text-gray-500 mb-5">No retrieval evidence saved.</p>}
-        {details.candidate.constraints.length > 0 && <><h3 className="text-sm font-semibold mb-2">Checks</h3><ul className="space-y-1 mb-5 text-sm">{details.candidate.constraints.map(value => <li key={value.code} className={value.outcome === 'pass' ? 'text-gray-600' : 'text-amber-700'}>{checkLabel(value.outcome)}: {value.message}</li>)}</ul></>}
-        {details.candidate.warnings.length > 0 && <><h3 className="text-sm font-semibold mb-2">Warnings</h3><ul className="space-y-1 text-sm text-amber-700">{details.candidate.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul></>}
+        <CandidateChecks candidate={details.candidate} />
       </div>
     </div>}
 
