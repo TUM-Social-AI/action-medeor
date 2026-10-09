@@ -274,9 +274,11 @@ with lexical weight 1 to compare equal, double, or triple semantic influence.
 Effective weights are saved in candidate score components. This applies to new v6 runs;
 existing runs keep their saved scores. Descriptions and embeddings are unchanged and
 lexical-only retrieval remains supported. The final
-ranking score is normalized to 0–100. Candidate keys break ties deterministically.
+ranking score is normalized to 0–100. On equal ranking scores, sufficient stock is preferred, then partial stock, then procurement
+needed, then unknown availability. Candidate keys break remaining ties deterministically.
 
-Review status, attribute agreement and stock remain visible but do not boost or penalize ranking.
+Review status and attribute agreement do not boost or penalize ranking. Stock breaks equal
+ranking scores only; it cannot move a weaker relevance score above a stronger one.
 Excluded ERP products are still removed. Exact and historical evidence remains inspectable but
 adds no ranking bonus. There is no reserved SharePoint slot: the best-scoring candidates fill
 `top_k`, regardless of source.

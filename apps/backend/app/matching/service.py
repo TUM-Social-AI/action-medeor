@@ -39,7 +39,11 @@ from app.matching.ports import (
     VectorRepository,
 )
 from app.matching.ranking.features import description_similarity, search_similarity_components
-from app.matching.ranking.ranker import calculate_ranking_scores, rank_candidates
+from app.matching.ranking.ranker import (
+    availability_tie_break,
+    calculate_ranking_scores,
+    rank_candidates,
+)
 from app.matching.representation import represent_inquiry
 from app.matching.retrieval.exact import ExactRetriever
 from app.matching.retrieval.fusion import reciprocal_rank_fusion
@@ -48,7 +52,7 @@ from app.matching.retrieval.lexical import LexicalRetriever
 from app.matching.retrieval.vector import VectorRetriever
 from app.matching.validation import validate_inquiry
 
-ALGORITHM_VERSION = "allocura-matching-v12"
+ALGORITHM_VERSION = "allocura-matching-v13"
 
 
 class MatchingService:
@@ -416,7 +420,11 @@ class MatchingService:
                     for key, candidate in candidate_rows
                 ]
             )
-            candidate_rows.sort(key=lambda row: (-scores[row[0]], row[0]))
+            candidate_rows.sort(key=lambda row: (
+                -scores[row[0]],
+                availability_tie_break(row[1].availability_status),
+                row[0],
+            ))
             visible_rows = candidate_rows[: request.top_k]
             candidates = tuple(
                 candidate.model_copy(

@@ -656,3 +656,26 @@ def test_invalid_retrieval_weights_are_rejected(weight):
                 run_repository=InMemoryMatchRunRepository(), policy=load_default_policy(),
                 **{f"{channel}_weight": weight},
             )
+
+
+@pytest.mark.parametrize('top_k', [1, 10])
+async def test_equal_relevance_prefers_stock_covering_request_before_top_k(top_k):
+    products = [
+        item('a-partial', 'Foley urinary catheter sterile CH18', on_hand=Decimal('3000')),
+        item('z-sufficient', 'Foley urinary catheter sterile CH18', on_hand=Decimal('7600')),
+        item('b-empty', 'Foley urinary catheter sterile CH18', on_hand=Decimal('0')),
+        item('c-unknown', 'Foley urinary catheter sterile CH18'),
+    ]
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository(products),
+        history_repository=InMemoryHistoryRepository(),
+        run_repository=InMemoryMatchRunRepository(), policy=load_default_policy(),
+        min_semantic_score=0,
+    )
+    inquiry = line(description='Foley urinary catheter sterile CH18')
+    inquiry = inquiry.model_copy(update={'quantity': inquiry.quantity.model_copy(update={'value': Decimal('5000')})})
+    result = await service.match(MatchRequestV1(inquiry_line=inquiry, top_k=top_k))
+    assert [candidate.item_number for candidate in result.candidates] == [
+        'z-sufficient', 'a-partial', 'b-empty', 'c-unknown',
+    ][:top_k]
+    assert len({candidate.score_components['ranking_score'] for candidate in result.candidates}) == 1
