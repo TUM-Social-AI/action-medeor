@@ -39,6 +39,8 @@ async def test_saved_request_matches_and_reopens(monkeypatch, manual_addition) -
     if not os.getenv("MATCHING_TEST_DATABASE_URL"):
         pytest.skip("MATCHING_TEST_DATABASE_URL is not configured")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "")
+    # This workflow fixture deliberately uses lexical retrieval without embeddings.
+    monkeypatch.setenv("MATCHING_MIN_SEMANTIC_SCORE", "0")
     get_settings.cache_clear()
     suffix = uuid4().hex[:9]
     first_number, second_number = f"4{suffix}1", f"4{suffix}2"
