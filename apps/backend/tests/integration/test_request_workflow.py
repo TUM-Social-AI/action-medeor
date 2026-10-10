@@ -262,7 +262,10 @@ async def test_saved_request_matches_and_reopens(monkeypatch, manual_addition) -
                 scores = [candidate["score_components"]["ranking_score"] for candidate in line["candidates"]]
                 assert scores == sorted(scores, reverse=True)
                 assert len(scores) == len(set(scores))
-                assert scores[0] == 100.0
+                assert scores == [
+                    candidate["score_components"]["search_similarity"]
+                    for candidate in line["candidates"]
+                ]
                 assert all(0.0 <= score <= 100.0 for score in scores)
             assert len(first_line["candidates"]) > 1
             # Existing saved runs may contain the old unbounded score. Reopening

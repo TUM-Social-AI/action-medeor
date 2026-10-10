@@ -478,8 +478,11 @@ and vector scores multiplied by 100. It does not rescale against the best candid
 cosine scores contribute zero; raw channel scores remain visible. Missing channels are omitted
 from the average and shown as unavailable. Legacy runs use saved weights, or equal weights
 when no weights were recorded. This is a search indicator, not calibrated match confidence.
-Weighted RRF still determines order; the internal relative `ranking_score` remains for
-backward compatibility and is not displayed. Linked historical request text overlap is shown
+From v14, this same score determines final order, with availability breaking ties.
+`ranking_score` equals `search_similarity`; RRF remains retrieval evidence only. Lexical
+scores are computed for every retrieved catalog item and standalone offer, including zero
+overlap and candidates outside the lexical shortlist. Missing semantic evidence is explicitly
+labeled lexical-only in the UI. Older saved runs retain their original scores and order. Linked historical request text overlap is shown
 as evidence only; standalone historical offers use lexical/vector scores just like catalog items.
 
 ### Minimum semantic score

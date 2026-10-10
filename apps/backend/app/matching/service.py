@@ -41,18 +41,17 @@ from app.matching.ports import (
 from app.matching.ranking.features import description_similarity, search_similarity_components
 from app.matching.ranking.ranker import (
     availability_tie_break,
-    calculate_ranking_scores,
     rank_candidates,
 )
-from app.matching.representation import represent_inquiry
+from app.matching.representation import represent_inquiry, represent_inventory_item, represent_offer
 from app.matching.retrieval.exact import ExactRetriever
 from app.matching.retrieval.fusion import reciprocal_rank_fusion
 from app.matching.retrieval.history import HistoryRetriever
-from app.matching.retrieval.lexical import LexicalRetriever
+from app.matching.retrieval.lexical import LexicalRetriever, lexical_similarity
 from app.matching.retrieval.vector import VectorRetriever
 from app.matching.validation import validate_inquiry
 
-ALGORITHM_VERSION = "allocura-matching-v13"
+ALGORITHM_VERSION = "allocura-matching-v14"
 
 
 class MatchingService:
@@ -377,6 +376,20 @@ class MatchingService:
                     )
                 )
 
+            # Score the complete retrieved pool, independently of lexical shortlist membership.
+            standalone_by_key = {f"offer:{offer.record_id}": offer for offer, _ in standalone}
+            candidate_rows = [
+                (key, candidate.model_copy(update={"score_components": {
+                    **candidate.score_components,
+                    "lexical": lexical_similarity(
+                        query,
+                        represent_offer(standalone_by_key[key]) if key in standalone_by_key
+                        else represent_inventory_item(item_by_number[key]),
+                    ),
+                }}))
+                for key, candidate in candidate_rows
+            ]
+
             # Filter both catalog and historical offers before choosing top-k.
             # Missing vector evidence cannot establish the configured minimum.
             if self._min_semantic_score > 0:
@@ -409,17 +422,10 @@ class MatchingService:
                         }))
                         for key, candidate in candidate_rows
                     ]
-            scores = calculate_ranking_scores(
-                [
-                    (
-                        key,
-                        candidate.review_status,
-                        candidate.availability_status,
-                        candidate.score_components,
-                    )
-                    for key, candidate in candidate_rows
-                ]
-            )
+            scores = {
+                key: search_similarity_components(candidate.score_components).get("search_similarity", 0.0)
+                for key, candidate in candidate_rows
+            }
             candidate_rows.sort(key=lambda row: (
                 -scores[row[0]],
                 availability_tie_break(row[1].availability_status),

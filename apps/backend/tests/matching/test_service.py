@@ -602,8 +602,8 @@ async def test_erp_restrictions_cannot_fill_retrieval_slots():
     }
 
 
-@pytest.mark.parametrize("vector_weight,expected", [(1.0, "a-lexical"), (2.0, "b-semantic"), (3.0, "b-semantic")])
-async def test_configurable_weight_prioritizes_semantic_rank(vector_weight, expected):
+@pytest.mark.parametrize("vector_weight,expected", [(0.1, "a-lexical"), (1.0, "b-semantic"), (2.0, "b-semantic")])
+async def test_configurable_weight_orders_by_displayed_similarity(vector_weight, expected):
     products = [
         item("a-lexical", "Surgical gloves 100 pieces"),
         item("b-semantic", "Surgical examination handwear 50 pieces"),
@@ -634,6 +634,7 @@ async def test_configurable_weight_prioritizes_semantic_rank(vector_weight, expe
     )
     for candidate in result.candidates:
         components = candidate.score_components
+        assert components["ranking_score"] == components["search_similarity"]
         assert components["search_similarity"] == pytest.approx(
             100 * (components["lexical"] + vector_weight * components["vector"])
             / (1 + vector_weight)
@@ -679,3 +680,31 @@ async def test_equal_relevance_prefers_stock_covering_request_before_top_k(top_k
         'z-sufficient', 'a-partial', 'b-empty', 'c-unknown',
     ][:top_k]
     assert len({candidate.score_components['ranking_score'] for candidate in result.candidates}) == 1
+
+
+@pytest.mark.parametrize("description", ["Surgical examination handwear", "Absaugpumpe"])
+async def test_vector_only_retrieval_gets_lexical_score_before_ranking(description):
+    products = [item("a", "Surgical gloves"), item("b", description)]
+    products = [product.model_copy(update={"attributes": {}, "manufacturer": None}) for product in products]
+    vectors = InMemoryVectorRepository()
+    for product, embedding in zip(products, [(0.5, 0.5), (1.0, 0.0)], strict=True):
+        vectors.add(item_number=product.item_number, model_id="test-model",
+                    domain=product.domain, embedding=embedding)
+    service = MatchingService(
+        min_semantic_score=0,
+        catalog_repository=InMemoryCatalogRepository(products),
+        history_repository=InMemoryHistoryRepository(),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(), vector_repository=vectors,
+    )
+    result = await service.match(MatchRequestV1(
+        inquiry_line=line(description="Surgical gloves").model_copy(update={"attributes": {}}), retrieval_limit=1,
+        query_embedding=(1.0, 0.0), embedding_model_id="test-model",
+    ))
+    candidate = next(candidate for candidate in result.candidates if candidate.item_number == "b")
+    assert not any(hit.retriever == "lexical" for hit in candidate.retrieval_evidence)
+    assert candidate.score_components["lexical"] >= 0
+    if description == "Absaugpumpe":
+        assert candidate.score_components["lexical"] == 0
+    scores = [candidate.score_components["search_similarity"] for candidate in result.candidates]
+    assert scores == sorted(scores, reverse=True)

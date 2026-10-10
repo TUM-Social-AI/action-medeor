@@ -64,6 +64,7 @@ function ScoreBreakdown({ candidate }: { candidate: MatchCandidateV1 }) {
   return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600">
     <div className="whitespace-nowrap">Lexical: {raw('lexical')}</div>
     <div className="whitespace-nowrap">Semantic: {raw('vector')}</div>
+    {typeof components.vector !== 'number' && <div className="whitespace-nowrap font-medium">Lexical only</div>}
   </div>;
 }
 
@@ -414,7 +415,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
           <div><dt className="text-gray-500">Attribute agreement</dt><dd>{typeof details.candidate.score_components.attribute_match_ratio === 'number' ? Math.round(details.candidate.score_components.attribute_match_ratio * 100) + '%' : 'No comparable attributes'}</dd></div>
           <div><dt className="text-gray-500">Fused retrieval</dt><dd>{details.candidate.score_components.rrf?.toFixed(4) ?? '—'}</dd></div>
         </dl>
-        <p className="text-xs text-gray-500 mb-3">Search similarity is the weighted average of available lexical and semantic scores, on a 0–100 scale. Missing channels are omitted; negative semantic scores contribute zero. It is not a confidence percentage or a compatibility guarantee. Candidate order uses weighted retrieval ranks, so similarity scores may not decrease in order. Checks cover configured attributes only.</p>
+        <p className="text-xs text-gray-500 mb-3">Search similarity is the weighted average of available lexical and semantic scores, on a 0–100 scale. Missing channels are omitted; negative semantic scores contribute zero. It is not a confidence percentage or a compatibility guarantee. New matching runs are ordered by this score, with availability breaking ties. Older saved runs retain their original order. Checks cover configured attributes only.</p>
         <p className="text-xs text-gray-500 mb-3">Name similarity: {typeof details.candidate.score_components.name_similarity === 'number' ? Math.round(details.candidate.score_components.name_similarity * 100) + '/100' : 'unavailable'}</p>
         <h3 className="text-sm font-semibold mb-2">Retrieval evidence</h3>
         {details.candidate.retrieval_evidence.length ? <ul className="space-y-1 mb-5 text-sm text-gray-700">{details.candidate.retrieval_evidence.map((evidence, index) => <li key={index} className="rounded-lg bg-gray-50 p-2">
