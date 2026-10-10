@@ -642,17 +642,17 @@ serialized so two imports cannot overlap.
 - Business Central master rows with a `00` suffix and no parent article are retained but are not
   offerable and are not embedded. Placeholder rows without a medicine/equipment category are handled
   the same way.
-- Available quantity is calculated as `Lagerbestand - Menge in Bestellung + Menge in Auftrag`
-  (`on_hand - incoming_purchase_order + committed_order`).
+- Available quantity is calculated as `Lagerbestand + Menge in Bestellung - Menge in Auftrag`
+  (`on_hand + incoming_purchase_order - committed_order`).
   The raw result is preserved even when negative; the fulfillable amount used operationally is
   `max(0, raw result)`. Purchasing inquiries are preserved but not counted as confirmed incoming
   stock.
 
 The current `(2)` exports validate as 3,576 articles and 3,816 translations. Of these, 2,141 are
 classified non-master variants before applying ERP restrictions, and 1,430 are master rows.
-Seventy-seven rows have a negative calculated raw
-availability, which is why the value is clamped only at the point where a promiseable quantity is
-needed.
+Under the previous formula, seventy-seven rows had negative calculated raw availability. Stock
+counts must be checked again with the corrected formula. Negative raw availability is clamped only
+at the point where a promiseable quantity is needed.
 
 ### Why a text hash exists
 

@@ -201,8 +201,8 @@ async def test_catalog_versions_missing_state_and_offer_archive() -> None:
             assert second.missing_items == 1
             view = await service.get_item(item_one)
             assert view is not None
-            assert view.available_raw == "22"
-            assert view.fulfillable_quantity == "22"
+            assert view.available_raw == "-8"
+            assert view.fulfillable_quantity == "0"
 
         async with sessions() as session:
             quantity_only = await CatalogImportService(session).import_files(

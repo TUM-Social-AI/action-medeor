@@ -83,6 +83,30 @@ async def upload(session, rows, translations=TRANSLATIONS):
     )
 
 
+@pytest.mark.parametrize(
+    "on_hand,incoming,committed,raw,fulfillable",
+    [(100, 20, 30, 90, 90), (10, 5, 20, -5, 0), (10, 5, 15, 0, 0), (0, 60, 0, 60, 60)],
+)
+async def test_stock_computation_agrees_across_catalogue_detail_and_matching(
+    session, on_hand, incoming, committed, raw, fulfillable
+):
+    await upload(session, [
+        f"410008101;410008100;Foley catheter;;STÜCK;404;nein;"
+        f"{on_hand};{incoming};{committed};2;nein;nein;nein"
+    ])
+    detail = await CatalogImportService(session).get_item("410008101")
+    assert detail.available_raw == str(raw)
+    assert detail.fulfillable_quantity == str(fulfillable)
+    article = next(a for a in await list_catalogue_articles(session) if a.reference == "410008101")
+    assert article.stock == str(fulfillable)
+    assert article.on_hand == str(on_hand)
+    candidate = (await PostgresCatalogRepository(session).list_items(
+        domain=ProductDomain.EQUIPMENT
+    ))[0]
+    assert candidate.stock.available_raw == raw
+    assert candidate.stock.fulfillable_quantity == fulfillable
+
+
 @pytest.mark.parametrize("pinned", [True, False])
 async def test_legacy_stock_display_uses_historical_inventory_without_rewriting_run(session, pinned):
     description = "Fixierpflaster 1,25 cm x 9,1 m Kunstseide, 24 Rollen"
@@ -101,7 +125,7 @@ async def test_legacy_stock_display_uses_historical_inventory_without_rewriting_
     result = await service.match(MatchRequestV1(
         inquiry_line=inquiry, catalog_snapshot_id=str(first.catalog_snapshot_id) if pinned else None,
     ))
-    assert result.candidates[0].available_quantity == 50
+    assert result.candidates[0].available_quantity == 70
     legacy = result.model_dump(mode="json")
     for candidate in legacy["candidates"]:
         for field in ("available_quantity", "stock_unit", "required_stock_quantity", "package"):
@@ -116,7 +140,7 @@ async def test_legacy_stock_display_uses_historical_inventory_without_rewriting_
                           {"later": datetime.now(UTC), "id": newer.import_id})
     restored = await runs.get_run(result.match_run_id)
     candidate = restored.candidates[0]
-    assert candidate.available_quantity == 50
+    assert candidate.available_quantity == 70
     assert candidate.stock_unit == "PAKET"
     assert candidate.required_stock_quantity == 50
     assert candidate.package.units_per_package == 24
@@ -153,7 +177,7 @@ async def test_erp_description_conversions_use_pinned_versions_and_legacy_fallba
     requested = QuantityValue(value=Decimal("1200"), unit="rolls")
     inquiry = line().model_copy(update={"quantity": requested})
     packaging = calculate_packaging(requested, old)
-    assert old.stock.fulfillable_quantity == 50
+    assert old.stock.fulfillable_quantity == 70
     assert old.package.units_per_package == 24
     assert "24 rolls per PAKET" in packaging.basis
     assert not packaging.warnings
@@ -163,7 +187,7 @@ async def test_erp_description_conversions_use_pinned_versions_and_legacy_fallba
     )
     assert erp_exclusion(inquiry, old) is None
     assert erp_exclusion(inquiry.model_copy(update={
-        "quantity": requested.model_copy(update={"value": Decimal("1201")})
+        "quantity": requested.model_copy(update={"value": Decimal("1681")})
     }), old) is not None
 
     status_only = await upload(session, [row.removesuffix(";ja") + ";nein"])
@@ -258,7 +282,7 @@ async def test_inventory_flags_text_and_snapshot_updates_reuse_vectors(session, 
     assert first.embedding_jobs_created == 1
     assert await embeddings.process_pending(provider) == {"completed": 1, "failed": 0}
     first_item = await CatalogImportService(session).get_item("410008101")
-    assert first_item.available_raw == "8"
+    assert first_item.available_raw == "12"
 
     stock_row = first_row.replace(";10;4;2;", ";20;4;2;")
     stock = await upload(session, [stock_row, master])
@@ -274,7 +298,7 @@ async def test_inventory_flags_text_and_snapshot_updates_reuse_vectors(session, 
     assert len(provider.calls) == 1
     current = await CatalogImportService(session).get_item("410008101")
     assert current.blocked is True
-    assert current.available_raw == "18"
+    assert current.available_raw == "22"
     catalogue = await list_catalogue_articles(session)
     assert next(a for a in catalogue if a.reference == "410008101").blocked is True
     assert next(a for a in catalogue if a.reference == "410008100").master_item is True
@@ -284,7 +308,7 @@ async def test_inventory_flags_text_and_snapshot_updates_reuse_vectors(session, 
         domain=ProductDomain.EQUIPMENT, snapshot_id=str(first.catalog_snapshot_id)
     )
     assert next(a for a in old if a.item_number == "410008101").blocked is False
-    assert next(a for a in old if a.item_number == "410008101").stock.available_raw == 8
+    assert next(a for a in old if a.item_number == "410008101").stock.available_raw == 12
     hits = await PgVectorRepository(session).search(
         embedding=[1, 0, 0],
         model_id=provider.model_id,

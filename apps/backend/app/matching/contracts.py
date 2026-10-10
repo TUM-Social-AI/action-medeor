@@ -133,13 +133,13 @@ class StockSnapshot(ContractModel):
     @computed_field
     @property
     def available_raw(self) -> Decimal | None:
-        """Lagerbestand - Menge in Bestellung + Menge in Auftrag; retain negatives."""
+        """Lagerbestand + Menge in Bestellung - Menge in Auftrag; retain negatives."""
         if self.on_hand is None:
             return None
         return (
             self.on_hand
-            - (self.incoming_purchase_order or Decimal(0))
-            + (self.committed_order or Decimal(0))
+            + (self.incoming_purchase_order or Decimal(0))
+            - (self.committed_order or Decimal(0))
         )
 
     @computed_field
