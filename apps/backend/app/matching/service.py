@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import isfinite
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from app.matching.constraints.engine import ConstraintEngine, MatchingPolicy
+from app.matching.constraints.medicine_specs import ingredient_review_results, medicine_checks
 from app.matching.contracts import (
     AvailabilityStatus,
     CandidateType,
@@ -17,6 +19,7 @@ from app.matching.contracts import (
     MatchRunResponseV1,
     MatchRunStatus,
     PackagingResult,
+    ProductDomain,
     RuleOutcome,
     ValidationStatus,
 )
@@ -35,17 +38,20 @@ from app.matching.ports import (
     OfferSearchRepository,
     VectorRepository,
 )
-from app.matching.ranking.features import description_similarity
-from app.matching.ranking.ranker import calculate_ranking_scores, rank_candidates
-from app.matching.representation import represent_inquiry
+from app.matching.ranking.features import description_similarity, search_similarity_components
+from app.matching.ranking.ranker import (
+    availability_tie_break,
+    rank_candidates,
+)
+from app.matching.representation import represent_inquiry, represent_inventory_item, represent_offer
 from app.matching.retrieval.exact import ExactRetriever
 from app.matching.retrieval.fusion import reciprocal_rank_fusion
 from app.matching.retrieval.history import HistoryRetriever
-from app.matching.retrieval.lexical import LexicalRetriever
+from app.matching.retrieval.lexical import LexicalRetriever, lexical_similarity
 from app.matching.retrieval.vector import VectorRetriever
 from app.matching.validation import validate_inquiry
 
-ALGORITHM_VERSION = "allocura-matching-v5"
+ALGORITHM_VERSION = "allocura-matching-v14"
 
 
 class MatchingService:
@@ -59,7 +65,16 @@ class MatchingService:
         vector_repository: VectorRepository | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         offer_search_repository: OfferSearchRepository | None = None,
+        lexical_weight: float = 1.0,
+        vector_weight: float = 2.0,
+        min_semantic_score: float = 0.50,
     ) -> None:
+        if any(not isfinite(weight) or weight <= 0 for weight in (lexical_weight, vector_weight)):
+            raise ValueError("Retrieval weights must be finite and positive")
+        if not isfinite(min_semantic_score) or not 0 <= min_semantic_score <= 1:
+            raise ValueError("Semantic cutoff must be finite and between 0 and 1")
+        self._min_semantic_score = min_semantic_score
+        self._retrieval_weights = {"lexical": lexical_weight, "vector": vector_weight}
         self._catalog = catalog_repository
         self._history = history_repository
         self._runs = run_repository
@@ -215,9 +230,9 @@ class MatchingService:
                 (
                     key,
                     sum(
-                        1 / (60 + hit.rank)
+                        self._retrieval_weights[hit.retriever] / (60 + hit.rank)
                         for hit in hits
-                        if hit.retriever in {"lexical", "vector"}
+                        if hit.retriever in self._retrieval_weights
                     ),
                     hits,
                 )
@@ -231,7 +246,9 @@ class MatchingService:
                 if item is None:
                     continue
                 state = CandidateState(item=item, fused_score=fused_score, evidence=evidence)
-                state.constraints = self._constraints.evaluate(request.inquiry_line, item)
+                state.constraints = ingredient_review_results(
+                    self._constraints.evaluate(request.inquiry_line, item)
+                )
                 state.packaging = calculate_packaging(request.inquiry_line.quantity, item)
                 state.warnings.extend(state.packaging.warnings)
                 states.append(state)
@@ -271,6 +288,8 @@ class MatchingService:
                             retrieval_evidence=tuple(hit.as_evidence() for hit in state.evidence),
                             score_components={
                                 **state.score_components,
+                                **{f"{channel}_weight": weight
+                                   for channel, weight in self._retrieval_weights.items()},
                                 "name_similarity": description_similarity(
                                     request.inquiry_line.raw_description, state.item.descriptions
                                 ),
@@ -296,6 +315,12 @@ class MatchingService:
             for offer, _ in standalone:
                 fused_score, evidence = fused_by_key[f"offer:{offer.record_id}"]
                 description = offer.offered_description or offer.raw_request_text
+                medicine_results = (
+                    ingredient_review_results(medicine_checks(request.inquiry_line, (description,)))
+                    if request.inquiry_line.domain is ProductDomain.MEDICINE else []
+                )
+                if any(result.outcome is RuleOutcome.EXCLUDE for result in medicine_results):
+                    continue
                 candidate_rows.append(
                     (
                         f"offer:{offer.record_id}",
@@ -322,6 +347,8 @@ class MatchingService:
                             retrieval_evidence=tuple(hit.as_evidence() for hit in evidence),
                             score_components={
                                 "rrf": fused_score,
+                                **{f"{channel}_weight": weight
+                                   for channel, weight in self._retrieval_weights.items()},
                                 **{
                                     hit.retriever: hit.score
                                     for hit in evidence
@@ -332,6 +359,7 @@ class MatchingService:
                                 ),
                             },
                             constraints=(
+                                *medicine_results,
                                 ConstraintResult(
                                     code="supplier_offer_unverified",
                                     outcome=RuleOutcome.REVIEW,
@@ -348,18 +376,61 @@ class MatchingService:
                     )
                 )
 
-            scores = calculate_ranking_scores(
-                [
-                    (
-                        key,
-                        candidate.review_status,
-                        candidate.availability_status,
-                        candidate.score_components,
-                    )
-                    for key, candidate in candidate_rows
+            # Score the complete retrieved pool, independently of lexical shortlist membership.
+            standalone_by_key = {f"offer:{offer.record_id}": offer for offer, _ in standalone}
+            candidate_rows = [
+                (key, candidate.model_copy(update={"score_components": {
+                    **candidate.score_components,
+                    "lexical": lexical_similarity(
+                        query,
+                        represent_offer(standalone_by_key[key]) if key in standalone_by_key
+                        else represent_inventory_item(item_by_number[key]),
+                    ),
+                }}))
+                for key, candidate in candidate_rows
+            ]
+
+            # Filter both catalog and historical offers before choosing top-k.
+            # Missing vector evidence cannot establish the configured minimum.
+            if self._min_semantic_score > 0:
+                candidate_rows = [
+                    row for row in candidate_rows
+                    if row[1].score_components.get("vector", float("-inf"))
+                    >= self._min_semantic_score
                 ]
-            )
-            candidate_rows.sort(key=lambda row: (-scores[row[0]], row[0]))
+            if request.inquiry_line.domain is ProductDomain.MEDICINE:
+                confirmed = [
+                    row for row in candidate_rows
+                    if any(check.code == "medicine_active_ingredient_match"
+                           and check.outcome is RuleOutcome.PASS
+                           for check in row[1].constraints)
+                ]
+                if confirmed:
+                    candidate_rows = confirmed
+                else:
+                    fallback_check = ConstraintResult(
+                        code="medicine_ingredient_fallback", outcome=RuleOutcome.REVIEW,
+                        message="Ingredient not confirmed—fallback suggestion. Manual review required.",
+                        attribute="active_ingredient",
+                    )
+                    candidate_rows = [
+                        (key, candidate.model_copy(update={
+                            "review_status": RuleOutcome.REVIEW,
+                            "constraints": (fallback_check, *candidate.constraints),
+                            "warnings": (*candidate.warnings, fallback_check.message),
+                            "score_components": {**candidate.score_components, "ingredient_fallback": 1.0},
+                        }))
+                        for key, candidate in candidate_rows
+                    ]
+            scores = {
+                key: search_similarity_components(candidate.score_components).get("search_similarity", 0.0)
+                for key, candidate in candidate_rows
+            }
+            candidate_rows.sort(key=lambda row: (
+                -scores[row[0]],
+                availability_tie_break(row[1].availability_status),
+                row[0],
+            ))
             visible_rows = candidate_rows[: request.top_k]
             candidates = tuple(
                 candidate.model_copy(
@@ -367,6 +438,8 @@ class MatchingService:
                         "rank": rank,
                         "score_components": {
                             **candidate.score_components,
+                            **search_similarity_components(candidate.score_components),
+                            "min_semantic_score": self._min_semantic_score,
                             "ranking_score": scores[key],
                             "ranking_score_normalized": 1.0,
                         },
@@ -395,7 +468,18 @@ class MatchingService:
             raise
 
     async def get_run(self, run_id: UUID) -> MatchRunResponseV1 | None:
-        return await self._runs.get_run(run_id)
+        run = await self._runs.get_run(run_id)
+        if run is None:
+            return None
+        return run.model_copy(update={
+            "candidates": tuple(
+                candidate.model_copy(update={"score_components": {
+                    **candidate.score_components,
+                    **search_similarity_components(candidate.score_components),
+                }})
+                for candidate in run.candidates
+            ),
+        })
 
     async def save_decision(self, decision: MatchDecisionRequestV1) -> MatchDecisionResponseV1:
         return await self._runs.save_decision(decision)

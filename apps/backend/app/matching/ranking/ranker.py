@@ -24,6 +24,17 @@ def calculate_ranking_scores(rows: Sequence[RankingInput]) -> dict[str, float]:
     }
 
 
+def availability_tie_break(status: AvailabilityStatus) -> int:
+    """Prefer fulfillment coverage only when retrieval relevance is equal."""
+    return {
+        AvailabilityStatus.ON_HAND_SUFFICIENT: 0,
+        AvailabilityStatus.ON_HAND_PARTIAL: 1,
+        AvailabilityStatus.PROCUREMENT_INDICATED: 2,
+        AvailabilityStatus.UNKNOWN: 3,
+        AvailabilityStatus.NOT_ALLOWED: 4,
+    }[status]
+
+
 def rank_candidates(
     candidates: list[CandidateState],
     availability: dict[str, AvailabilityStatus],
@@ -49,4 +60,8 @@ def rank_candidates(
         candidate.score_components["ranking_score"] = scores[candidate.item.item_number]
         candidate.score_components["ranking_score_normalized"] = 1.0
 
-    return sorted(eligible, key=lambda candidate: -candidate.score_components["ranking_score"])
+    return sorted(eligible, key=lambda candidate: (
+        -candidate.score_components["ranking_score"],
+        availability_tie_break(availability[candidate.item.item_number]),
+        candidate.item.item_number,
+    ))

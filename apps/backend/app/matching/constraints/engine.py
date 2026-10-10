@@ -7,11 +7,13 @@ from importlib.resources import files
 
 from pydantic import BaseModel, ConfigDict
 
+from app.matching.constraints.medicine_specs import medicine_checks
 from app.matching.contracts import (
     AttributeValue,
     ConstraintResult,
     InquiryLineV1,
     InventoryItemV1,
+    ProductDomain,
     RuleOutcome,
 )
 from app.matching.eligibility import erp_exclusion
@@ -94,7 +96,12 @@ class ConstraintEngine:
                 )
             )
 
+        if line.domain is ProductDomain.MEDICINE:
+            results.extend(medicine_checks(line, item.descriptions, item.attributes))
+
         for name, requested in sorted(line.attributes.items()):
+            if line.domain is ProductDomain.MEDICINE and name == "active_ingredient":
+                continue
             rule = self.policy.attribute_rules.get(name)
             if rule is None:
                 continue

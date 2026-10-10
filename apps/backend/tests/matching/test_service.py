@@ -32,6 +32,7 @@ async def test_package_metadata_is_preserved_independently_of_conversion(request
         "package": product.package.model_copy(update={"stock_unit": "PAKET"}),
     })
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([product]),
         history_repository=InMemoryHistoryRepository(),
         run_repository=InMemoryMatchRunRepository(), policy=load_default_policy(),
@@ -66,6 +67,7 @@ async def test_known_stock_is_preserved_when_request_conversion_is_unknown(reque
     })
     runs = InMemoryMatchRunRepository()
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([candidate]),
         history_repository=InMemoryHistoryRepository([]), run_repository=runs,
         policy=load_default_policy(),
@@ -121,6 +123,7 @@ async def test_complete_hybrid_match_is_reproducible_and_excludes_inactive_item(
     )
     runs = InMemoryMatchRunRepository()
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=catalog,
         history_repository=history,
         run_repository=runs,
@@ -167,6 +170,7 @@ async def test_sharepoint_offer_source_is_attached_only_to_its_matched_article()
         "uri": "https://medeor.sharepoint.com/sites/test/offer.xlsx",
     })})
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([
             item("410001001", "Foley urinary catheter sterile CH18"),
             item("410001002", "Foley urinary catheter sterile CH12", charriere=12),
@@ -207,6 +211,7 @@ async def test_supplier_offer_without_erp_number_is_selectable_and_links_to_sour
     })
     runs = InMemoryMatchRunRepository()
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository(),
         history_repository=InMemoryHistoryRepository([offer]),
         run_repository=runs,
@@ -248,6 +253,7 @@ async def test_supplier_offer_is_ranked_alongside_catalog_article() -> None:
         "offered_description": "Foley urinary catheter sterile CH18",
     })
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([
             item("410001001", "Foley urinary catheter sterile CH18")
         ]),
@@ -275,6 +281,7 @@ async def test_lower_relevance_supplier_offer_does_not_displace_catalog_top_k() 
         "offered_description": "Foley catheter",
     })
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([
             item("410001001", "Foley urinary catheter sterile CH18"),
             item("410001002", "Foley sterile urinary catheter CH18"),
@@ -300,6 +307,7 @@ async def test_unrelated_supplier_offer_is_not_suggested() -> None:
         "offered_description": "Adjustable examination table",
     })
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository(),
         history_repository=InMemoryHistoryRepository([offer]),
         run_repository=InMemoryMatchRunRepository(),
@@ -312,6 +320,7 @@ async def test_unrelated_supplier_offer_is_not_suggested() -> None:
 @pytest.mark.asyncio
 async def test_fallback_without_vectors_or_history_still_returns_lexical_candidates() -> None:
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository(
             [item("410001001", "Foley urinary catheter sterile CH18")]
         ),
@@ -339,6 +348,7 @@ async def test_pinned_catalog_snapshot_is_also_used_for_vector_retrieval() -> No
         snapshot_id=snapshot_id,
     )
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([catalog_item]),
         history_repository=InMemoryHistoryRepository(),
         run_repository=InMemoryMatchRunRepository(),
@@ -363,6 +373,7 @@ async def test_pinned_catalog_snapshot_is_also_used_for_vector_retrieval() -> No
 @pytest.mark.asyncio
 async def test_completed_run_may_return_no_candidate_instead_of_padding_top_ten() -> None:
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository(
             [item("410001001", "Foley urinary catheter sterile CH18", active=False)]
         ),
@@ -379,6 +390,7 @@ async def test_completed_run_may_return_no_candidate_instead_of_padding_top_ten(
 @pytest.mark.asyncio
 async def test_suggested_decision_must_reference_an_exposed_candidate() -> None:
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository(
             [item("410001001", "Foley urinary catheter sterile CH18")]
         ),
@@ -409,6 +421,7 @@ async def test_old_supplier_offer_remains_matchable_and_selectable(valid_until: 
         "offer_date": datetime(2019, 12, 1, tzinfo=UTC),
     })
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository(),
         history_repository=InMemoryHistoryRepository([offer]),
         run_repository=InMemoryMatchRunRepository(),
@@ -479,6 +492,7 @@ async def test_better_offer_can_rank_first_on_lexical_and_vector_relevance(top_k
         item_number=erp.item_number, model_id="model-v1", domain=erp.domain, embedding=(0.8, 0.6)
     )
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([erp]),
         history_repository=InMemoryHistoryRepository(),
         run_repository=InMemoryMatchRunRepository(),
@@ -521,6 +535,7 @@ async def test_identical_product_text_receives_equal_scores_for_erp_and_offer() 
         "item_number": None, "offered_description": description,
     })
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([erp]),
         history_repository=InMemoryHistoryRepository([offer]),
         run_repository=InMemoryMatchRunRepository(), policy=load_default_policy(),
@@ -565,6 +580,7 @@ async def test_erp_restrictions_cannot_fill_retrieval_slots():
             embedding=(1.0, 0.0),
         )
     service = MatchingService(
+        min_semantic_score=0,
         catalog_repository=InMemoryCatalogRepository([*restricted, allowed]),
         history_repository=InMemoryHistoryRepository([historical_offer("410001001")]),
         run_repository=InMemoryMatchRunRepository(),
@@ -584,3 +600,111 @@ async def test_erp_restrictions_cannot_fill_retrieval_slots():
         "lexical",
         "vector",
     }
+
+
+@pytest.mark.parametrize("vector_weight,expected", [(0.1, "a-lexical"), (1.0, "b-semantic"), (2.0, "b-semantic")])
+async def test_configurable_weight_orders_by_displayed_similarity(vector_weight, expected):
+    products = [
+        item("a-lexical", "Surgical gloves 100 pieces"),
+        item("b-semantic", "Surgical examination handwear 50 pieces"),
+    ]
+    vectors = InMemoryVectorRepository()
+    for product, embedding in zip(products, [(0.5, 0.5), (1.0, 0.0)], strict=True):
+        vectors.add(item_number=product.item_number, model_id="test-model",
+                    domain=product.domain, embedding=embedding)
+    service = MatchingService(
+        min_semantic_score=0,
+        catalog_repository=InMemoryCatalogRepository(products),
+        history_repository=InMemoryHistoryRepository(),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(), vector_repository=vectors,
+        vector_weight=vector_weight,
+    )
+    result = await service.match(MatchRequestV1(
+        inquiry_line=line(description="Surgical gloves 100 pieces"),
+        query_embedding=(1.0, 0.0), embedding_model_id="test-model",
+    ))
+    assert result.candidates[0].item_number == expected
+    by_item = {candidate.item_number: candidate for candidate in result.candidates}
+    assert by_item["a-lexical"].score_components["rrf"] == pytest.approx(
+        1 / 61 + vector_weight / 62
+    )
+    assert by_item["b-semantic"].score_components["rrf"] == pytest.approx(
+        1 / 62 + vector_weight / 61
+    )
+    for candidate in result.candidates:
+        components = candidate.score_components
+        assert components["ranking_score"] == components["search_similarity"]
+        assert components["search_similarity"] == pytest.approx(
+            100 * (components["lexical"] + vector_weight * components["vector"])
+            / (1 + vector_weight)
+        )
+    saved = await service.get_run(result.match_run_id)
+    assert saved is not None
+    assert saved.candidates == result.candidates
+    assert all(candidate.score_components["vector_weight"] == vector_weight
+               for candidate in result.candidates)
+
+
+@pytest.mark.parametrize("weight", [0, -1, float("inf"), float("nan")])
+def test_invalid_retrieval_weights_are_rejected(weight):
+    for channel in ("lexical", "vector"):
+        with pytest.raises(ValueError, match="finite and positive"):
+            MatchingService(
+                min_semantic_score=0,
+                catalog_repository=InMemoryCatalogRepository([]),
+                history_repository=InMemoryHistoryRepository(),
+                run_repository=InMemoryMatchRunRepository(), policy=load_default_policy(),
+                **{f"{channel}_weight": weight},
+            )
+
+
+@pytest.mark.parametrize('top_k', [1, 10])
+async def test_equal_relevance_prefers_stock_covering_request_before_top_k(top_k):
+    products = [
+        item('a-partial', 'Foley urinary catheter sterile CH18', on_hand=Decimal('3000')),
+        item('z-sufficient', 'Foley urinary catheter sterile CH18', on_hand=Decimal('7600')),
+        item('b-empty', 'Foley urinary catheter sterile CH18', on_hand=Decimal('0')),
+        item('c-unknown', 'Foley urinary catheter sterile CH18'),
+    ]
+    service = MatchingService(
+        catalog_repository=InMemoryCatalogRepository(products),
+        history_repository=InMemoryHistoryRepository(),
+        run_repository=InMemoryMatchRunRepository(), policy=load_default_policy(),
+        min_semantic_score=0,
+    )
+    inquiry = line(description='Foley urinary catheter sterile CH18')
+    inquiry = inquiry.model_copy(update={'quantity': inquiry.quantity.model_copy(update={'value': Decimal('5000')})})
+    result = await service.match(MatchRequestV1(inquiry_line=inquiry, top_k=top_k))
+    assert [candidate.item_number for candidate in result.candidates] == [
+        'z-sufficient', 'a-partial', 'b-empty', 'c-unknown',
+    ][:top_k]
+    assert len({candidate.score_components['ranking_score'] for candidate in result.candidates}) == 1
+
+
+@pytest.mark.parametrize("description", ["Surgical examination handwear", "Absaugpumpe"])
+async def test_vector_only_retrieval_gets_lexical_score_before_ranking(description):
+    products = [item("a", "Surgical gloves"), item("b", description)]
+    products = [product.model_copy(update={"attributes": {}, "manufacturer": None}) for product in products]
+    vectors = InMemoryVectorRepository()
+    for product, embedding in zip(products, [(0.5, 0.5), (1.0, 0.0)], strict=True):
+        vectors.add(item_number=product.item_number, model_id="test-model",
+                    domain=product.domain, embedding=embedding)
+    service = MatchingService(
+        min_semantic_score=0,
+        catalog_repository=InMemoryCatalogRepository(products),
+        history_repository=InMemoryHistoryRepository(),
+        run_repository=InMemoryMatchRunRepository(),
+        policy=load_default_policy(), vector_repository=vectors,
+    )
+    result = await service.match(MatchRequestV1(
+        inquiry_line=line(description="Surgical gloves").model_copy(update={"attributes": {}}), retrieval_limit=1,
+        query_embedding=(1.0, 0.0), embedding_model_id="test-model",
+    ))
+    candidate = next(candidate for candidate in result.candidates if candidate.item_number == "b")
+    assert not any(hit.retriever == "lexical" for hit in candidate.retrieval_evidence)
+    assert candidate.score_components["lexical"] >= 0
+    if description == "Absaugpumpe":
+        assert candidate.score_components["lexical"] == 0
+    scores = [candidate.score_components["search_similarity"] for candidate in result.candidates]
+    assert scores == sorted(scores, reverse=True)

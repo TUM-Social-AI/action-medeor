@@ -39,6 +39,9 @@ def get_matching_service(session: AsyncSession = Depends(get_session)) -> Matchi
         embedding_provider=embedding_provider,
         offer_search_repository=PostgresHistoryRepository(session),
         policy=load_default_policy(),
+        lexical_weight=settings.matching_lexical_weight,
+        vector_weight=settings.matching_vector_weight,
+        min_semantic_score=settings.matching_min_semantic_score,
     )
 
 

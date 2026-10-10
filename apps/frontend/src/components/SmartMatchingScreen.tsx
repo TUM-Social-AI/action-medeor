@@ -17,6 +17,7 @@ import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh
 import { WorkflowStepper } from './WorkflowStepper';
 import { SharePointOfferSource } from './SharePointOfferSource';
 import { CandidateAvailability } from './CandidateAvailability';
+import { CandidateChecks } from './CandidateChecks';
 
 type Props = { requestId: string; onContinue: () => Promise<void> };
 type CandidateDetails = { line: SavedMatchLine; candidate: MatchCandidateV1 } | null;
@@ -29,9 +30,6 @@ function selectionLabel(line: SavedMatchLine) {
   return line.status;
 }
 
-function checkLabel(outcome: string) {
-  return ({ pass: 'Confirmed', review: 'Needs review', warning: 'Warning', unknown: 'Unconfirmed', exclude: 'Excluded' } as Record<string, string>)[outcome] ?? outcome;
-}
 
 function OfferBadge({ candidate }: { candidate: MatchCandidateV1 }) {
   const status = getOfferStatus(candidate);
@@ -60,6 +58,16 @@ function OfferFollowUp({ candidate }: { candidate: MatchCandidateV1 }) {
   return <p className="mt-3 text-xs font-semibold text-rose-700">Contact the supplier to receive a new offer.</p>;
 }
 
+function ScoreBreakdown({ candidate }: { candidate: MatchCandidateV1 }) {
+  const components = candidate.score_components;
+  const raw = (key: string) => typeof components[key] === 'number' ? components[key].toFixed(3) : 'Not available';
+  return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600">
+    <div className="whitespace-nowrap">Lexical: {raw('lexical')}</div>
+    <div className="whitespace-nowrap">Semantic: {raw('vector')}</div>
+    {typeof components.vector !== 'number' && <div className="whitespace-nowrap font-medium">Lexical only</div>}
+  </div>;
+}
+
 function CandidateCard({
   candidate, selected, disabled, onSelect, onInfo,
 }: {
@@ -73,8 +81,9 @@ function CandidateCard({
   const status = getOfferStatus(candidate);
   const muted = offer && status.muted;
   const name = candidate.descriptions[0] || candidate.item_number || 'Supplier offer';
+  const ingredientFallback = candidate.score_components.ingredient_fallback === 1;
   const firstWarning = offer ? undefined : candidate.constraints.find(value => value.outcome !== 'pass')?.message;
-  const rankingScore = candidate.score_components.ranking_score;
+  const rankingScore = candidate.score_components.search_similarity;
   const packSize = getCandidatePackSize(candidate);
   return <div className={'relative flex h-full flex-col overflow-hidden rounded-xl border-2 transition-colors ' + (muted
     ? (selected ? 'border-[#1B4E8A] shadow-sm ' : 'border-dashed border-gray-300 hover:border-gray-400 ') + 'bg-[repeating-linear-gradient(135deg,#f9fafb_0_8px,#f3f4f6_8px_16px)]'
@@ -83,19 +92,21 @@ function CandidateCard({
       : 'border-gray-200 hover:border-gray-300 hover:shadow-sm')}>
     <button type="button" onClick={onSelect} disabled={disabled} aria-label={'Select ' + name} aria-pressed={selected}
       className="flex w-full flex-1 flex-col p-4 pr-11 text-left disabled:cursor-wait">
-      <div className="mb-3 flex items-start justify-between gap-2">
+      {candidate.rank === 1 && !muted && !ingredientFallback ? <span className="absolute right-11 top-4 rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">BEST FIT</span> : null}
+      <div className={"mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 " + (candidate.rank === 1 && !muted && !ingredientFallback ? "pr-14" : "")}>
         <div className="flex items-center gap-2">
           <span className={'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ' + (selected ? 'border-[#1B4E8A] bg-[#1B4E8A]' : 'border-gray-300 bg-white')}>
             {selected && <span className="h-2 w-2 rounded-full bg-white" />}
           </span>
           <span className={"text-2xl font-extrabold leading-none " + (muted ? "text-gray-400" : "text-gray-900")}>{typeof rankingScore === 'number' ? formatRankingScore(rankingScore) : '—'}</span>
-          <span className="text-xs leading-tight text-gray-500">/100<br />Ranking score</span>
+          <span className="text-xs text-gray-500" title="Search similarity">/100</span>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {candidate.rank === 1 && !muted ? <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">BEST FIT</span> : null}
+        <ScoreBreakdown candidate={candidate} />
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           {offer && <OfferBadge candidate={candidate} />}
         </div>
       </div>
+      {ingredientFallback && <p className="mb-2 text-xs font-semibold text-amber-700">Ingredient not confirmed - Manual review required</p>}
       <div title={name} className={"mb-2 h-[2.75em] shrink-0 line-clamp-2 break-words text-sm font-bold leading-snug " + (muted ? "text-gray-500" : "text-gray-900")}>{name}</div>
       {offer ? <div className="space-y-1.5 text-xs">
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">SUPPLIER</span><span className="font-medium text-gray-700">{candidate.supplier || 'Not specified'}</span></div>
@@ -105,7 +116,7 @@ function CandidateCard({
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">PACK SIZE</span><span className={packSize ? 'text-gray-700' : 'text-gray-400'} title={candidate.package?.package_label || candidate.packaging.basis || undefined}>{packSize || 'Not recorded'}</span></div>
         <div className="flex gap-2"><span className="w-16 shrink-0 text-[11px] font-semibold text-gray-400">AVAIL.</span><CandidateAvailability candidate={candidate} /></div>
       </div>}
-      {firstWarning && <p className="mt-3 line-clamp-2 text-xs leading-snug text-amber-700">{firstWarning}</p>}
+      {firstWarning && !ingredientFallback && <p className="mt-3 line-clamp-2 text-xs leading-snug text-amber-700">{firstWarning}</p>}
     </button>
     {offer ? <SharePointOfferSource provenance={candidate.provenance} candidateType={candidate.candidate_type} variant="footer" muted={muted} className="mt-auto" />
       : <SharePointOfferSource provenance={candidate.provenance} candidateType={candidate.candidate_type} className="mt-auto px-4 pb-4 pr-11" />}
@@ -117,17 +128,18 @@ function CandidateCard({
 }
 
 function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1; onInfo: () => void }) {
-  const score = candidate.score_components.ranking_score;
+  const score = candidate.score_components.search_similarity;
   const offer = candidate.candidate_type === 'historical_offer';
   const status = getOfferStatus(candidate);
   const muted = offer && status.muted;
   const name = candidate.descriptions[0] || candidate.item_number || 'Supplier offer';
   const packSize = getCandidatePackSize(candidate);
   return <div className={"flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border-2 border-[#1B4E8A] px-4 py-3 " + (muted ? "bg-gray-100" : "bg-blue-50/40")}>
-    <div className="order-1 flex shrink-0 items-center gap-2">
+    <div className="order-1 flex flex-wrap items-center gap-2">
       <span className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-[#1B4E8A] bg-[#1B4E8A]"><span className="h-2 w-2 rounded-full bg-white" /></span>
       <span className="text-xl font-extrabold leading-none text-gray-900">{typeof score === 'number' ? formatRankingScore(score) : '—'}</span>
-      <span className="text-xs text-gray-500">/100</span>
+      <span className="text-xs text-gray-500" title="Search similarity">/100</span>
+      <ScoreBreakdown candidate={candidate} />
     </div>
     <div className="order-3 w-full min-w-0 sm:order-2 sm:w-auto sm:flex-1">
       <div className={"mb-1.5 flex items-start gap-2 text-sm font-bold " + (muted ? "text-gray-500" : "text-gray-900")}><span title={name} className="min-w-0 flex-1 line-clamp-2 break-words leading-snug">{name}</span>{offer && <span className="shrink-0"><OfferBadge candidate={candidate} /></span>}</div>
@@ -143,6 +155,7 @@ function SelectedCandidate({ candidate, onInfo }: { candidate: MatchCandidateV1;
         </>}
       </div>
     </div>
+    {candidate.score_components.ingredient_fallback === 1 && <p className="order-4 w-full text-xs font-semibold text-amber-700">Ingredient not confirmed - Manual review required</p>}
     <div className="order-2 ml-auto flex items-center gap-2 sm:order-3">
       <button type="button" onClick={onInfo} aria-label={'Details for ' + name} className="rounded-full p-1.5 text-[#1B4E8A] hover:bg-blue-100 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"><Info size={17} /></button>
     </div>
@@ -331,7 +344,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
             {line.error && <div className="mb-3"><ErrorPanel message={line.error} /></div>}
             {(line.status === 'pending' || line.status === 'running') && <LoadingPanel label={line.status === 'running' ? 'Matching this item' : 'Waiting for matching worker'} />}
             {line.status === 'completed' && <>
-              {line.candidates.length === 0 && <p className="text-sm text-gray-500">No candidates were found for this item.</p>}
+              {line.candidates.length === 0 && <p className="text-sm text-gray-500">No candidates meet the current matching criteria. With semantic filtering enabled, candidates must meet the minimum semantic score; candidates without a semantic score are omitted.</p>}
               <div className={'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 ' + (line.decisionType === 'no_match' ? 'opacity-65' : '')}>
                 {visible.map(candidate => <CandidateCard
                   key={candidate.candidate_id}
@@ -397,20 +410,19 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
           <div><dt className="text-gray-500">Automated checks</dt><dd>{details.candidate.review_status === 'pass' ? 'No configured issue found' : details.candidate.review_status.replace(/_/g, ' ')}</dd></div>
           {details.candidate.manufacturer && <div><dt className="text-gray-500">Manufacturer</dt><dd>{details.candidate.manufacturer}</dd></div>}
           <div><dt className="text-gray-500">Packaging</dt><dd>{details.candidate.packaging.basis || details.candidate.packaging.status.replace(/_/g, ' ')}</dd></div>
-          <div><dt className="text-gray-500">Ranking score</dt><dd>{typeof details.candidate.score_components.ranking_score === 'number' ? formatRankingScore(details.candidate.score_components.ranking_score) : '—'}</dd></div>
+          <div><dt className="text-gray-500">Search similarity /100</dt><dd>{typeof details.candidate.score_components.search_similarity === 'number' ? formatRankingScore(details.candidate.score_components.search_similarity) : '—'}</dd></div>
           <div><dt className="text-gray-500">Exact reference</dt><dd>{details.candidate.score_components.exact_reference ? 'Yes' : 'No'}</dd></div>
           <div><dt className="text-gray-500">Attribute agreement</dt><dd>{typeof details.candidate.score_components.attribute_match_ratio === 'number' ? Math.round(details.candidate.score_components.attribute_match_ratio * 100) + '%' : 'No comparable attributes'}</dd></div>
           <div><dt className="text-gray-500">Fused retrieval</dt><dd>{details.candidate.score_components.rrf?.toFixed(4) ?? '—'}</dd></div>
         </dl>
-        <p className="text-xs text-gray-500 mb-5">The ranking score is computed before sorting from the matcher’s priority rules: checks, exact references, attribute agreement, fused retrieval, availability, and article number. It preserves that priority order. The best evaluated candidate is 100. Scores are scaled across all evaluated candidates; the lowest may be outside the displayed top options. This relative scale is not a confidence percentage. Checks cover configured attributes only.</p>
+        <p className="text-xs text-gray-500 mb-3">Search similarity is the weighted average of available lexical and semantic scores, on a 0–100 scale. Missing channels are omitted; negative semantic scores contribute zero. It is not a confidence percentage or a compatibility guarantee. New matching runs are ordered by this score, with availability breaking ties. Older saved runs retain their original order. Checks cover configured attributes only.</p>
         <p className="text-xs text-gray-500 mb-3">Name similarity: {typeof details.candidate.score_components.name_similarity === 'number' ? Math.round(details.candidate.score_components.name_similarity * 100) + '/100' : 'unavailable'}</p>
         <h3 className="text-sm font-semibold mb-2">Retrieval evidence</h3>
         {details.candidate.retrieval_evidence.length ? <ul className="space-y-1 mb-5 text-sm text-gray-700">{details.candidate.retrieval_evidence.map((evidence, index) => <li key={index} className="rounded-lg bg-gray-50 p-2">
           {evidence.retriever} rank {evidence.rank}{typeof evidence.score === 'number' ? ' · score ' + evidence.score.toFixed(3) : ''}
           {typeof evidence.details.model_id === 'string' ? ' · ' + evidence.details.model_id : ''}
         </li>)}</ul> : <p className="text-sm text-gray-500 mb-5">No retrieval evidence saved.</p>}
-        {details.candidate.constraints.length > 0 && <><h3 className="text-sm font-semibold mb-2">Checks</h3><ul className="space-y-1 mb-5 text-sm">{details.candidate.constraints.map(value => <li key={value.code} className={value.outcome === 'pass' ? 'text-gray-600' : 'text-amber-700'}>{checkLabel(value.outcome)}: {value.message}</li>)}</ul></>}
-        {details.candidate.warnings.length > 0 && <><h3 className="text-sm font-semibold mb-2">Warnings</h3><ul className="space-y-1 text-sm text-amber-700">{details.candidate.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul></>}
+        <CandidateChecks candidate={details.candidate} />
       </div>
     </div>}
 
