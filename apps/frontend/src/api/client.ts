@@ -88,6 +88,14 @@ export function updateColumnLabel(requestId: string, columnKey: string, label: s
  * control. Re-parses the original file server-side and returns the full, updated review payload
  * (new attribute values merged into the existing items, availableColumns/attributeColumns
  * updated) rather than just the one new column, since every item can gain a value at once. */
+/** Re-extract the request from another worksheet of its spreadsheet; manual rows are kept. */
+export function selectWorksheet(requestId: string, sheet: string) {
+  return requestJson<ReviewResponse>(`/api/requests/${requestId}/worksheet`, {
+    method: 'POST',
+    body: JSON.stringify({ sheet }),
+  });
+}
+
 export function addCustomColumn(requestId: string, column: CustomColumnRequest) {
   return requestJson<ReviewResponse>(`/api/requests/${requestId}/custom-columns`, {
     method: 'POST',

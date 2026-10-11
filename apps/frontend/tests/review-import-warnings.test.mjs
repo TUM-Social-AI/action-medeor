@@ -277,3 +277,11 @@ test('AI review locks the application while pending and removes the button after
     globalThis.HTMLElement = priorHTMLElement;
   }
 });
+
+test('a worksheet picker appears only for workbooks with several sheets', () => {
+  const sheets = [{ name: 'Tabelle1', rows: 94 }, { name: 'Tabelle2', rows: 12 }];
+  const html = render({ ...data, sheets, selectedSheet: 'Tabelle1' });
+  assert.ok(html.includes('aria-label="Worksheet"'));
+  assert.ok(html.includes('Tabelle2 (12 rows)'));
+  assert.ok(!render({ ...data, sheets: [{ name: 'Tabelle1', rows: 94 }] }).includes('aria-label="Worksheet"'));
+});

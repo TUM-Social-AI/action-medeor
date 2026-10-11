@@ -156,7 +156,9 @@ async def test_empty_first_sheet_warning_persists_for_both_upload_paths(
         assert body["items"] == []
         assert body["partner"]["confirmed"] is False
         assert mapper.call_count == 0
-        assert any("delete the unnecessary sheets" in note for note in body["parserWarnings"])
+        # The empty first sheet is still what's imported, and the user is pointed at the picker.
+        assert any("Worksheet selector" in note for note in body["parserWarnings"])
+        assert len(body["sheets"]) > 1 and body["selectedSheet"] == body["sheets"][0]["name"]
         reopened = await client.get(f"/api/requests/{rid}/review")
         assert reopened.status_code == 200, reopened.text
         assert reopened.json()["parserWarnings"] == body["parserWarnings"]
