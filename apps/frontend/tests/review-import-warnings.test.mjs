@@ -277,3 +277,15 @@ test('AI review locks the application while pending and removes the button after
     globalThis.HTMLElement = priorHTMLElement;
   }
 });
+
+test('a defaulted unit is visibly marked as a default, not as source data', () => {
+  const item = {
+    id: 1, name: 'Examination gloves, nitrile, M', quantity: 4, unit: 'Stück', notes: '',
+    itemNumber: '', shelfLife: '', attributes: {}, priority: 'medium', confidence: 90,
+    status: 'verified', domain: 'equipment', manual: false,
+    inferredFields: { unit: 'No unit in the request; defaulted to Stück' },
+  };
+  const html = render({ ...data, items: [item] });
+  assert.ok(html.includes('Stück'));
+  assert.ok(html.includes('>default<'));
+});

@@ -275,10 +275,18 @@ def deterministic_issues(item: ParsedLineItem) -> list[str]:
     return issues
 
 
+def _legacy_protected(item: ParsedLineItem, field: str, value=None) -> bool:
+    """Legacy imports protect every nonempty value - except inferred/default ones (e.g. a "Stück"
+    the extractor filled in), which never came from the source or a person."""
+    value = getattr(item, field) if value is None else value
+    inferred = PUBLIC_FIELDS.get(field, field) in (item.inferred_fields or {})
+    return value not in (None, "") and not inferred
+
+
 def _record(item: ParsedLineItem) -> dict:
     protected = item.protected_fields
     if protected is None:
-        protected = [field for field in FIELDS if getattr(item, field) not in (None, "")]
+        protected = [field for field in FIELDS if _legacy_protected(item, field)]
     return {
         "row_id": item.review_id,
         "page": item.page,
@@ -455,7 +463,7 @@ def review_document(document: ParsedDocument) -> ParsedDocument:
                 is_protected = (
                     patch.field in protected
                     if protected is not None
-                    else before[patch.field] not in (None, "")
+                    else _legacy_protected(item, patch.field, before[patch.field])
                 )
                 if is_protected:
                     if before[patch.field] != patch.value:

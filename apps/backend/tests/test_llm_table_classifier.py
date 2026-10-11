@@ -120,7 +120,7 @@ def test_pdf_rfq_extracts_twelve_names_and_requested_totals(monkeypatch):
     document = parse_pdf(build_rfq_pdf())
     assert [item.name for item in document.items] == NAMES
     assert [item.quantity for item in document.items] == QUANTITIES
-    assert all(item.unit == "" and item.status != "verified" for item in document.items)
+    assert all(item.unit == "Stück" and item.inferred_fields.get("unit") for item in document.items)
     assert all(item.notes == "" for item in document.items)
     assert document.used_llm_fallback is True
     assert call.call_count == 1
@@ -147,7 +147,7 @@ def test_clear_reordered_multiline_table_needs_no_call(monkeypatch):
     assert call.call_count == 0
     assert document.items[0].name == "Clinical device"
     assert document.items[0].quantity == 12
-    assert document.items[1].unit == ""
+    assert document.items[1].unit == "Stück"  # default when the row gives none
     assert document.table_mappings["version"] == 1
 
 
@@ -196,7 +196,7 @@ def test_supplier_values_never_become_request_quantity(monkeypatch):
     result = parse_table_rows(rows)
     assert result.items[0].quantity == 2
     assert "450000" not in result.items[0].excerpt
-    assert result.items[0].unit == ""
+    assert result.items[0].unit == "Stück"
     assert call.call_count == 1
 
 
@@ -230,7 +230,7 @@ def test_numeric_template_marker_allows_header_mapping_and_requested_totals(monk
         ("Example medicine 5mg tablet", 30), ("Sterile device", 7),
     ]
     assert [item.row for item in document.items] == [3, 4]
-    assert all(item.unit == "" for item in document.items)
+    assert all(item.unit == "Stück" for item in document.items)
     assert all("Supplier substitute" not in item.excerpt for item in document.items)
     assert not any("Columns could not be confirmed" in note for note in document.warnings)
 
