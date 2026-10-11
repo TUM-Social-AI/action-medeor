@@ -132,7 +132,7 @@ def test_pdf_rfq_extracts_twelve_names_and_requested_totals(monkeypatch):
     assert all(item.notes == "" for item in document.items)
     assert document.used_llm_fallback is True
     assert call.call_count == 1
-    assert all(item.attributes["Units per pack"] == "1" for item in document.items)
+    assert all(item.attributes["UNITS PER PACK"] == "1" for item in document.items)
 
 
 def test_repeated_pdf_pages_reuse_mapping(monkeypatch):
@@ -485,16 +485,11 @@ def test_zero_requested_amount_is_not_verified(monkeypatch):
     assert call.call_count == 1
 
 
-def labelled(roles_and_labels, width, header=0):
+def labelled(roles, width, header=0):
     return TableMapping(
         header_row_index=header,
         columns=[
-            ColumnMapping(
-                column_index=i,
-                role=roles_and_labels.get(i, ("none", ""))[0],
-                scope="request",
-                label=roles_and_labels.get(i, ("none", ""))[1],
-            )
+            ColumnMapping(column_index=i, role=roles.get(i, "none"), scope="request")
             for i in range(width)
         ],
     )
@@ -507,13 +502,9 @@ FRENCH_REQUEST = [
 ]
 
 
-def test_clear_table_is_still_mapped_and_named_by_the_model(monkeypatch):
+def test_clear_table_is_still_mapped_by_the_model_under_its_own_headers(monkeypatch):
     call = stub(monkeypatch, labelled({
-        0: ("item_number", "Item number"),
-        1: ("name", "Product (French)"),
-        2: ("translation", "Description (German)"),
-        3: ("attribute", "Desired shelf life"),
-        4: ("quantity", "Quantity requested"),
+        0: "item_number", 1: "name", 2: "translation", 3: "attribute", 4: "quantity",
     }, 5))
     document = parse_table_rows(FRENCH_REQUEST)
     assert call.call_count == 1
@@ -523,16 +514,18 @@ def test_clear_table_is_still_mapped_and_named_by_the_model(monkeypatch):
     assert first.translation == "Blasenkatheter, Foley, steril"
     assert first.notes == ""
     assert first.quantity == 48
-    # The model's names become the table: core headers via column labels, extras by name.
-    assert document.column_labels["name"] == "Product (French)"
-    assert document.column_labels["translation"] == "Description (German)"
-    assert first.attributes == {"Desired shelf life": "16 months"}
-    assert document.attribute_columns == ["Desired shelf life"]
+    # The file's own headers become the table's headers - core columns and extras alike.
+    assert document.column_labels == {
+        "itemNumber": "Item number", "name": "Product", "translation": "Translation",
+        "quantity": "Quantity enquiry",
+    }
+    assert first.attributes == {"desired shelf life": "16 months"}
+    assert document.attribute_columns == ["desired shelf life"]
 
 
 def test_one_odd_row_no_longer_discards_the_whole_mapping(monkeypatch):
     rows = [["Product", "Qty"]] + [[f"Sterile device {i}", 10] for i in range(9)] + [["410108001", 5]]
-    call = stub(monkeypatch, labelled({0: ("name", "Product"), 1: ("quantity", "Qty")}, 2))
+    call = stub(monkeypatch, labelled({0: "name", 1: "quantity"}, 2))
     document = parse_table_rows(rows)
     assert call.call_count == 1
     assert document.used_llm_fallback is True  # accepted despite one identifier-only name
@@ -544,7 +537,7 @@ def test_one_odd_row_no_longer_discards_the_whole_mapping(monkeypatch):
 def test_a_wrong_column_choice_is_still_rejected():
     rows = [["Code", "Product", "Qty"]] + [[f"41010{i}001", f"Device {i}", 3] for i in range(6)]
     with pytest.raises(ValueError, match="numeric identifiers"):
-        validated_layout(rows, labelled({0: ("name", "Product"), 2: ("quantity", "Qty")}, 3))
+        validated_layout(rows, labelled({0: "name", 2: "quantity"}, 3))
 
 
 def test_translation_is_sent_to_matching():
@@ -567,3 +560,15 @@ def test_translation_is_sent_to_matching():
     line = to_inquiry_line(request, item)
     assert line.translated_description == "Kanüle, steril, Luer, 19 G"
     assert "kanüle" in represent_inquiry(line).tokens
+
+
+def test_core_columns_keep_the_files_own_header_names(monkeypatch):
+    stub(monkeypatch, labelled({0: "item_number", 1: "name", 2: "quantity"}, 3))
+    document = parse_table_rows([
+        ["PIH code", "Désignation\narticle", "Qté\ndemandée"],
+        ["PIH-0042", "Gants nitrile M", 200],
+    ])
+    # "PIH code" stays "PIH code"; a header wrapped across lines is shown on one line.
+    assert document.column_labels == {
+        "itemNumber": "PIH code", "name": "Désignation article", "quantity": "Qté demandée",
+    }

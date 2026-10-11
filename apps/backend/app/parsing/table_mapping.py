@@ -22,7 +22,7 @@ from app.parsing.llm_table_classifier import (
     TableMapping,
     map_table_with_llm,
 )
-from app.parsing.table_parser import HEADER_SEARCH_LIMIT, HeaderLayout, cell_text
+from app.parsing.table_parser import HEADER_SEARCH_LIMIT, HeaderLayout, cell_text, display_label
 
 logger = logging.getLogger(__name__)
 
@@ -162,13 +162,10 @@ def validated_layout(rows, mapping: TableMapping) -> HeaderLayout:
             raise MappingRejected("Explicit supplier/admin exclusion overridden")
         if role in {"none", "ordinal"}:
             continue
-        # labels keeps the source header (sent to the AI review as provenance); display is the
-        # model's own name for the column, which is what the review table shows.
         layout.labels[col] = label or f"Column {col + 1}"
-        layout.display[col] = " ".join(column.label.split())[:60] or layout.labels[col]
         if role == "attribute":
             # Repeated labels cannot silently overwrite each other's data.
-            extra_label = layout.display[col]
+            extra_label = display_label(layout.labels[col])
             if extra_label in layout.extras.values():
                 extra_label = f"{extra_label} ({col + 1})"
             layout.extras[col] = extra_label

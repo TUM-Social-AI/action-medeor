@@ -675,7 +675,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     ...(showItemNumber ? [{ key: 'itemNumber', label: 'Item #' }] : []),
                     { key: 'name', label: 'Item Name' },
                     ...(showTranslation ? [{ key: 'translation', label: 'Translation' }] : []),
-                    { key: null, label: 'Type' },
+                    { key: 'type', label: 'Type' },
                     { key: 'quantity', label: 'Qty' },
                     ...(showUnit ? [{ key: 'unit', label: 'Unit' }] : []),
                     ...(showShelfLife ? [{ key: 'shelfLife', label: 'Shelf Life' }] : []),

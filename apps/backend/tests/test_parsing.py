@@ -482,8 +482,9 @@ def test_parse_table_rows_computes_total_from_packs_times_units_per_pack() -> No
     item = result.items[0]
 
     assert item.quantity == 1500
-    assert item.attributes["Packs requested"] == "15"
-    assert item.attributes["Units per pack"] == "100"
+    # The breakdown keeps the file's own column names.
+    assert item.attributes["Packs Requested"] == "15"
+    assert item.attributes["Units Per Pack"] == "100"
 
 
 def test_parse_csv_comma_delimited() -> None:
