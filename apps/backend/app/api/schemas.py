@@ -94,6 +94,12 @@ class ReviewCounts(BaseModel):
     missing: int
 
 
+class ImportProgress(BaseModel):
+    stage: Literal["reading", "reviewing", "saving"]
+    mode: Literal["basic", "balanced"]
+    items: int | None = None
+
+
 class ReviewResponse(BaseModel):
     parserWarnings: list[str] = Field(default_factory=list)
     usedLlm: bool = False

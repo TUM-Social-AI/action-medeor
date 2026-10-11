@@ -7,11 +7,13 @@ import {
   finalizeRequest,
   getRequest,
   reopenRequestMatching,
+  getRequestMatching,
   startRequestMatching,
   uploadRequestFile,
   type SavedRequest,
 } from './api/workflow';
 import { HelpScreen } from './components/HelpScreen';
+import { matchingProcessed, matchingReady } from './features/loading/progress';
 import { SettingsScreen } from './components/SettingsScreen';
 import { HomeScreen } from './components/HomeScreen';
 import { IngestionScreen } from './components/IngestionScreen';
@@ -54,6 +56,8 @@ export default function App() {
   const [manualDraft, setManualDraft] = useState(false);
 
   const navigationVersion = useRef(0);
+  const [progressToken, setProgressToken] = useState<string | null>(null);
+  const [matchingProgress, setMatchingProgress] = useState<{ processed: number; total: number } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -147,11 +151,13 @@ export default function App() {
 
   const handleImport = async (file: File) => {
     setWorkflowError(null);
+    const token = newProgressToken();
+    setProgressToken(token);
     setLoadingType('extracting');
     try {
       const response = requestId
-        ? await uploadRequestFile(requestId, file)
-        : await createImport(file);
+        ? await uploadRequestFile(requestId, file, token)
+        : await createImport(file, token);
       setRequestId(response.requestId);
       setReviewData(response);
       navigate('review', response.requestId);
@@ -165,9 +171,22 @@ export default function App() {
   const handleStartMatching = async () => {
     if (!requestId) return;
     setWorkflowError(null);
+    setMatchingProgress(null);
     setLoadingType('matching');
+    const version = navigationVersion.current;
+    const started = Date.now();
     try {
-      await startRequestMatching(requestId);
+      // Stay here with real progress until enough items are matched to work with; the matching
+      // screen keeps updating the rest (issue #24).
+      let state = await startRequestMatching(requestId);
+      while (true) {
+        setMatchingProgress({ processed: matchingProcessed(state), total: state.total ?? 0 });
+        if (matchingReady(state, Date.now() - started)) break;
+        await new Promise(resolve => window.setTimeout(resolve, 1000));
+        if (version !== navigationVersion.current) return; // the user navigated away
+        state = await getRequestMatching(requestId);
+      }
+      if (version !== navigationVersion.current) return;
       navigate('matching');
     } catch (caught) {
       setWorkflowError(caught instanceof Error ? caught.message : 'Unable to start matching');
@@ -216,7 +235,9 @@ export default function App() {
   };
 
   return <Layout currentScreen={currentScreen} onNavigate={handleNavigate} displayName={displayName} avatarId={avatarId} onAvatarChange={changeAvatar}>
-    {loadingType ? <ProcessingScreen type={loadingType} /> : <>
+    {loadingType ? (
+      <ProcessingScreen type={loadingType} progressToken={progressToken} matching={matchingProgress} />
+    ) : <>
       {(currentScreen === 'home' || currentScreen === 'history') && <HomeScreen
         history={currentScreen === 'history'}
         displayName={displayName}
@@ -247,4 +268,10 @@ export default function App() {
       />}
     </>}
   </Layout>;
+}
+
+function newProgressToken(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `upload-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }

@@ -526,3 +526,38 @@ async def test_delete_request_requires_a_saved_request_and_rejects_active_matchi
         assert "matching finishes" in active.json()["detail"]
     finally:
         app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.mark.asyncio
+async def test_upload_reports_real_stages_and_clears_them(monkeypatch) -> None:
+    from app.api import import_progress, routes
+
+    stages = []
+    real_report = import_progress.report
+
+    async def recording(token, stage, **kwargs):
+        stages.append((stage, kwargs.get("items")))
+        await real_report(token, stage, **kwargs)
+        # While the upload runs, the poll endpoint sees the stage just written.
+        polled = await request("GET", f"/api/imports/progress/{token}")
+        assert polled.json()["stage"] == stage
+
+    monkeypatch.setattr(routes.import_progress, "report", recording)
+    csv_bytes = b"Product,Quantity,Unit\nGauze,5,rolls\nGloves,10,pairs\n"
+    token = "test-token-0001"
+    response = await request(
+        "POST", "/api/imports",
+        files={"file": ("request.csv", csv_bytes, "text/csv")},
+        data={"progress_token": token},
+    )
+    assert response.status_code == 200
+    assert stages[0] == ("reading", None)
+    assert stages[-1] == ("saving", 2)
+    # Finished uploads leave nothing behind to poll.
+    assert (await request("GET", f"/api/imports/progress/{token}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_progress_for_unknown_or_malformed_token_is_404() -> None:
+    assert (await request("GET", "/api/imports/progress/never-started-123")).status_code == 404
+    assert (await request("GET", "/api/imports/progress/bad%20token")).status_code == 404
