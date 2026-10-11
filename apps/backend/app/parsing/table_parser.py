@@ -38,6 +38,22 @@ class HeaderLayout:
     # become per-item attributes, which is how a file's own vocabulary survives extraction.
     extras: dict[int, str] = field(default_factory=dict)
     labels: dict[int, str] = field(default_factory=dict)
+    # The AI mapper's own display name per column (empty for keyword-derived layouts).
+    display: dict[int, str] = field(default_factory=dict)
+
+
+# Core roles whose AI display name becomes the review table's header, keyed the way the frontend
+# and ReviewResponse.columnLabels name those columns.
+_ROLE_COLUMN_KEYS = {
+    "name": "name",
+    "translation": "translation",
+    "quantity": "quantity",
+    "unit": "unit",
+    "notes": "notes",
+    "item_number": "itemNumber",
+    "shelf_life": "shelfLife",
+    "priority": "priority",
+}
 
 
 def cell_text(value: object) -> str:
@@ -227,9 +243,6 @@ def parse_table_rows(
                 quantity, unit = inferred_quantity, inferred_unit
 
         notes = values.get("notes", "")
-        translation = values.get("translation", "")
-        if translation:
-            notes = f"Translation: {translation}" + (f" · {notes}" if notes else "")
 
         # Partner procurement forms use their own priority-tier wording ("Prioritaire-Priority",
         # "Standard", "Optionnel-Optional") - mapped onto our scale; anything genuinely
@@ -249,6 +262,7 @@ def parse_table_rows(
             quantity=quantity,
             unit=unit,
             notes=notes,
+            translation=values.get("translation", ""),
             item_number=values.get("item_number", ""),
             shelf_life=values.get("shelf_life", ""),
             attributes=attributes,
@@ -281,6 +295,11 @@ def parse_table_rows(
 
     document.rows_detected = len(document.items)
     document.attribute_columns = _surviving_attribute_columns(document)
+    document.column_labels = {
+        _ROLE_COLUMN_KEYS[role]: layout.display[col]
+        for col, role in layout.roles.items()
+        if role in _ROLE_COLUMN_KEYS and layout.display.get(col)
+    }
 
     if custom_columns and layout.row_index >= 0:
         # Lazy import: custom_columns.py imports cell_text/HeaderLayout from this module.

@@ -97,6 +97,8 @@ class RequestItemRow(Base):
     quantity: Mapped[int | None] = mapped_column(default=None)
     unit: Mapped[str] = mapped_column(default="")
     notes: Mapped[str] = mapped_column(default="")
+    # The same product described in another language, when the file supplies one.
+    translation: Mapped[str] = mapped_column(default="", server_default="")
     item_number: Mapped[str] = mapped_column(default="")
     shelf_life: Mapped[str] = mapped_column(default="")
     # {source column label: value} for columns outside the core fields - see

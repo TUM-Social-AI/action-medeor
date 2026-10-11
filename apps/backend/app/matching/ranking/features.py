@@ -39,6 +39,17 @@ def description_similarity(requested: str, descriptions: tuple[str, ...]) -> flo
     )
 
 
+def best_description_similarity(
+    requested: tuple[str | None, ...], descriptions: tuple[str, ...]
+) -> float:
+    """description_similarity for the closest of several requested texts - e.g. a French name and
+    its supplied German translation, either of which may be what the catalog actually says."""
+    return max(
+        (description_similarity(text, descriptions) for text in requested if text),
+        default=0.0,
+    )
+
+
 def search_similarity_components(components: dict[str, float]) -> dict[str, float]:
     """Candidate-local similarity, independent of the other retrieved candidates.
 

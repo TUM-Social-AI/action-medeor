@@ -170,7 +170,9 @@ def test_parse_table_rows_captures_translation_and_shelf_life() -> None:
     assert result.rows_detected == 1
     item = result.items[0]
     assert item.shelf_life == "16 months"
-    assert "Wasserbasierendes Gleitmittel" in item.notes
+    # Its own field, not folded into notes - it's shown beside the name and used for matching.
+    assert item.translation == "Wasserbasierendes Gleitmittel, steril"
+    assert item.notes == ""
 
 
 def test_extract_request_priority_hint_reads_special_info_field() -> None:

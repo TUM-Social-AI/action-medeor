@@ -277,3 +277,30 @@ test('AI review locks the application while pending and removes the button after
     globalThis.HTMLElement = priorHTMLElement;
   }
 });
+
+test('AI-named columns, translations and extra fields render as real table columns', () => {
+  const item = {
+    id: 1, name: 'SONDE VESICALE, FOLEY, stérile', translation: 'Blasenkatheter, Foley, steril',
+    quantity: 48, unit: '', notes: '', itemNumber: '', shelfLife: '',
+    attributes: { Packaging: 'boîte de 10' }, priority: 'medium', confidence: 90,
+    status: 'verified', domain: 'equipment', manual: false,
+  };
+  const html = render({
+    ...data, items: [item], attributeColumns: ['Packaging'],
+    columnLabels: { name: 'Product (French)', translation: 'Product (German)' },
+  });
+  assert.ok(html.includes('Product (French)'));
+  assert.ok(html.includes('Product (German)'));
+  assert.ok(html.includes('Blasenkatheter, Foley, steril'));
+  assert.ok(html.includes('boîte de 10'), 'extra columns are visible without expanding a row');
+  assert.ok(!html.includes('Show extra fields'));
+});
+
+test('the translation column is hidden when no item has one', () => {
+  const item = {
+    id: 1, name: 'Gauze', quantity: 5, unit: 'pcs', notes: '', itemNumber: '', shelfLife: '',
+    attributes: {}, priority: 'medium', confidence: 90, status: 'verified', domain: 'equipment',
+    manual: false,
+  };
+  assert.ok(!render({ ...data, items: [item] }).includes('>Translation<'));
+});

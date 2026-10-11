@@ -72,6 +72,8 @@ async def save_parsed_request(
     request.contact = parsed.partner.get("contact", "")
     request.confirmed = False
     request.attribute_columns = parsed.attribute_columns
+    # The AI mapper's column names are the starting headers; any rename a user already made wins.
+    request.column_labels = {**parsed.column_labels, **(request.column_labels or {})}
     request.available_columns = parsed.available_columns
     request.raw_file = raw_file
     request.workflow_status = "review"
@@ -84,6 +86,7 @@ async def save_parsed_request(
             quantity=parsed_item.quantity,
             unit=parsed_item.unit,
             notes=parsed_item.notes,
+            translation=parsed_item.translation,
             item_number=parsed_item.item_number,
             shelf_life=parsed_item.shelf_life,
             attributes=parsed_item.attributes,
@@ -373,6 +376,7 @@ def to_extracted_item(row: RequestItemRow) -> ExtractedItem:
         quantity=row.quantity,
         unit=row.unit,
         notes=row.notes,
+        translation=row.translation or "",
         itemNumber=row.item_number,
         shelfLife=row.shelf_life,
         attributes=row.attributes or {},
@@ -572,6 +576,7 @@ def review_document_from_request(request: ImportRequestRow) -> ParsedDocument:
         document.items.append(
             ParsedLineItem(
                 **{field: getattr(item, field) for field in FIELDS},
+                translation=item.translation,
                 priority=item.priority,
                 attributes=dict(item.attributes or {}),
                 confidence=item.confidence,

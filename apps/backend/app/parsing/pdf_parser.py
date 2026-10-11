@@ -55,6 +55,8 @@ def parse_pdf(
             for label in page_result.available_columns:
                 if label not in available_columns:
                     available_columns.append(label)
+            for key, label in page_result.column_labels.items():
+                document.column_labels.setdefault(key, label)
 
     remaining_text = "\n".join(text for _, text in free_text_pages if text.strip())
     if remaining_text:

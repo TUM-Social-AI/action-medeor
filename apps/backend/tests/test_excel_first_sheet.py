@@ -8,6 +8,7 @@ from openpyxl import Workbook
 
 from app.parsing import llm_table_classifier
 from app.parsing.excel_parser import _read_xls
+from app.parsing.llm_client import LlmUnavailable
 from app.parsing.service import parse_upload
 
 
@@ -50,7 +51,8 @@ def test_empty_first_sheet_is_not_replaced_by_populated_later_sheet(monkeypatch,
 
 
 def test_populated_first_sheet_ignores_other_sheet_items_and_metadata(monkeypatch):
-    call = Mock(side_effect=AssertionError("A clear first sheet needs no mapping"))
+    # The model is asked once for the first sheet's layout; offline, keywords take over.
+    call = Mock(side_effect=LlmUnavailable("offline"))
     monkeypatch.setattr(llm_table_classifier, "call_llm", call)
     document = parse_upload(
         filename="request.xlsx",
@@ -64,7 +66,7 @@ def test_populated_first_sheet_ignores_other_sheet_items_and_metadata(monkeypatc
         ("First-sheet device", 2, "pcs"),
     ]
     assert document.partner["partner"] == ""
-    assert call.call_count == 0
+    assert call.call_count == 1  # only the first sheet is ever mapped
     assert not any("future feature" in note for note in document.warnings)
 
 

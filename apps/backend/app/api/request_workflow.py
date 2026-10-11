@@ -19,7 +19,7 @@ from app.matching.contracts import (
     SourceReferenceV1,
     SourceType,
 )
-from app.matching.ranking.features import description_similarity, search_similarity_components
+from app.matching.ranking.features import best_description_similarity, search_similarity_components
 from app.matching.ranking.ranker import calculate_ranking_scores
 
 
@@ -52,6 +52,9 @@ def to_inquiry_line(request: ImportRequestRow, item: RequestItemRow) -> InquiryL
         line_id=str(item.id),
         domain=item.domain,
         raw_description=item.name,
+        # Both descriptions feed lexical and vector retrieval (represent_inquiry), so a French
+        # request's German translation can match the German catalog text directly.
+        translated_description=item.translation or None,
         requested_item_number=item.item_number or None,
         quantity=QuantityValue(value=item.quantity, unit=item.unit or None),
         attributes={
@@ -115,7 +118,9 @@ async def matching_state(session: AsyncSession, request_id: str) -> RequestMatch
                     )
                     candidate["score_components"].setdefault(
                         "name_similarity",
-                        description_similarity(item.name, tuple(candidate["descriptions"])),
+                        best_description_similarity(
+                            (item.name, item.translation), tuple(candidate["descriptions"])
+                        ),
                     )
                     # Preserve the exact normalized score used by new runs, which
                     # includes candidates beyond the returned top-k. Older runs
