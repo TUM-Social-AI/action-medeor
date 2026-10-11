@@ -36,4 +36,10 @@ COPY --from=frontend-builder /app/apps/frontend/dist static
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Migrations run before uvicorn starts listening, not as a separate deploy step: Azure Container
+# Apps (and docker-compose's own healthcheck) won't route traffic to this revision until it's
+# listening on the port, so a failed/slow migration here blocks traffic the same way a failed
+# health check already does - no extra Azure role or secret needed, since this uses the
+# container's own already-configured DATABASE_URL. If the migration fails, the container exits
+# and the revision never comes up, surfacing in the existing "Deploy production image" wait loop.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
