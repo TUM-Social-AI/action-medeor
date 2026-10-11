@@ -482,12 +482,14 @@ is verified and classified, the UI queues matching for all lines. The backend wo
 the API is running and recovers expired jobs after a restart. Results, progress, and selections
 remain available when the browser is closed or refreshed. Completed lines can be selected
 while the worker processes other lines. The worker saves a default
-selection when the top article has the exact requested article number, or its text similarity is
-at least 0.78 with compatible numbers and product form. The UI shows the numeric ranking
-score calculated from the matching criteria before candidates are sorted. It preserves
-the lexicographic priority order and is normalized to 0–100 within each requested item:
-the best available candidate scores 100. It is not a calibrated confidence percentage. Name similarity and retrieval evidence remain available
-in candidate details. Other items wait for a person. Alternative
+selection of the top candidate when its search similarity is strictly above 50 for medicine
+with a confirmed matching active ingredient, or strictly above 50 for equipment. Otherwise,
+it saves a “No match” decision, including when no candidates exist or the medicine ingredient
+is unconfirmed or differs. Exact article numbers do not bypass these rules. The UI shows
+the same search similarity on a 0–100 scale, calculated from the available lexical and vector
+channels. It is not a calibrated confidence percentage. Name similarity and retrieval evidence
+remain available in candidate details. Automatic selections and “No match” defaults can be
+changed during review. Alternative
 selections do not require a reason; saved decisions are retained for later offline evaluation and
 do not update live ranking. Opening the summary explicitly finalizes the request. Finalized requests
 open at the summary from history; returning to matching clears that final state while retaining the

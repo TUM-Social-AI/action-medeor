@@ -69,7 +69,7 @@ async def test_only_unconfirmed_candidates_are_restored_with_review_and_cannot_a
     assert candidate.score_components["ingredient_fallback"] == 1
     assert candidate.review_status is RuleOutcome.REVIEW
     assert not any(check.outcome is RuleOutcome.EXCLUDE for check in candidate.constraints)
-    assert automatic_candidate("Ibuprofenn 200 mg tablets", "typo", candidates) is None
+    assert automatic_candidate(ProductDomain.MEDICINE, candidates) is None
 
 
 @pytest.mark.parametrize("cutoff,expected", [(0.65, ["typo"]), (0.95, [])])

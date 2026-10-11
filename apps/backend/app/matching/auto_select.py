@@ -1,12 +1,9 @@
 """Automatic defaults for saved request matches.
 
-Name similarity is a text score, not a calibrated confidence probability.
+Search similarity is a retrieval score, not a calibrated confidence probability.
 """
 
 from __future__ import annotations
-
-import re
-from collections import Counter
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,50 +12,17 @@ from app.db.models import RequestItemRow
 from app.matching.api import get_matching_service
 from app.matching.contracts import (
     AvailabilityStatus,
-    CandidateType,
     DecisionType,
     MatchCandidateV1,
     MatchDecisionRequestV1,
+    ProductDomain,
     RuleOutcome,
 )
-from app.matching.ranking.features import description_similarity
-from app.matching.representation import normalize_text
-
-MIN_NAME_SIMILARITY = 0.78
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
-_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
-_FORM_ALIASES = {
-    "tablet": "tablet", "tablets": "tablet", "tabs": "tablet", "tab": "tablet",
-    "capsule": "capsule", "capsules": "capsule", "caps": "capsule", "cap": "capsule",
-    "syrup": "syrup", "suspension": "suspension", "solution": "solution",
-    "injection": "injection", "infusion": "infusion", "cream": "cream", "ointment": "ointment",
-    "drops": "drops", "suppository": "suppository", "powder": "powder",
-}
-
-
-def _numbers_compatible(requested: str, candidate: MatchCandidateV1) -> bool:
-    numbers = Counter(_NUMBER.findall(normalize_text(requested)))
-    return any(
-        not (numbers - Counter(_NUMBER.findall(normalize_text(description))))
-        for description in candidate.descriptions
-    )
-
-
-def _form(value: str) -> str | None:
-    words = _WORD.findall(normalize_text(value))
-    return next((_FORM_ALIASES[word] for word in words if word in _FORM_ALIASES), None)
-
-
-def _form_compatible(requested: str, candidate: MatchCandidateV1) -> bool:
-    requested_form = _form(requested)
-    return not requested_form or any(
-        _form(description) in {None, requested_form} for description in candidate.descriptions
-    )
+from app.matching.ranking.features import search_similarity_components
 
 
 def automatic_candidate(
-    requested_name: str,
-    requested_item_number: str | None,
+    domain: ProductDomain,
     candidates: tuple[MatchCandidateV1, ...],
 ) -> MatchCandidateV1 | None:
     if not candidates:
@@ -66,20 +30,26 @@ def automatic_candidate(
     best = candidates[0]
     if (
         best.rank != 1
-        or best.candidate_type is not CandidateType.CATALOG
-        or best.item_number is None
-        or best.review_status is not RuleOutcome.PASS
+        or best.review_status is RuleOutcome.EXCLUDE
         or best.availability_status is AvailabilityStatus.NOT_ALLOWED
     ):
         return None
-    if requested_item_number and requested_item_number.strip().casefold() == best.item_number.casefold():
-        return best
-    similarity = description_similarity(requested_name, best.descriptions)
-    return best if (
-        similarity >= MIN_NAME_SIMILARITY
-        and _numbers_compatible(requested_name, best)
-        and _form_compatible(requested_name, best)
-    ) else None
+    score = best.score_components.get("search_similarity")
+    if score is None:
+        score = search_similarity_components(best.score_components).get("search_similarity", 0.0)
+    if domain == ProductDomain.MEDICINE:
+        ingredient_matches = any(
+            check.code == "medicine_active_ingredient_match" and check.outcome is RuleOutcome.PASS
+            for check in best.constraints
+        )
+        return best if (
+            ingredient_matches
+            and best.score_components.get("ingredient_fallback") != 1.0
+            and score > 50
+        ) else None
+    if domain == ProductDomain.EQUIPMENT:
+        return best if score > 50 else None
+    return None
 
 
 async def auto_select_item(session: AsyncSession, item: RequestItemRow) -> bool:
@@ -100,16 +70,14 @@ async def auto_select_item(session: AsyncSession, item: RequestItemRow) -> bool:
     run = await service.get_run(item.current_match_run_id)
     if run is None:
         return False
-    candidate = automatic_candidate(item.name, item.item_number, run.candidates)
-    if candidate is None:
-        return False
+    candidate = automatic_candidate(item.domain, run.candidates)
     await service.save_decision(
         MatchDecisionRequestV1(
             match_run_id=run.match_run_id,
             inquiry_line_id=str(item.id),
-            decision_type=DecisionType.ACCEPT_SUGGESTION,
-            candidate_id=candidate.candidate_id,
-            selected_item_number=candidate.item_number,
+            decision_type=DecisionType.ACCEPT_SUGGESTION if candidate else DecisionType.NO_MATCH,
+            candidate_id=candidate.candidate_id if candidate else None,
+            selected_item_number=candidate.item_number if candidate else None,
             actor="automatic",
         )
     )
