@@ -95,6 +95,8 @@ export type ReviewCounts = {
   missing: number;
 };
 
+export type WorksheetInfo = { name: string; rows: number };
+
 export type ReviewResponse = {
   parserWarnings?: string[];
   usedLlm?: boolean;
@@ -127,6 +129,9 @@ export type ReviewResponse = {
    * detected header row to offer choices from).
    */
   availableColumns: string[];
+  /** Spreadsheets: every worksheet (with its non-empty row count) and the one imported. */
+  sheets?: WorksheetInfo[];
+  selectedSheet?: string | null;
 };
 
 export type ItemUpdate = Partial<

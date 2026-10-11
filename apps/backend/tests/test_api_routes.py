@@ -526,3 +526,66 @@ async def test_delete_request_requires_a_saved_request_and_rejects_active_matchi
         assert "matching finishes" in active.json()["detail"]
     finally:
         app.dependency_overrides.pop(get_session, None)
+
+
+def build_two_sheet_xlsx() -> bytes:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    first = workbook.active
+    first.title = "Request"
+    for row in [["Product", "Quantity", "Unit"], ["Sterile gloves", 200, "pairs"]]:
+        first.append(row)
+    other = workbook.create_sheet("Second list")
+    for row in [["Product", "Quantity", "Unit"], ["Syringe 5 ml", 30, "pcs"], ["Gauze", 10, "rolls"]]:
+        other.append(row)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@pytest.mark.asyncio
+async def test_worksheet_can_be_switched_during_review_keeping_manual_rows() -> None:
+    created = await request(
+        "POST", "/api/imports", files={"file": ("two.xlsx", build_two_sheet_xlsx(), XLSX)}
+    )
+    body = created.json()
+    request_id = body["requestId"]
+    assert body["selectedSheet"] == "Request"
+    assert body["sheets"] == [{"name": "Request", "rows": 2}, {"name": "Second list", "rows": 3}]
+    assert [item["name"] for item in body["items"]] == ["Sterile gloves"]
+
+    manual = await request(
+        "POST", f"/api/requests/{request_id}/items",
+        json={"name": "Hand-added mask", "quantity": 5, "unit": "pcs", "domain": "equipment"},
+    )
+    assert manual.status_code == 201
+
+    switched = await request(
+        "POST", f"/api/requests/{request_id}/worksheet", json={"sheet": "Second list"}
+    )
+    assert switched.status_code == 200
+    body = switched.json()
+    assert body["selectedSheet"] == "Second list"
+    assert [item["name"] for item in body["items"]] == ["Syringe 5 ml", "Gauze", "Hand-added mask"]
+
+    # Later re-parses (here: adding a column) read the selected sheet, not the first one.
+    with_column = await request(
+        "POST", f"/api/requests/{request_id}/custom-columns",
+        json={"displayName": "Unit copy", "hint": "Unit"},
+    )
+    assert [item["name"] for item in with_column.json()["items"]][:2] == ["Syringe 5 ml", "Gauze"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_worksheet_is_rejected() -> None:
+    created = await request(
+        "POST", "/api/imports", files={"file": ("two.xlsx", build_two_sheet_xlsx(), XLSX)}
+    )
+    response = await request(
+        "POST", f"/api/requests/{created.json()['requestId']}/worksheet", json={"sheet": "Nope"}
+    )
+    assert response.status_code == 400

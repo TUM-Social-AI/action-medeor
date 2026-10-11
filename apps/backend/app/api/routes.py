@@ -35,6 +35,7 @@ from app.api.schemas import (
     ReviewResponse,
     SummaryResponse,
     TrendsResponse,
+    WorksheetSelection,
 )
 from app.db import repository
 from app.db.repository import RawFileUnavailable
@@ -42,7 +43,7 @@ from app.db.session import get_session
 from app.matching.api import get_matching_service
 from app.matching.auto_select import auto_select_item
 from app.matching.contracts import DecisionType, MatchDecisionRequestV1
-from app.parsing import ParsingError, parse_upload
+from app.parsing import CustomColumnSpec, ParsingError, parse_upload
 from app.parsing.ai_review import fingerprint, review_document
 from app.parsing.review_sources import fill_legacy_sources
 
@@ -409,6 +410,49 @@ async def add_custom_column(
     )
 
 
+@router.post("/requests/{request_id}/worksheet")
+async def select_worksheet(
+    request_id: str,
+    payload: WorksheetSelection,
+    session: AsyncSession = Depends(get_session),
+) -> ReviewResponse:
+    """Re-extract a spreadsheet request from another of its worksheets (issue #20). Extra sheets
+    in real requests are usually scratch copies, so the user picks one rather than combining all.
+    Replaces the extracted rows; manual rows, partner details and requested custom columns stay."""
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if request.workflow_status != "review":
+        raise HTTPException(status_code=409, detail="Review is locked after matching starts")
+    if payload.sheet not in {sheet["name"] for sheet in request.sheets or []}:
+        raise HTTPException(status_code=400, detail="Unknown worksheet")
+    if payload.sheet == request.selected_sheet:
+        return repository.to_review_response(request)
+    if not request.raw_file:
+        raise HTTPException(
+            status_code=422, detail="The original file is unavailable; re-upload it to switch sheets"
+        )
+    content, file_name, mode = request.raw_file, request.source_file_name, request.extraction_mode
+    specs = [CustomColumnSpec(**entry) for entry in request.custom_columns or []]
+    # Release the read transaction during provider work, then re-check before replacing rows.
+    await session.commit()
+    try:
+        parsed = await run_in_threadpool(
+            parse_upload, filename=file_name, content=content, custom_columns=specs,
+            sheet=payload.sheet,
+        )
+        parsed.extraction_mode = mode
+        if mode == "balanced":
+            parsed = await run_in_threadpool(review_document, parsed)
+    except ParsingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    request = await repository.get_request_by_id(session, request_id, lock=True)
+    if request is None or request.workflow_status != "review":
+        raise HTTPException(status_code=409, detail="Review is locked after matching starts")
+    updated = await repository.replace_extracted_items(session, request, parsed)
+    return repository.to_review_response(updated)
+
+
 @router.post("/requests/{request_id}/matching", status_code=202)
 async def start_matching(
     request_id: str,
@@ -749,6 +793,7 @@ async def ai_review(
     content = request.raw_file
     file_name = request.source_file_name
     table_mappings = request.table_mappings
+    sheet = request.selected_sheet
     before = fingerprint(content, document)
     cached = request.ai_review or {}
     if (
@@ -758,7 +803,9 @@ async def ai_review(
         return repository.to_review_response(request)
     # Release the read transaction during provider work so edits and matching can proceed.
     await session.commit()
-    await run_in_threadpool(fill_legacy_sources, document, file_name, content, table_mappings)
+    await run_in_threadpool(
+        fill_legacy_sources, document, file_name, content, table_mappings, sheet
+    )
     await run_in_threadpool(review_document, document)
     current = await repository.get_request_by_id(session, request_id, lock=True)
     if (
