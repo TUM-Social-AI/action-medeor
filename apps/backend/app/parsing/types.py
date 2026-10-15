@@ -34,6 +34,9 @@ class ParsedLineItem:
     quantity: int | None
     unit: str
     notes: str = ""
+    # The same product described in another language (e.g. a German translation supplied with a
+    # French request). Shown beside the name and sent to matching as translated_description.
+    translation: str = ""
     item_number: str = ""
     shelf_life: str = ""
     # Source columns that carry real request information but don't map to a core field, kept as
@@ -77,6 +80,10 @@ class ParsedDocument:
     # Ordered labels of the extra columns this document contributed, in source column order.
     # Columns that were empty for every row are dropped, so this reflects what's worth showing.
     attribute_columns: list[str] = field(default_factory=list)
+    # Display names the AI mapper chose for core columns, keyed like ReviewResponse.columnLabels
+    # ("name", "translation", "quantity", ...). Seeds the request's column labels; users can
+    # still rename them.
+    column_labels: dict[str, str] = field(default_factory=dict)
     # Header labels this document's table has but that weren't extracted (supplier/admin columns
     # scoped out by classify_columns) - offered back to the user after the fact as "other columns
     # you can add" (see custom_columns.py / the /custom-columns endpoint). Empty for headerless

@@ -170,7 +170,9 @@ def test_parse_table_rows_captures_translation_and_shelf_life() -> None:
     assert result.rows_detected == 1
     item = result.items[0]
     assert item.shelf_life == "16 months"
-    assert "Wasserbasierendes Gleitmittel" in item.notes
+    # Its own field, not folded into notes - it's shown beside the name and used for matching.
+    assert item.translation == "Wasserbasierendes Gleitmittel, steril"
+    assert item.notes == ""
 
 
 def test_extract_request_priority_hint_reads_special_info_field() -> None:
@@ -480,8 +482,9 @@ def test_parse_table_rows_computes_total_from_packs_times_units_per_pack() -> No
     item = result.items[0]
 
     assert item.quantity == 1500
-    assert item.attributes["Packs requested"] == "15"
-    assert item.attributes["Units per pack"] == "100"
+    # The breakdown keeps the file's own column names.
+    assert item.attributes["Packs Requested"] == "15"
+    assert item.attributes["Units Per Pack"] == "100"
 
 
 def test_parse_csv_comma_delimited() -> None:

@@ -81,6 +81,14 @@ def stub(monkeypatch, result):
     return call
 
 
+def offline(monkeypatch):
+    """The model is always asked first; these tests cover the keyword fallback used when no
+    model is configured or reachable."""
+    call = Mock(side_effect=LlmUnavailable("offline"))
+    monkeypatch.setattr(llm_table_classifier, "call_llm", call)
+    return call
+
+
 def build_rfq_pdf(pages=1):
     # Synthetic, wide PDF with the original layout but no partner/product data.
     from reportlab.platypus import PageBreak
@@ -124,7 +132,7 @@ def test_pdf_rfq_extracts_twelve_names_and_requested_totals(monkeypatch):
     assert all(item.notes == "" for item in document.items)
     assert document.used_llm_fallback is True
     assert call.call_count == 1
-    assert all(item.attributes["Units per pack"] == "1" for item in document.items)
+    assert all(item.attributes["UNITS PER PACK"] == "1" for item in document.items)
 
 
 def test_repeated_pdf_pages_reuse_mapping(monkeypatch):
@@ -135,8 +143,8 @@ def test_repeated_pdf_pages_reuse_mapping(monkeypatch):
     assert call.call_count == 1
 
 
-def test_clear_reordered_multiline_table_needs_no_call(monkeypatch):
-    call = stub(monkeypatch, None)
+def test_clear_reordered_multiline_table_falls_back_to_keywords(monkeypatch):
+    call = offline(monkeypatch)
     document = parse_table_rows(
         [
             ["Unit", "TOTAL\nUNITS", "ITEM DESCRIPTION and TECHNICAL SPECIFICATIONS", "Line Item"],
@@ -144,7 +152,7 @@ def test_clear_reordered_multiline_table_needs_no_call(monkeypatch):
             ["", 5, "Other device", 2],
         ]
     )
-    assert call.call_count == 0
+    assert call.call_count == 1
     assert document.items[0].name == "Clinical device"
     assert document.items[0].quantity == 12
     assert document.items[1].unit == ""
@@ -152,7 +160,7 @@ def test_clear_reordered_multiline_table_needs_no_call(monkeypatch):
 
 
 def test_cover_title_and_metadata_do_not_hide_a_late_clear_header(monkeypatch):
-    call = stub(monkeypatch, None)
+    call = offline(monkeypatch)
     preamble = [
         ["Emergency Medical Supply Request"],
         ["Partner", "Example Relief"],
@@ -166,7 +174,7 @@ def test_cover_title_and_metadata_do_not_hide_a_late_clear_header(monkeypatch):
         [1, "Example antibiotic 500mg capsules", 2000, "caps", "Field pharmacy"],
         [2, "Sterile gloves", 500, "pairs", "Field pharmacy"],
     ]))
-    assert call.call_count == 0
+    assert call.call_count == 1
     assert [item.name for item in document.items] == ["Example antibiotic 500mg capsules", "Sterile gloves"]
     assert [item.quantity for item in document.items] == [2000, 500]
     assert document.items[0].row == len(preamble) + 2
@@ -251,13 +259,13 @@ def test_mapping_validation_still_rejects_numeric_quantity_data_as_header():
         validated_layout(rows, mapping({0: "name", 1: "quantity", 2: "unit"}, 3))
 
 
-def test_clear_header_with_leading_numeric_marker_needs_no_call(monkeypatch):
-    call = stub(monkeypatch, None)
+def test_clear_header_with_leading_numeric_marker_falls_back_to_keywords(monkeypatch):
+    call = offline(monkeypatch)
     result = parse_table_rows([
         [None, 1, "Product", "Quantity", "Unit"],
         [None, None, "Sterile device", 20, "pcs"],
     ])
-    assert call.call_count == 0
+    assert call.call_count == 1
     assert [(item.name, item.quantity, item.unit) for item in result.items] == [
         ("Sterile device", 20, "pcs"),
     ]
@@ -367,7 +375,7 @@ def test_invalid_model_assignments_are_rejected(change):
 
 
 def test_explicit_total_wins_and_conflicting_pack_math_needs_review(monkeypatch):
-    call = stub(monkeypatch, None)
+    call = offline(monkeypatch)
     result = parse_table_rows(
         [
             ["Product", "Total units", "Packs requested", "Units per pack", "Unit"],
@@ -378,11 +386,11 @@ def test_explicit_total_wins_and_conflicting_pack_math_needs_review(monkeypatch)
     assert result.items[0].attributes["Packs requested"] == "2"
     assert result.items[0].status == "needs_review"
     assert "conflicts" in " ".join(result.warnings)
-    assert call.call_count == 0
+    assert call.call_count == 1
 
 
 def test_no_quantity_is_inferred_from_dosage_or_model_number(monkeypatch):
-    stub(monkeypatch, None)
+    offline(monkeypatch)
     result = parse_table_rows([["Description"], ["Amoxicillin 500mg"], ["Scale model 354"]])
     assert all(item.quantity is None for item in result.items)
 
@@ -461,17 +469,106 @@ def test_bad_data_outside_mapping_sample_is_flagged(monkeypatch):
 
 
 @pytest.mark.parametrize("value", ["2,000 pcs", "2000pcs"])
-def test_explicit_quantity_and_unit_in_amount_cell_need_no_llm(monkeypatch, value):
-    call = stub(monkeypatch, None)
+def test_explicit_quantity_and_unit_in_amount_cell_without_a_model(monkeypatch, value):
+    call = offline(monkeypatch)
     result = parse_table_rows([["Product", "Quantity"], ["Gauze", value]])
     assert result.items[0].quantity == 2000
     assert result.items[0].unit == "pcs"
-    assert call.call_count == 0
+    assert call.call_count == 1
 
 
 def test_zero_requested_amount_is_not_verified(monkeypatch):
-    call = stub(monkeypatch, None)
+    call = offline(monkeypatch)
     result = parse_table_rows([["Product", "Quantity", "Unit"], ["Gauze", 0, "pcs"]])
     assert result.items[0].status == "needs_review"
     assert result.warnings
-    assert call.call_count == 0
+    assert call.call_count == 1
+
+
+def labelled(roles, width, header=0):
+    return TableMapping(
+        header_row_index=header,
+        columns=[
+            ColumnMapping(column_index=i, role=roles.get(i, "none"), scope="request")
+            for i in range(width)
+        ],
+    )
+
+
+FRENCH_REQUEST = [
+    ["Item number", "Product", "Translation", "desired shelf life", "Quantity enquiry"],
+    ["410168001", "SONDE VESICALE, FOLEY, stérile", "Blasenkatheter, Foley, steril", "16 months", 48],
+    ["", "AIGUILLE, stérile, Luer, 19 G", "Kanüle, steril, Luer, 19 G", "16 months", 5900],
+]
+
+
+def test_clear_table_is_still_mapped_by_the_model_under_its_own_headers(monkeypatch):
+    call = stub(monkeypatch, labelled({
+        0: "item_number", 1: "name", 2: "translation", 3: "attribute", 4: "quantity",
+    }, 5))
+    document = parse_table_rows(FRENCH_REQUEST)
+    assert call.call_count == 1
+    assert document.used_llm_fallback is True
+    first = document.items[0]
+    assert first.name == "SONDE VESICALE, FOLEY, stérile"
+    assert first.translation == "Blasenkatheter, Foley, steril"
+    assert first.notes == ""
+    assert first.quantity == 48
+    # The file's own headers become the table's headers - core columns and extras alike.
+    assert document.column_labels == {
+        "itemNumber": "Item number", "name": "Product", "translation": "Translation",
+        "quantity": "Quantity enquiry",
+    }
+    assert first.attributes == {"desired shelf life": "16 months"}
+    assert document.attribute_columns == ["desired shelf life"]
+
+
+def test_one_odd_row_no_longer_discards_the_whole_mapping(monkeypatch):
+    rows = [["Product", "Qty"]] + [[f"Sterile device {i}", 10] for i in range(9)] + [["410108001", 5]]
+    call = stub(monkeypatch, labelled({0: "name", 1: "quantity"}, 2))
+    document = parse_table_rows(rows)
+    assert call.call_count == 1
+    assert document.used_llm_fallback is True  # accepted despite one identifier-only name
+    assert len(document.items) == 10
+    flagged = [item for item in document.items if item.review_reasons]
+    assert [item.name for item in flagged] == ["410108001"]  # ...which is still flagged itself
+
+
+def test_a_wrong_column_choice_is_still_rejected():
+    rows = [["Code", "Product", "Qty"]] + [[f"41010{i}001", f"Device {i}", 3] for i in range(6)]
+    with pytest.raises(ValueError, match="numeric identifiers"):
+        validated_layout(rows, labelled({0: "name", 2: "quantity"}, 3))
+
+
+def test_translation_is_sent_to_matching():
+    import datetime as dt
+
+    from app.api.request_workflow import to_inquiry_line
+    from app.db.models import ImportRequestRow, RequestItemRow
+    from app.matching.representation import represent_inquiry
+
+    request = ImportRequestRow(
+        request_id="IMP-T", source_file_name="request.xlsx", partner="",
+        created_at=dt.datetime(2026, 10, 11),
+    )
+    item = RequestItemRow(
+        id=1, name="AIGUILLE, stérile, Luer, 19 G", translation="Kanüle, steril, Luer, 19 G",
+        quantity=10, unit="pcs", notes="", item_number="", shelf_life="", attributes={},
+        priority="medium", domain="equipment", manual=False,
+    )
+    item.source_reference = None
+    line = to_inquiry_line(request, item)
+    assert line.translated_description == "Kanüle, steril, Luer, 19 G"
+    assert "kanüle" in represent_inquiry(line).tokens
+
+
+def test_core_columns_keep_the_files_own_header_names(monkeypatch):
+    stub(monkeypatch, labelled({0: "item_number", 1: "name", 2: "quantity"}, 3))
+    document = parse_table_rows([
+        ["PIH code", "Désignation\narticle", "Qté\ndemandée"],
+        ["PIH-0042", "Gants nitrile M", 200],
+    ])
+    # "PIH code" stays "PIH code"; a header wrapped across lines is shown on one line.
+    assert document.column_labels == {
+        "itemNumber": "PIH code", "name": "Désignation article", "quantity": "Qté demandée",
+    }

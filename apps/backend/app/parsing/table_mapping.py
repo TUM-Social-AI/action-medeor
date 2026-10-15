@@ -22,7 +22,7 @@ from app.parsing.llm_table_classifier import (
     TableMapping,
     map_table_with_llm,
 )
-from app.parsing.table_parser import HEADER_SEARCH_LIMIT, HeaderLayout, cell_text
+from app.parsing.table_parser import HEADER_SEARCH_LIMIT, HeaderLayout, cell_text, display_label
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,34 @@ def layout_issues(rows, layout: HeaderLayout | None, *, check_headers: bool = Tr
             if values.get(role) and strict_quantity(values[role]) is None:
                 issues.append("Quantity column contains non-quantity values")
     return list(dict.fromkeys(issues))
+
+
+# A wrong column choice (prices as quantities, codes as names) affects nearly every row, while a
+# messy file has a few odd cells. Above this share of rows, the mapping itself is rejected;
+# below it, the odd rows are flagged individually during extraction instead.
+_MAX_BAD_ROW_SHARE = 0.25
+
+
+def _row_problems(rows, layout: HeaderLayout) -> list[str]:
+    """Semantic data checks that tolerate isolated dirty cells, unlike layout_issues()."""
+    counts: dict[str, int] = {}
+    total = 0
+    for row in rows[layout.row_index + 1 :]:
+        values = {role: cell_text(row[col]) for col, role in layout.roles.items() if col < len(row)}
+        if not values.get("name"):
+            continue  # footer/blank rows are dropped during extraction anyway
+        total += 1
+        found = set()
+        if not any(c.isalpha() for c in values["name"]):
+            found.add("Product-name column contains numeric identifiers")
+        if values.get("unit") and not any(c.isalpha() for c in values["unit"]):
+            found.add("Unit column contains numbers")
+        for role in ("quantity", "quantity_packs", "units_per_pack"):
+            if values.get(role) and strict_quantity(values[role]) is None:
+                found.add("Quantity column contains non-quantity values")
+        for issue in found:
+            counts[issue] = counts.get(issue, 0) + 1
+    return [issue for issue, bad in counts.items() if bad / total > _MAX_BAD_ROW_SHARE]
 
 
 def strict_quantity(value: object) -> int | None:
@@ -137,7 +165,7 @@ def validated_layout(rows, mapping: TableMapping) -> HeaderLayout:
         layout.labels[col] = label or f"Column {col + 1}"
         if role == "attribute":
             # Repeated labels cannot silently overwrite each other's data.
-            extra_label = layout.labels[col]
+            extra_label = display_label(layout.labels[col])
             if extra_label in layout.extras.values():
                 extra_label = f"{extra_label} ({col + 1})"
             layout.extras[col] = extra_label
@@ -145,7 +173,9 @@ def validated_layout(rows, mapping: TableMapping) -> HeaderLayout:
             if role in layout.roles.values():
                 raise MappingRejected("Duplicate core role")
             layout.roles[col] = role
-    problems = layout_issues(rows, layout, check_headers=False)
+    if "name" not in layout.roles.values():
+        raise MappingRejected("No product-name column")
+    problems = _row_problems(rows, layout)
     if problems:
         raise MappingRejected("; ".join(problems))
     # A mapping that hides an entire populated request amount is not a resolution.
@@ -225,19 +255,22 @@ class MappingSession:
                 return proposed, warnings, False
         issues = layout_issues(rows, proposed)
         layout, mapping, used_llm, warnings = proposed, None, False, []
-        if issues:
-            try:
-                mapping = map_table_with_llm(rows, proposed, context)
-                layout = validated_layout(rows, mapping)
-                used_llm = True
-            except (LlmUnavailable, ValueError) as exc:
-                reason = str(exc) if isinstance(exc, MappingRejected) else type(exc).__name__
-                logger.warning("Table mapping unavailable at page=%s: %s", page, reason)
+        # AI-first: every new layout is mapped and named by the model, once per upload (the
+        # cache above reuses it for repeated layouts). The keyword guess is only a hint in the
+        # prompt and the fallback when no model is configured or its answer fails validation.
+        try:
+            mapping = map_table_with_llm(rows, proposed, context)
+            layout = validated_layout(rows, mapping)
+            used_llm = True
+        except (LlmUnavailable, ValueError) as exc:
+            reason = str(exc) if isinstance(exc, MappingRejected) else type(exc).__name__
+            logger.warning("Table mapping unavailable at page=%s: %s", page, reason)
+            layout, mapping = proposed, None
+            if issues:
                 warnings = [
                     "Columns could not be confirmed; review basic extraction: " + "; ".join(issues)
                 ]
-                mapping = None
-        if not issues and proposed is not None:
+        if mapping is None and not issues and proposed is not None:
             mapping = TableMapping(
                 header_row_index=proposed.row_index,
                 columns=[

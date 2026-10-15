@@ -40,10 +40,31 @@ class HeaderLayout:
     labels: dict[int, str] = field(default_factory=dict)
 
 
+# Core roles whose source header becomes the review table's header (so a file's "PIH code" column
+# is shown as "PIH code", not a generic "Item #"), keyed the way the frontend and
+# ReviewResponse.columnLabels name those columns.
+_ROLE_COLUMN_KEYS = {
+    "name": "name",
+    "domain": "type",
+    "translation": "translation",
+    "quantity": "quantity",
+    "unit": "unit",
+    "notes": "notes",
+    "item_number": "itemNumber",
+    "shelf_life": "shelfLife",
+    "priority": "priority",
+}
+
+
 def cell_text(value: object) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def display_label(header: str) -> str:
+    """A source header as shown in the review table: the file's own words, on one line."""
+    return " ".join(header.split())
 
 
 def _find_header_row(rows: list[list[object]]) -> HeaderLayout | None:
@@ -75,8 +96,9 @@ def _find_header_row(rows: list[list[object]]) -> HeaderLayout | None:
             elif role and role not in layout.roles.values():
                 layout.roles[col_index] = role
             else:
+                shown = display_label(text)
                 layout.extras[col_index] = (
-                    f"{text} ({col_index + 1})" if text in layout.extras.values() else text
+                    f"{shown} ({col_index + 1})" if shown in layout.extras.values() else shown
                 )
 
         roles = set(layout.roles.values())
@@ -208,9 +230,9 @@ def parse_table_rows(
         packs = strict_quantity(packs_raw) if packs_raw else None
         per_pack = strict_quantity(per_pack_raw) if per_pack_raw else None
         if packs_raw:
-            attributes["Packs requested"] = packs_raw
+            attributes[_role_label(layout, "quantity_packs", "Packs requested")] = packs_raw
         if per_pack_raw:
-            attributes["Units per pack"] = per_pack_raw
+            attributes[_role_label(layout, "units_per_pack", "Units per pack")] = per_pack_raw
         if (packs_raw and packs is None) or (per_pack_raw and per_pack is None):
             row_issues.append("Invalid pack quantity")
         if packs is not None and per_pack is not None:
@@ -227,9 +249,6 @@ def parse_table_rows(
                 quantity, unit = inferred_quantity, inferred_unit
 
         notes = values.get("notes", "")
-        translation = values.get("translation", "")
-        if translation:
-            notes = f"Translation: {translation}" + (f" · {notes}" if notes else "")
 
         # Partner procurement forms use their own priority-tier wording ("Prioritaire-Priority",
         # "Standard", "Optionnel-Optional") - mapped onto our scale; anything genuinely
@@ -249,6 +268,7 @@ def parse_table_rows(
             quantity=quantity,
             unit=unit,
             notes=notes,
+            translation=values.get("translation", ""),
             item_number=values.get("item_number", ""),
             shelf_life=values.get("shelf_life", ""),
             attributes=attributes,
@@ -281,6 +301,11 @@ def parse_table_rows(
 
     document.rows_detected = len(document.items)
     document.attribute_columns = _surviving_attribute_columns(document)
+    document.column_labels = {
+        _ROLE_COLUMN_KEYS[role]: display_label(layout.labels[col])
+        for col, role in layout.roles.items()
+        if role in _ROLE_COLUMN_KEYS and layout.labels.get(col)
+    }
 
     if custom_columns and layout.row_index >= 0:
         # Lazy import: custom_columns.py imports cell_text/HeaderLayout from this module.
@@ -291,11 +316,15 @@ def parse_table_rows(
     return document
 
 
+def _role_label(layout: HeaderLayout, role: str, default: str) -> str:
+    for col, mapped in layout.roles.items():
+        if mapped == role and layout.labels.get(col):
+            return display_label(layout.labels[col])
+    return default
+
+
 def _priority_label(layout: HeaderLayout) -> str:
-    for col, role in layout.roles.items():
-        if role == "priority":
-            return layout.labels.get(col, "Priority")
-    return "Priority"
+    return _role_label(layout, "priority", "Priority")
 
 
 def _skipped_column_labels(header_row: list[object], kept: set[int]) -> list[str]:

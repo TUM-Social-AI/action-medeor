@@ -38,7 +38,7 @@ from app.matching.ports import (
     OfferSearchRepository,
     VectorRepository,
 )
-from app.matching.ranking.features import description_similarity, search_similarity_components
+from app.matching.ranking.features import best_description_similarity, search_similarity_components
 from app.matching.ranking.ranker import (
     availability_tie_break,
     rank_candidates,
@@ -290,8 +290,10 @@ class MatchingService:
                                 **state.score_components,
                                 **{f"{channel}_weight": weight
                                    for channel, weight in self._retrieval_weights.items()},
-                                "name_similarity": description_similarity(
-                                    request.inquiry_line.raw_description, state.item.descriptions
+                                "name_similarity": best_description_similarity(
+                                    (request.inquiry_line.raw_description,
+                                     request.inquiry_line.translated_description),
+                                    state.item.descriptions,
                                 ),
                             },
                             constraints=tuple(state.constraints),
@@ -354,8 +356,10 @@ class MatchingService:
                                     for hit in evidence
                                     if hit.score is not None
                                 },
-                                "name_similarity": description_similarity(
-                                    request.inquiry_line.raw_description, (description,)
+                                "name_similarity": best_description_similarity(
+                                    (request.inquiry_line.raw_description,
+                                     request.inquiry_line.translated_description),
+                                    (description,),
                                 ),
                             },
                             constraints=(

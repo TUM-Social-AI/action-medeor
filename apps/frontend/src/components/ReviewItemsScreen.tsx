@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Loader2,
@@ -11,8 +11,6 @@ import {
   FileText,
   HelpCircle,
   Info,
-  ChevronDown,
-  ChevronRight,
   ListPlus,
   Pencil,
   PenLine,
@@ -180,7 +178,6 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(!initialData);
-  const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
   const [columnLabels, setColumnLabels] = useState<Record<string, string>>(
     initialData?.columnLabels ?? {},
   );
@@ -264,17 +261,6 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     }
   };
 
-  const toggleExpanded = (itemId: number) =>
-    setExpandedItems(previous => {
-      const next = new Set(previous);
-      if (next.has(itemId)) {
-        next.delete(itemId);
-      } else {
-        next.add(itemId);
-      }
-      return next;
-    });
-
   useEffect(() => {
     if (initialData) {
       setData(initialData);
@@ -349,10 +335,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const showUnit = items.some(item => item.unit);
   const showShelfLife = items.some(item => item.shelfLife);
   const showNotes = items.some(item => item.notes);
+  const showTranslation = items.some(item => item.translation);
   const columnCount =
-    8 +
-    (attributeColumns.length > 0 ? 1 : 0) +
-    [showItemNumber, showUnit, showShelfLife, showNotes].filter(Boolean).length;
+    7 +
+    attributeColumns.length +
+    [showItemNumber, showTranslation, showUnit, showShelfLife, showNotes].filter(Boolean).length;
 
   const verified = items.filter(item => item.status === 'verified').length;
   const needsReview = items.filter(item => item.status === 'needs_review').length;
@@ -376,6 +363,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       quantity: item.quantity,
       unit: item.unit,
       notes: item.notes,
+      translation: item.translation ?? '',
       itemNumber: item.itemNumber,
       shelfLife: item.shelfLife,
       priority: item.priority,
@@ -385,7 +373,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
 
   const openAdd = () => {
     const item: ExtractedItem = {
-      id: 0, name: '', quantity: null, unit: '', notes: '', itemNumber: '', shelfLife: '',
+      id: 0, name: '', quantity: null, unit: '', notes: '', translation: '', itemNumber: '', shelfLife: '',
       attributes: {}, priority: 'medium', confidence: null, status: 'verified',
       domain: null, manual: true,
     };
@@ -418,6 +406,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
         quantity: editValues.quantity!,
         unit: editValues.unit ?? '',
         notes: editValues.notes ?? '',
+        translation: editValues.translation ?? '',
         itemNumber: editValues.itemNumber ?? '',
         shelfLife: editValues.shelfLife ?? '',
         priority: editValues.priority ?? 'medium',
@@ -450,11 +439,6 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     try {
       await removeManualItem(requestId, id);
       setItems(previous => previous.filter(item => item.id !== id));
-      setExpandedItems(previous => {
-        const next = new Set(previous);
-        next.delete(id);
-        return next;
-      });
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to remove item');
@@ -687,15 +671,18 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50">
                   {[
-                    ...(attributeColumns.length > 0 ? [{ key: null, label: '' }] : []),
                     { key: null, label: '#' },
                     ...(showItemNumber ? [{ key: 'itemNumber', label: 'Item #' }] : []),
                     { key: 'name', label: 'Item Name' },
-                    { key: null, label: 'Type' },
+                    ...(showTranslation ? [{ key: 'translation', label: 'Translation' }] : []),
+                    { key: 'type', label: 'Type' },
                     { key: 'quantity', label: 'Qty' },
                     ...(showUnit ? [{ key: 'unit', label: 'Unit' }] : []),
                     ...(showShelfLife ? [{ key: 'shelfLife', label: 'Shelf Life' }] : []),
                     ...(showNotes ? [{ key: 'notes', label: 'Notes' }] : []),
+                    // Columns the file (or the AI mapping) contributed, keyed by their own label -
+                    // which is also item.attributes' key and the rename endpoint's columnKey.
+                    ...attributeColumns.map(label => ({ key: label, label })),
                     { key: 'priority', label: 'Priority' },
                     { key: null, label: 'Confidence' },
                     { key: null, label: 'Status' },
@@ -729,7 +716,6 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   const status = STATUS_CFG[item.status];
                   const priority = PRIORITY_CFG[item.priority];
                   const blocked = needsManualReview(item);
-                  const isExpanded = expandedItems.has(item.id);
                   const missingName = item.status === 'missing' || !item.name;
 
                   const mainRow = (
@@ -744,18 +730,6 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       }`}
                       style={blocked ? { boxShadow: 'inset 3px 0 0 #F59E0B' } : undefined}
                     >
-                      {attributeColumns.length > 0 && (
-                        <td className="pl-4 pr-0 py-3">
-                          <button
-                            onClick={() => toggleExpanded(item.id)}
-                            aria-expanded={isExpanded}
-                            aria-label={isExpanded ? 'Hide extra fields' : 'Show extra fields'}
-                            className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
-                          >
-                            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                          </button>
-                        </td>
-                      )}
                       <td className="px-4 py-3 text-xs text-gray-400">{index + 1}</td>
                       {showItemNumber && (
                         <td className="px-4 py-3">
@@ -783,6 +757,13 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                           </span>
                         )}
                       </td>
+                      {showTranslation && (
+                        <td className="px-4 py-3 max-w-xs">
+                          <span className={`text-sm ${item.translation ? 'text-gray-600' : 'text-gray-300 italic'}`}>
+                            {item.translation || '-'}
+                          </span>
+                        </td>
+                      )}
                       <td className="px-4 py-3">
                         <span className={`text-xs ${item.domain ? 'text-gray-700' : 'text-amber-700'}`}>
                           {item.domain ?? 'Choose in Edit'}
@@ -823,6 +804,13 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                           </span>
                         </td>
                       )}
+                      {attributeColumns.map(label => (
+                        <td key={label} className="px-4 py-3 max-w-xs">
+                          <span className={`text-xs ${item.attributes?.[label] ? 'text-gray-600' : 'text-gray-300 italic'}`}>
+                            {item.attributes?.[label] || '-'}
+                          </span>
+                        </td>
+                      ))}
                       <td className="px-4 py-3">
                         <span className={`inline-flex px-2 py-0.5 rounded-full text-xs ${priority.bg} ${priority.color}`} style={{ fontWeight: 600 }}>
                           {priority.label}
@@ -912,37 +900,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     </tr>
                   );
 
-                  const detailRow =
-                    attributeColumns.length > 0 && isExpanded ? (
-                      <tr key={`${item.id}-details`} className="border-b border-gray-100 bg-gray-50/60">
-                        <td colSpan={columnCount} className="px-12 py-3">
-                          <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1.5 max-w-3xl">
-                            {attributeColumns.map(label => (
-                              <Fragment key={label}>
-                                {/* label (not the renamed text) is always the lookup key into
-                                    item.attributes and the rename endpoint's columnKey - only
-                                    what's displayed changes when the user renames it. */}
-                                <dt className="text-xs text-gray-500" style={{ fontWeight: 600 }}>
-                                  <EditableLabel
-                                    value={columnLabel(label, label)}
-                                    onSave={next => renameColumn(label, next)}
-                                  />
-                                </dt>
-                                <dd
-                                  className={`text-xs ${
-                                    item.attributes?.[label] ? 'text-gray-700' : 'text-gray-300 italic'
-                                  }`}
-                                >
-                                  {item.attributes?.[label] || '—'}
-                                </dd>
-                              </Fragment>
-                            ))}
-                          </dl>
-                        </td>
-                      </tr>
-                    ) : null;
-
-                  return detailRow ? [mainRow, detailRow] : mainRow;
+                  return mainRow;
                 })}
               </tbody>
             </table>
@@ -1177,6 +1135,18 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     onChange={event => setEditValues(values => ({ ...values, name: event.target.value }))}
                   />
                   {nameInvalid && <p id="item-name-error" className="mt-1 text-xs text-red-600">Enter an item name.</p>}
+                </div>
+                <div>
+                  <label htmlFor="item-translation" className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
+                    {columnLabel('translation', 'Translation')} (optional)
+                  </label>
+                  <input
+                    id="item-translation"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
+                    placeholder="The same item described in another language"
+                    value={editValues.translation ?? ''}
+                    onChange={event => setEditValues(values => ({ ...values, translation: event.target.value }))}
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>

@@ -72,9 +72,11 @@ class ExtractedItem(BaseModel):
     quantity: int | None
     unit: str
     notes: str
+    # The same product described in another language, when the source file supplies one.
+    translation: str = ""
     itemNumber: str = ""
     shelfLife: str = ""
-    # File-specific columns that don't map to a core field, keyed by their source header label.
+    # File-specific columns that don't map to a core field, keyed by their display label.
     attributes: dict[str, str] = Field(default_factory=dict)
     priority: Priority
     confidence: int | None
@@ -146,6 +148,7 @@ class ItemUpdate(BaseModel):
     quantity: int | None = None
     unit: str | None = None
     notes: str | None = None
+    translation: str | None = None
     itemNumber: str | None = None
     shelfLife: str | None = None
     priority: Priority | None = None
@@ -157,6 +160,7 @@ class ManualItemCreate(BaseModel):
     quantity: int = Field(gt=0, strict=True)
     unit: str = ""
     notes: str = ""
+    translation: str = ""
     itemNumber: str = ""
     shelfLife: str = ""
     priority: Priority = "medium"

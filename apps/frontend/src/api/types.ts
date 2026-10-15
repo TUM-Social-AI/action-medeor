@@ -73,9 +73,11 @@ export type ExtractedItem = {
   quantity: number | null;
   unit: string;
   notes: string;
+  /** The same product described in another language, when the source file supplies one. */
+  translation?: string;
   itemNumber: string;
   shelfLife: string;
-  /** File-specific columns that don't map to a core field, keyed by their source header label. */
+  /** File-specific columns that don't map to a core field, keyed by their display label. */
   attributes: Record<string, string>;
   priority: Priority;
   confidence: number | null;
@@ -137,7 +139,7 @@ export type ReviewResponse = {
 };
 
 export type ItemUpdate = Partial<
-  Pick<ExtractedItem, 'name' | 'quantity' | 'unit' | 'notes' | 'itemNumber' | 'shelfLife' | 'priority' | 'domain'>
+  Pick<ExtractedItem, 'name' | 'quantity' | 'unit' | 'notes' | 'translation' | 'itemNumber' | 'shelfLife' | 'priority' | 'domain'>
 >;
 
 export type PartnerUpdate = Pick<PartnerDetails, 'partner' | 'region' | 'requestId' | 'contact'>;
