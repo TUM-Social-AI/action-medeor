@@ -28,6 +28,19 @@ class UserExtractionPreferenceRow(Base):
     mode: Mapped[str]
 
 
+class ImportProgressRow(Base):
+    """The live stage of one upload that is still being extracted, keyed by a token the browser
+    sends with the file and polls with. Stored in the database (not memory) so a poll that lands
+    on a different app replica than the upload still sees it. Deleted when the upload finishes."""
+
+    __tablename__ = "import_progress"
+    token: Mapped[str] = mapped_column(primary_key=True)
+    stage: Mapped[str]
+    mode: Mapped[str] = mapped_column(default="basic")
+    items: Mapped[int | None] = mapped_column(default=None)
+    updated_at: Mapped[dt.datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
 class ImportRequestRow(Base):
     """One uploaded partner request file and the partner metadata collected for it."""
 

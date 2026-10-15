@@ -95,6 +95,13 @@ export type ReviewCounts = {
   missing: number;
 };
 
+/** Live stage of an upload being extracted (see getImportProgress). */
+export type ImportProgress = {
+  stage: 'reading' | 'reviewing' | 'saving';
+  mode: 'basic' | 'balanced';
+  items: number | null;
+};
+
 export type ReviewResponse = {
   parserWarnings?: string[];
   usedLlm?: boolean;
