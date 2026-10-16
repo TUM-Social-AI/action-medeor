@@ -207,7 +207,9 @@ def test_ambiguous_medicine_packaging_not_inferred(monkeypatch):
     )
     review_document(doc)
     assert doc.items[0].domain == "medicine"
-    assert doc.items[0].unit == "" and doc.items[0].status == "needs_review"
+    # The default unit stays (never "pcs" for a medicine) and the row stays in review.
+    assert doc.items[0].unit == "Stück" and doc.items[0].status == "needs_review"
+    assert "Medicine packaging requires an explicit requested unit" in doc.items[0].review_reasons
 
 
 def test_pack_arithmetic_conflict_remains_unresolved(monkeypatch):
@@ -260,10 +262,11 @@ def test_character_batches_and_oversized_source_are_explicit(monkeypatch):
 def test_manual_rows_are_not_sent_or_changed(monkeypatch):
     doc = device()
     doc.items[0].manual = True
+    before = doc.items[0].unit
     call = install(monkeypatch)
     review_document(doc)
     assert call.call_count == 0
-    assert doc.items[0].unit == ""
+    assert doc.items[0].unit == before
 
 
 def test_missing_or_extra_rows_are_reported_without_changing_count(monkeypatch):
@@ -337,7 +340,7 @@ def test_packaging_noun_is_not_a_source_stated_requested_unit(monkeypatch):
     doc.items[0].domain = "medicine"
     install(monkeypatch, response([patch("unit", "vial", evidence="vial")]))
     review_document(doc)
-    assert doc.items[0].unit == ""
+    assert doc.items[0].unit == "Stück"  # the unverified packaging noun doesn't replace the default
     assert doc.items[0].status == "needs_review"
     assert doc.review_summary["status"] == "unavailable"
 

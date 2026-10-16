@@ -265,7 +265,7 @@ def parse_table_rows(
                 item.status = "low_confidence" if uncertain else "needs_review"
         if row_issues:
             document.warnings.append(f"Page {page}, row {row_number}: " + "; ".join(row_issues))
-        item.review_reasons = row_issues
+        item.review_reasons = [*item.review_reasons, *row_issues]
         item.review_source = {
             "headers": {str(c): label for c, label in layout.labels.items()},
             "roles": {str(c): role for c, role in layout.roles.items()},
