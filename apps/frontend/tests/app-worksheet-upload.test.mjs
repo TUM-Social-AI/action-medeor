@@ -29,7 +29,7 @@ for (const requestId of [null, 'draft-request']) {
       };
       if (name === './api/client') return { createImport: upload };
       if (name === './api/workflow') return { uploadRequestFile: upload };
-      if (name === './api/identity') return {};
+      if (name === './api/identity' || name === './features/loading/progress') return {};
       if (name === './components/IngestionScreen') return { IngestionScreen: ingestion };
       if (name.startsWith('./components/')) return {};
       return require(name);
@@ -48,7 +48,11 @@ for (const requestId of [null, 'draft-request']) {
       const selected = ['Sheet1', 'Sheet2'];
       screen.props.onContinue(file, selected);
       await new Promise(done => setImmediate(done));
-      assert.deepEqual(calls, [requestId ? [requestId, file, selected] : [file, selected]]);
+      assert.equal(calls.length, 1);
+      const token = calls[0].at(-1);
+      assert.equal(typeof token, 'string');
+      assert.ok(token.length >= 8);
+      assert.deepEqual(calls, [requestId ? [requestId, file, selected, token] : [file, selected, token]]);
     } finally {
       globalThis.window = previousWindow;
     }

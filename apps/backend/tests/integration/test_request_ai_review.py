@@ -390,8 +390,10 @@ async def test_failure_is_visible_and_retryable(client, monkeypatch, failure):
     try:
         assert body["reviewSummary"]["status"] == "unavailable"
         assert "provider details" not in body["reviewSummary"]["message"]
+        # A failed review keeps basic extraction: nothing is marked AI-checked, and the unit the
+        # source omitted is still the visible default rather than an AI-confirmed value.
         assert body["items"][0]["verificationSource"] is None
-        assert body["items"][0]["status"] != "verified"
+        assert body["items"][0]["unit"] == "Stück" and body["items"][0]["inferredFields"]["unit"]
         call.side_effect = checked
         result = await client.post(f"/api/requests/{rid}/ai-review")
         assert result.status_code == 200, result.text
@@ -541,7 +543,7 @@ async def test_stale_results_are_rejected_atomically(client, monkeypatch, change
         assert result.status_code == 409, result.text
         async with async_session() as session:
             saved = await get_request_by_id(session, rid)
-            assert saved.items[0].unit == ""
+            assert saved.items[0].unit == body["items"][0]["unit"]  # stale "pcs" not applied
             assert saved.items[0].verification_source != "ai"
             if change == "edit":
                 assert saved.items[0].notes == "Concurrent edit"

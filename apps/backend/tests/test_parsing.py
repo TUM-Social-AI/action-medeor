@@ -208,7 +208,7 @@ def test_parse_table_rows_ignores_supplier_quote_block() -> None:
     assert result.rows_detected == 1
     item = result.items[0]
     assert item.quantity == 300
-    assert item.unit == ""
+    assert item.unit == "Stück"
     assert "Centramed" not in item.excerpt
     assert "Rapid Test Kit" not in item.excerpt
     assert any("supplier" in warning.lower() for warning in result.warnings)
@@ -567,3 +567,27 @@ def test_llm_extraction_accepts_type_from_source_or_item_name(monkeypatch) -> No
     monkeypatch.setattr(llm_extractor, "call_llm", fake_call)
     result = llm_extractor.extract_items_with_llm("Clinical supply and amoxicillin capsules")
     assert [item.domain for item in result.items] == ["equipment", "medicine"]
+
+
+def test_missing_unit_defaults_to_stueck_and_keeps_the_quantity() -> None:
+    from app.parsing.text_heuristics import DEFAULT_UNIT_EVIDENCE
+
+    result = parse_table_rows([["Product", "Quantity"], ["Examination gloves, nitrile, M", 4]])
+    item = result.items[0]
+    assert (item.quantity, item.unit) == (4, "Stück")
+    assert item.inferred_fields == {"unit": DEFAULT_UNIT_EVIDENCE}  # visibly a default
+    assert item.domain == "equipment" and item.status == "verified"  # no per-row unit chore
+
+
+def test_medicine_with_default_unit_needs_no_review() -> None:
+    result = parse_table_rows([["Product", "Quantity"], ["Amoxicillin 500mg capsules", 2000]])
+    item = result.items[0]
+    assert item.domain == "medicine"
+    assert (item.quantity, item.unit) == (2000, "Stück")
+    assert item.status == "verified"
+    assert item.review_reasons == []
+
+
+def test_explicit_unit_is_not_marked_as_default() -> None:
+    item = parse_table_rows([["Product", "Quantity", "Unit"], ["Gauze", 5, "rolls"]]).items[0]
+    assert item.unit == "rolls" and "unit" not in item.inferred_fields

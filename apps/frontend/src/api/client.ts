@@ -3,6 +3,7 @@ import type {
   ErpMatch,
   ExtractedItem,
   HomeResponse,
+  ImportProgress,
   ImportFileType,
   ItemUpdate,
   ManualItemCreate,
@@ -21,13 +22,18 @@ export function getHome() {
   return requestJson<HomeResponse>('/api/home');
 }
 
+export function getImportProgress(token: string) {
+  return requestJson<ImportProgress>(`/api/imports/progress/${token}`);
+}
+
 export function getRecentImports() {
   return requestJson<RecentImport[]>('/api/imports/recent');
 }
 
-export function createImport(file: File, selectedSheets?: string[]) {
+export function createImport(file: File, selectedSheets?: string[], progressToken?: string) {
   const formData = new FormData();
   formData.append('file', file);
+  if (progressToken) formData.append('progress_token', progressToken);
   selectedSheets?.forEach(sheet => formData.append('selected_sheets', sheet));
 
   return requestJson<ReviewResponse>('/api/imports', {

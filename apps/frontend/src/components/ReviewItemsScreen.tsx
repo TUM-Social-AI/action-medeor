@@ -89,6 +89,14 @@ const STATUS_CFG: Record<
   },
 };
 
+/** Units the extractor filled in carry their reason in inferredFields.unit; the backend's default
+ * (no unit in the request -> Stück) is labelled differently from an AI inference. */
+function unitSourceTag(item: ExtractedItem): string | null {
+  const evidence = item.inferredFields?.unit;
+  if (!evidence) return null;
+  return evidence.startsWith('No unit in the request') ? 'default' : 'AI inferred';
+}
+
 function needsManualReview(item: ExtractedItem) {
   return item.status === 'low_confidence' || item.status === 'missing' || !item.domain || !!item.reviewReasons?.length;
 }
@@ -810,7 +818,17 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       {showUnit && (
                         <td className="px-4 py-3">
                           {item.unit ? (
-                            <span className="text-sm text-gray-500">{item.unit}</span>
+                            <span className="text-sm text-gray-500">
+                              {item.unit}
+                              {/* AI inferences stay in item details (the status already says
+                                  "AI checked"); a plain default has no other signal, so it's
+                                  marked here. */}
+                              {unitSourceTag(item) === 'default' && (
+                                <span className="ml-1.5 text-[11px] text-gray-400 italic">
+                                  default
+                                </span>
+                              )}
+                            </span>
                           ) : (
                             <span className="text-sm text-gray-400 italic">-</span>
                           )}
@@ -1215,12 +1233,12 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   <div>
                     <label htmlFor="item-unit" className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
                       Unit
-                      {unitInferred && <span id="item-unit-inference" className="ml-2 text-amber-700 font-normal">AI inferred</span>}
+                      {unitInferred && <span id="item-unit-inference" className="ml-2 text-gray-400 font-normal">{editingItem && unitSourceTag(editingItem)}</span>}
                     </label>
                     <input
                       id="item-unit"
                       aria-describedby={unitInferred ? 'item-unit-inference' : undefined}
-                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] ${unitInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
+                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] ${unitInferred && editingItem && unitSourceTag(editingItem) !== 'default' ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
                       value={editValues.unit ?? ''}
                       onChange={event => setEditValues(values => ({ ...values, unit: event.target.value }))}
                     />

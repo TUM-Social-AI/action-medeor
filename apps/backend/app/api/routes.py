@@ -3,7 +3,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from app.api import fixtures
+from app.api import fixtures, import_progress
 from app.api.identity import extraction_mode
 from app.api.matched_results_export import build_matched_results_workbook, results_filename
 from app.api.request_workflow import (
@@ -18,6 +18,7 @@ from app.api.schemas import (
     ErpMatch,
     ExtractedItem,
     HomeResponse,
+    ImportProgress,
     ItemUpdate,
     ManualItemCreate,
     ManualRequestCreate,
@@ -38,6 +39,7 @@ from app.api.schemas import (
     WorksheetSelection,
 )
 from app.db import repository
+from app.db.models import ImportProgressRow
 from app.db.repository import RawFileUnavailable
 from app.db.session import get_session
 from app.matching.api import get_matching_service
@@ -97,14 +99,21 @@ async def create_import(
     http_request: Request,
     file: UploadFile = File(...),
     selected_sheets: list[str] | None = Form(None),
+    progress_token: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
+    token = import_progress.valid_token(progress_token)
     mode = await extraction_mode(http_request, session)
     await session.commit()
-    file_name, content, parsed = await _parse_request_file(file, mode, selected_sheets)
-    request = await repository.save_parsed_request(
-        session, parsed=parsed, file_name=file_name, raw_file=content
-    )
+    try:
+        file_name, content, parsed = await _parse_request_file(
+            file, mode, selected_sheets=selected_sheets, token=token
+        )
+        request = await repository.save_parsed_request(
+            session, parsed=parsed, file_name=file_name, raw_file=content
+        )
+    finally:
+        await import_progress.finish(token)
     return repository.to_review_response(request)
 
 
@@ -145,17 +154,22 @@ async def inspect_import(file: UploadFile = File(...)) -> dict:
     return {"sheets": sheets}
 
 
-async def _parse_request_file(file: UploadFile, mode: str = "basic", selected_sheets=None):
+async def _parse_request_file(
+    file: UploadFile, mode: str = "basic", selected_sheets=None, token: str | None = None
+):
     file_name, content = await _read_request_file(file)
     try:
+        await import_progress.report(token, "reading", mode=mode)
         parsed = await run_in_threadpool(
             parse_upload, filename=file_name, content=content, selected_sheets=selected_sheets
         )
         parsed.extraction_mode = mode
         if mode == "balanced":
+            await import_progress.report(token, "reviewing", mode=mode, items=len(parsed.items))
             parsed = await run_in_threadpool(review_document, parsed)
     except ParsingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await import_progress.report(token, "saving", mode=mode, items=len(parsed.items))
 
     return file_name, bytes(content), parsed
 
@@ -222,8 +236,10 @@ async def upload_request_file(
     request_id: str,
     file: UploadFile = File(...),
     selected_sheets: list[str] | None = Form(None),
+    progress_token: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
+    token = import_progress.valid_token(progress_token)
     request = await repository.get_request_by_id(session, request_id)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -231,11 +247,28 @@ async def upload_request_file(
         raise HTTPException(status_code=409, detail="This request already has an uploaded file")
     mode = await extraction_mode(http_request, session)
     await session.commit()
-    file_name, content, parsed = await _parse_request_file(file, mode, selected_sheets)
-    saved = await repository.save_parsed_request(
-        session, parsed=parsed, file_name=file_name, raw_file=content, request_id=request_id
-    )
+    try:
+        file_name, content, parsed = await _parse_request_file(
+            file, mode, selected_sheets=selected_sheets, token=token
+        )
+        saved = await repository.save_parsed_request(
+            session, parsed=parsed, file_name=file_name, raw_file=content, request_id=request_id
+        )
+    finally:
+        await import_progress.finish(token)
     return repository.to_review_response(saved)
+
+
+@router.get("/imports/progress/{token}")
+async def get_import_progress(
+    token: str, session: AsyncSession = Depends(get_session)
+) -> ImportProgress:
+    """404 means not started yet (or already finished) - the loading screen keeps its own
+    estimate until a stage appears, and stops polling when the upload itself returns."""
+    row = await session.get(ImportProgressRow, token) if import_progress.valid_token(token) else None
+    if row is None:
+        raise HTTPException(status_code=404, detail="No upload in progress")
+    return ImportProgress(stage=row.stage, mode=row.mode, items=row.items)
 
 
 @router.get("/requests/{request_id}/review")

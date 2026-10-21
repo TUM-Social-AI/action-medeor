@@ -285,3 +285,17 @@ test('review displays the saved worksheet selection', () => {
   assert.ok(!html.includes('aria-label="Worksheet"'));
   assert.ok(render({ ...data, sheets, selectedSheet: 'Tabelle2' }).includes('Worksheets: Tabelle2'));
 });
+
+test('a defaulted unit is visibly marked as a default, not as source data', () => {
+  const item = {
+    id: 1, name: 'Examination gloves, nitrile, M', quantity: 4, unit: 'Stück', notes: '',
+    itemNumber: '', shelfLife: '', attributes: {}, priority: 'medium', confidence: 90,
+    status: 'verified', domain: 'equipment', manual: false,
+    inferredFields: { unit: 'No unit in the request; defaulted to Stück' },
+  };
+  const html = render({ ...data, items: [item] });
+  assert.ok(html.includes('Stück'));
+  assert.ok(html.includes('>default<'));
+  assert.ok(!html.includes('No unit in the request'));
+  assert.ok(!html.includes('Medicine packaging requires'));
+});

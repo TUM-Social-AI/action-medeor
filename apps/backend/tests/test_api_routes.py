@@ -99,7 +99,14 @@ async def test_recent_imports_returns_supported_file_types() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_import_parses_excel_and_persists_review_payload() -> None:
+async def test_create_import_parses_excel_and_persists_review_payload(monkeypatch) -> None:
+    from app.api import routes
+
+    async def basic_mode(*args):
+        return "basic"
+
+    # Test parser persistence independently of saved preferences or AI availability.
+    monkeypatch.setattr(routes, "extraction_mode", basic_mode)
     workbook_bytes = build_xlsx(
         [
             ["Item number", "Item", "Quantity", "Unit", "desired shelf life", "Notes"],
@@ -610,10 +617,45 @@ async def test_upload_extracts_only_confirmed_worksheets(monkeypatch):
     ]:
         response = await request("POST", "/api/imports",
                                  files={"file": ("two.xlsx", content)},
-                                 data={"selected_sheets": selection})
+                                 data={"selected_sheets": selection, "progress_token": "worksheet-merge-test"})
         assert response.status_code == 200
         body = response.json()
         assert [item["name"] for item in body["items"]] == expected
         assert body["selectedSheets"] == selection
         saved = await request("GET", f'/api/requests/{body["requestId"]}/review')
         assert saved.json()["selectedSheets"] == selection
+
+
+@pytest.mark.asyncio
+async def test_upload_reports_real_stages_and_clears_them(monkeypatch) -> None:
+    from app.api import import_progress, routes
+
+    stages = []
+    real_report = import_progress.report
+
+    async def recording(token, stage, **kwargs):
+        stages.append((stage, kwargs.get("items")))
+        await real_report(token, stage, **kwargs)
+        # While the upload runs, the poll endpoint sees the stage just written.
+        polled = await request("GET", f"/api/imports/progress/{token}")
+        assert polled.json()["stage"] == stage
+
+    monkeypatch.setattr(routes.import_progress, "report", recording)
+    csv_bytes = b"Product,Quantity,Unit\nGauze,5,rolls\nGloves,10,pairs\n"
+    token = "test-token-0001"
+    response = await request(
+        "POST", "/api/imports",
+        files={"file": ("request.csv", csv_bytes, "text/csv")},
+        data={"progress_token": token},
+    )
+    assert response.status_code == 200
+    assert stages[0] == ("reading", None)
+    assert stages[-1] == ("saving", 2)
+    # Finished uploads leave nothing behind to poll.
+    assert (await request("GET", f"/api/imports/progress/{token}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_progress_for_unknown_or_malformed_token_is_404() -> None:
+    assert (await request("GET", "/api/imports/progress/never-started-123")).status_code == 404
+    assert (await request("GET", "/api/imports/progress/bad%20token")).status_code == 404

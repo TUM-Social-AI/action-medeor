@@ -103,6 +103,12 @@ class WorksheetSelection(BaseModel):
     sheet: str = Field(min_length=1)
 
 
+class ImportProgress(BaseModel):
+    stage: Literal["reading", "reviewing", "saving"]
+    mode: Literal["basic", "balanced"]
+    items: int | None = None
+
+
 class ReviewResponse(BaseModel):
     parserWarnings: list[str] = Field(default_factory=list)
     usedLlm: bool = False

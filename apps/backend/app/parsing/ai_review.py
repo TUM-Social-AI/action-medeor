@@ -13,11 +13,11 @@ from app.parsing import partner_extraction
 from app.parsing.domain_inference import explicit_domain, suggest_domain
 from app.parsing.llm_client import LlmUnavailable, call_llm
 from app.parsing.table_mapping import strict_quantity
-from app.parsing.text_heuristics import extract_quantity_and_unit
+from app.parsing.text_heuristics import DEFAULT_UNIT_EVIDENCE, extract_quantity_and_unit
 from app.parsing.types import ParsedDocument, ParsedLineItem
 
 logger = logging.getLogger(__name__)
-REVIEW_VERSION = 2
+REVIEW_VERSION = 3
 MAX_ITEMS = 100
 MAX_CHARACTERS = 32_000
 FIELDS = ("name", "quantity", "unit", "domain", "notes", "item_number", "shelf_life")
@@ -74,7 +74,10 @@ conflicting totals. Never infer quantities from model numbers, dosage or dimensi
 Fill or correct domain to equipment/medicine if clear. Infer unit 'pcs' for clearly individual
 medical devices whose requested total counts devices (including diagnostic devices and medical
 furniture). Do not infer pcs for drugs, bottles, vials, pack counts, fluids, dosages or ambiguous
-packaging. Preserve unclear fields and report issues. Infer only domain or unit, mark inferred=true;
+packaging. When unit_is_default=true, Stück is an application-approved default,
+including for medicines. Do not report an issue or lower confidence solely because this default
+is used or the source omits a unit. Still correct it if the source explicitly states a unit.
+Preserve other unclear fields and report issues. Infer only domain or unit, mark inferred=true;
 even an existing inferred type/unit should receive a correction with provenance if clearly
 supported. For source-stated values use inferred=false. For table corrections, set source_column to the supplied numeric column index supporting the
 field. Inferred type/unit must cite the product-name column; other fields must cite the matching
@@ -268,23 +271,40 @@ def deterministic_issues(item: ParsedLineItem) -> list[str]:
     requested = source_quantity(item)
     if requested is not None and item.quantity != requested:
         issues.append("Copied quantity differs from the requested source total")
-    if item.domain == "medicine" and item.inferred_fields.get("unit"):
+    if (
+        item.domain == "medicine"
+        and item.inferred_fields.get("unit")
+        and item.inferred_fields["unit"] != DEFAULT_UNIT_EVIDENCE
+    ):
         issues.append("Medicine packaging requires an explicit requested unit")
     if item.review_source.get("mappingUncertain"):
         issues.append("Source column mapping remains uncertain")
     return issues
 
 
+def _legacy_protected(item: ParsedLineItem, field: str, value=None) -> bool:
+    """Legacy imports protect every nonempty value - except inferred/default ones (e.g. a "Stück"
+    the extractor filled in), which never came from the source or a person."""
+    value = getattr(item, field) if value is None else value
+    inferred = PUBLIC_FIELDS.get(field, field) in (item.inferred_fields or {})
+    return value not in (None, "") and not inferred
+
+
 def _record(item: ParsedLineItem) -> dict:
     protected = item.protected_fields
     if protected is None:
-        protected = [field for field in FIELDS if getattr(item, field) not in (None, "")]
+        protected = [field for field in FIELDS if _legacy_protected(item, field)]
     return {
         "row_id": item.review_id,
         "page": item.page,
         "row": item.row,
         "source": item.review_source or {"text": item.excerpt},
         "copied": {field: getattr(item, field) for field in FIELDS},
+        "inferred_fields": item.inferred_fields,
+        "unit_is_default": (
+            item.unit == "Stück"
+            and item.inferred_fields.get("unit") == DEFAULT_UNIT_EVIDENCE
+        ),
         "attributes": item.attributes,
         "protected_fields": protected,
     }
@@ -455,7 +475,7 @@ def review_document(document: ParsedDocument) -> ParsedDocument:
                 is_protected = (
                     patch.field in protected
                     if protected is not None
-                    else before[patch.field] not in (None, "")
+                    else _legacy_protected(item, patch.field, before[patch.field])
                 )
                 if is_protected:
                     if before[patch.field] != patch.value:
@@ -524,7 +544,12 @@ def fingerprint(content: bytes, document: ParsedDocument) -> str:
         {
             "id": item.review_id,
             "fields": {f: getattr(item, f) for f in FIELDS},
-            "attributes": item.attributes,
+            "inferred_fields": item.inferred_fields,
+        "unit_is_default": (
+            item.unit == "Stück"
+            and item.inferred_fields.get("unit") == DEFAULT_UNIT_EVIDENCE
+        ),
+        "attributes": item.attributes,
             "priority": item.priority,
             "confidence": item.confidence,
             "verification_source": item.verification_source,
