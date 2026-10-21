@@ -815,7 +815,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                                   "AI checked"); a plain default has no other signal, so it's
                                   marked here. */}
                               {unitSourceTag(item) === 'default' && (
-                                <span className="ml-1.5 text-[11px] text-gray-400 italic" title={item.inferredFields?.unit}>
+                                <span className="ml-1.5 text-[11px] text-gray-400 italic">
                                   default
                                 </span>
                               )}
@@ -1224,12 +1224,12 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                   <div>
                     <label htmlFor="item-unit" className="block text-xs text-gray-500 mb-1" style={{ fontWeight: 600 }}>
                       Unit
-                      {unitInferred && <span id="item-unit-inference" className="ml-2 text-amber-700 font-normal">{editingItem && unitSourceTag(editingItem)}</span>}
+                      {unitInferred && <span id="item-unit-inference" className="ml-2 text-gray-400 font-normal">{editingItem && unitSourceTag(editingItem)}</span>}
                     </label>
                     <input
                       id="item-unit"
                       aria-describedby={unitInferred ? 'item-unit-inference' : undefined}
-                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] ${unitInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
+                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] ${unitInferred && editingItem && unitSourceTag(editingItem) !== 'default' ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
                       value={editValues.unit ?? ''}
                       onChange={event => setEditValues(values => ({ ...values, unit: event.target.value }))}
                     />

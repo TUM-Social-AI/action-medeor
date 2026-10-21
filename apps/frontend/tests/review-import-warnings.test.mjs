@@ -288,4 +288,6 @@ test('a defaulted unit is visibly marked as a default, not as source data', () =
   const html = render({ ...data, items: [item] });
   assert.ok(html.includes('Stück'));
   assert.ok(html.includes('>default<'));
+  assert.ok(!html.includes('No unit in the request'));
+  assert.ok(!html.includes('Medicine packaging requires'));
 });

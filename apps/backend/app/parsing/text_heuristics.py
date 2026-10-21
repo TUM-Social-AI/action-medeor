@@ -82,8 +82,6 @@ DEFAULT_UNIT = "Stück"
 # Stored as the unit's inference evidence; the review screen recognizes this prefix to label the
 # value "default" rather than "AI inferred".
 DEFAULT_UNIT_EVIDENCE = "No unit in the request; defaulted to Stück"
-# Same wording as ai_review.deterministic_issues, so the two never show as separate reasons.
-MEDICINE_UNIT_REASON = "Medicine packaging requires an explicit requested unit"
 
 
 def classify_item(name: str, quantity: int | None, unit: str) -> tuple[ItemStatus, int]:
@@ -125,12 +123,9 @@ def build_item(
     if not unit.strip():
         # Requests usually omit the unit for individual items, and reviewers were typing "Stück"
         # into every row. Default it, keep the requested quantity as-is, and mark it as a default
-        # so it's visibly not from the file. Medicines still need an explicit unit (tablets vs
-        # bottles vs boxes changes what "1000" means), so they stay in review.
+        # so it's visibly not from the file. The default alone never requires review.
         unit = DEFAULT_UNIT
         inferred_fields["unit"] = DEFAULT_UNIT_EVIDENCE
-        if domain == "medicine":
-            review_reasons.append(MEDICINE_UNIT_REASON)
     status, default_confidence = classify_item(name, quantity, unit)
     if review_reasons and status == "verified":
         status = "needs_review"

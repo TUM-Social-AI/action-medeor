@@ -579,13 +579,13 @@ def test_missing_unit_defaults_to_stueck_and_keeps_the_quantity() -> None:
     assert item.domain == "equipment" and item.status == "verified"  # no per-row unit chore
 
 
-def test_medicine_with_default_unit_stays_in_review() -> None:
+def test_medicine_with_default_unit_needs_no_review() -> None:
     result = parse_table_rows([["Product", "Quantity"], ["Amoxicillin 500mg capsules", 2000]])
     item = result.items[0]
     assert item.domain == "medicine"
     assert (item.quantity, item.unit) == (2000, "Stück")
-    assert item.status == "needs_review"
-    assert "Medicine packaging requires an explicit requested unit" in item.review_reasons
+    assert item.status == "verified"
+    assert item.review_reasons == []
 
 
 def test_explicit_unit_is_not_marked_as_default() -> None:
