@@ -68,10 +68,11 @@ class ImportRequestRow(Base):
     # extracted by re-parsing the same source rather than asking the user to re-upload. Absent
     # (None) for rows that predate this column or the fixture demo request.
     raw_file: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
-    # Spreadsheets: every worksheet as {"name", "rows"} and the one currently imported. Every
-    # re-parse of raw_file (custom columns, sheet switch) must use selected_sheet.
+    # Worksheet inventory and confirmed selection. Empty selected_sheets falls back to the
+    # legacy selected_sheet (or the first worksheet) when re-parsing older imports.
     sheets: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     selected_sheet: Mapped[str | None] = mapped_column(default=None)
+    selected_sheets: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
 
     workflow_status: Mapped[str] = mapped_column(default="draft")
     catalog_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)

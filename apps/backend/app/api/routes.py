@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -96,18 +96,19 @@ async def recent_imports() -> list[RecentImport]:
 async def create_import(
     http_request: Request,
     file: UploadFile = File(...),
+    selected_sheets: list[str] | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
     mode = await extraction_mode(http_request, session)
     await session.commit()
-    file_name, content, parsed = await _parse_request_file(file, mode)
+    file_name, content, parsed = await _parse_request_file(file, mode, selected_sheets)
     request = await repository.save_parsed_request(
         session, parsed=parsed, file_name=file_name, raw_file=content
     )
     return repository.to_review_response(request)
 
 
-async def _parse_request_file(file: UploadFile, mode: str = "basic"):
+async def _read_request_file(file: UploadFile):
     file_name = file.filename or ""
     file_extension = file_name.lower().rsplit(".", maxsplit=1)[-1] if "." in file_name else ""
 
@@ -125,8 +126,31 @@ async def _parse_request_file(file: UploadFile, mode: str = "basic"):
         if len(content) > MAX_IMPORT_BYTES:
             raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
 
+    return file_name, bytes(content)
+
+
+@router.post("/imports/inspect")
+async def inspect_import(file: UploadFile = File(...)) -> dict:
+    from app.parsing.excel_parser import inspect_excel
+
+    file_name, content = await _read_request_file(file)
     try:
-        parsed = await run_in_threadpool(parse_upload, filename=file_name, content=bytes(content))
+        sheets = (
+            await run_in_threadpool(inspect_excel, content, file_name)
+            if file_name.lower().endswith((".xlsx", ".xls"))
+            else []
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Could not read workbook") from exc
+    return {"sheets": sheets}
+
+
+async def _parse_request_file(file: UploadFile, mode: str = "basic", selected_sheets=None):
+    file_name, content = await _read_request_file(file)
+    try:
+        parsed = await run_in_threadpool(
+            parse_upload, filename=file_name, content=content, selected_sheets=selected_sheets
+        )
         parsed.extraction_mode = mode
         if mode == "balanced":
             parsed = await run_in_threadpool(review_document, parsed)
@@ -197,6 +221,7 @@ async def upload_request_file(
     http_request: Request,
     request_id: str,
     file: UploadFile = File(...),
+    selected_sheets: list[str] | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
     request = await repository.get_request_by_id(session, request_id)
@@ -206,7 +231,7 @@ async def upload_request_file(
         raise HTTPException(status_code=409, detail="This request already has an uploaded file")
     mode = await extraction_mode(http_request, session)
     await session.commit()
-    file_name, content, parsed = await _parse_request_file(file, mode)
+    file_name, content, parsed = await _parse_request_file(file, mode, selected_sheets)
     saved = await repository.save_parsed_request(
         session, parsed=parsed, file_name=file_name, raw_file=content, request_id=request_id
     )
@@ -430,7 +455,8 @@ async def select_worksheet(
         return repository.to_review_response(request)
     if not request.raw_file:
         raise HTTPException(
-            status_code=422, detail="The original file is unavailable; re-upload it to switch sheets"
+            status_code=422,
+            detail="The original file is unavailable; re-upload it to switch sheets",
         )
     content, file_name, mode = request.raw_file, request.source_file_name, request.extraction_mode
     specs = [CustomColumnSpec(**entry) for entry in request.custom_columns or []]
@@ -604,7 +630,12 @@ async def decide_match(
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
     if request.workflow_status not in {
-        "matching_queued", "matching", "matching_failed", "match_review", "complete", "finalized"
+        "matching_queued",
+        "matching",
+        "matching_failed",
+        "match_review",
+        "complete",
+        "finalized",
     }:
         raise HTTPException(status_code=409, detail="Matching has not started")
     item = next((item for item in request.items if item.id == item_id), None)
@@ -619,7 +650,14 @@ async def decide_match(
     run = await service.get_run(item.current_match_run_id)
     if run is None:
         raise HTTPException(status_code=409, detail="Match run is unavailable")
-    candidate = next((candidate for candidate in run.candidates if candidate.candidate_id == payload.candidateId), None)
+    candidate = next(
+        (
+            candidate
+            for candidate in run.candidates
+            if candidate.candidate_id == payload.candidateId
+        ),
+        None,
+    )
     if not payload.noMatch and candidate is None:
         raise HTTPException(status_code=422, detail="Choose a candidate or No match")
     if payload.noMatch and payload.candidateId is not None:
@@ -794,6 +832,7 @@ async def ai_review(
     file_name = request.source_file_name
     table_mappings = request.table_mappings
     sheet = request.selected_sheet
+    selected_sheets = request.selected_sheets or None
     before = fingerprint(content, document)
     cached = request.ai_review or {}
     if (
@@ -804,7 +843,7 @@ async def ai_review(
     # Release the read transaction during provider work so edits and matching can proceed.
     await session.commit()
     await run_in_threadpool(
-        fill_legacy_sources, document, file_name, content, table_mappings, sheet
+        fill_legacy_sources, document, file_name, content, table_mappings, sheet, selected_sheets
     )
     await run_in_threadpool(review_document, document)
     current = await repository.get_request_by_id(session, request_id, lock=True)

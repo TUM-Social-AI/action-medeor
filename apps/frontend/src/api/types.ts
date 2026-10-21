@@ -131,6 +131,7 @@ export type ReviewResponse = {
   availableColumns: string[];
   /** Spreadsheets: every worksheet (with its non-empty row count) and the one imported. */
   sheets?: WorksheetInfo[];
+  selectedSheets?: string[];
   selectedSheet?: string | null;
 };
 

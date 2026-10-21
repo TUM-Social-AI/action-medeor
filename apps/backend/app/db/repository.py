@@ -77,6 +77,7 @@ async def save_parsed_request(
     request.raw_file = raw_file
     request.sheets = parsed.sheets
     request.selected_sheet = parsed.selected_sheet
+    request.selected_sheets = parsed.selected_sheets
     request.workflow_status = "review"
 
     new_items = _append_parsed_items(request, parsed)
@@ -163,6 +164,7 @@ async def replace_extracted_items(
     request.available_columns = parsed.available_columns
     request.sheets = parsed.sheets
     request.selected_sheet = parsed.selected_sheet
+    request.selected_sheets = parsed.selected_sheets
     new_items = _append_parsed_items(request, parsed)
     for position, item in enumerate(manual, len(new_items)):
         item.position = position  # manual rows stay after the extracted ones
@@ -359,8 +361,12 @@ async def add_custom_column(
 
     all_specs = [*existing_specs, spec]
     parsed = parse_upload(
-        filename=request.source_file_name, content=request.raw_file, custom_columns=all_specs,
-        table_mappings=request.table_mappings or {}, sheet=request.selected_sheet,
+        filename=request.source_file_name,
+        content=request.raw_file,
+        custom_columns=all_specs,
+        table_mappings=request.table_mappings or {},
+        sheet=request.selected_sheet,
+        selected_sheets=request.selected_sheets or None,
     )
 
     tabular_file = request.source_file_name.lower().endswith((".xlsx", ".xls", ".csv"))
@@ -475,6 +481,7 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
         availableColumns=row.available_columns or [],
         sheets=[WorksheetInfo(**sheet) for sheet in row.sheets or []],
         selectedSheet=row.selected_sheet,
+        selectedSheets=row.selected_sheets or ([row.selected_sheet] if row.selected_sheet else []),
         parserWarnings=row.parser_warnings or [],
         usedLlm=bool(row.used_llm_fallback),
         extractionMode=row.extraction_mode,
@@ -657,8 +664,13 @@ def apply_ai_review(request: ImportRequestRow, document: ParsedDocument) -> None
     history = list((request.ai_review or {}).get("attempt_history", []))
     previous = (request.ai_review or {}).get("summary", {})
     if previous.get("status") in {"unavailable", "partial"}:
-        history.append({"status": previous["status"], "failures": previous.get("failures", {}),
-                        "checked": previous.get("checked", 0)})
+        history.append(
+            {
+                "status": previous["status"],
+                "failures": previous.get("failures", {}),
+                "checked": previous.get("checked", 0),
+            }
+        )
     request.ai_review = {
         "attempt_history": history[-5:],
         "summary": document.review_summary,

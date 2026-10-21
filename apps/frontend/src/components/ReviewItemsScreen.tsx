@@ -21,7 +21,6 @@ import {
 } from 'lucide-react';
 import {
   addCustomColumn,
-  selectWorksheet,
   addManualItem,
   confirmPartner,
   getReview,
@@ -190,7 +189,6 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   );
   const [newColumnName, setNewColumnName] = useState('');
   const [isAddingColumn, setIsAddingColumn] = useState(false);
-  const [isSwitchingSheet, setIsSwitchingSheet] = useState(false);
   const [isReviewingAi, setIsReviewingAi] = useState(false);
   const busyDialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -244,29 +242,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   // free) or typed freely by the user, in which case it still guides the LLM fallback match the
   // same way a hint would - see CustomColumnRequest / app.parsing.custom_columns.
   const sheets = data?.sheets ?? [];
-  const switchWorksheet = async (sheet: string) => {
-    if (!requestId || sheet === data?.selectedSheet || itemMutationPending || isAddingColumn) return;
-    const edited = items.some(item => !item.manual && item.verificationSource === 'human');
-    if (
-      edited
-      && !window.confirm('Switching worksheets re-extracts the items and discards edits to extracted rows. Manually added rows are kept. Continue?')
-    ) {
-      return;
-    }
-    setIsSwitchingSheet(true);
-    try {
-      const response = await selectWorksheet(requestId, sheet);
-      setData(response);
-      setItems(response.items);
-      setColumnLabels(response.columnLabels ?? {});
-      setAvailableColumns(response.availableColumns ?? []);
-      setError(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to switch worksheet');
-    } finally {
-      setIsSwitchingSheet(false);
-    }
-  };
+
 
   const submitNewColumn = async () => {
     if (!requestId) return;
@@ -388,7 +364,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const manualCount = items.filter(item => item.manual).length;
   const isManualRequest = !!data && !data.source.fileName;
   const itemMutationPending =
-    isReviewingAi || isSavingItem || removingItemId !== null || isSwitchingSheet;
+    isReviewingAi || isSavingItem || removingItemId !== null;
   const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain && !item.reviewReasons?.length)
     && !itemMutationPending && !isAddingColumn;
   const blockedItems = items.filter(needsManualReview);
@@ -649,23 +625,9 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               {data.source.rowsDetected} rows detected{manualCount > 0 && ` · ${manualCount} added manually`} · Partner: {partnerDetails.partner || '—'}
             </span>
             {sheets.length > 1 && (
-              <label className="ml-auto flex items-center gap-1.5 text-sm text-blue-700">
-                Worksheet
-                <select
-                  aria-label="Worksheet"
-                  className="border border-blue-200 rounded-md bg-white px-2 py-1 text-sm text-gray-700 disabled:opacity-60"
-                  value={data.selectedSheet ?? sheets[0].name}
-                  disabled={itemMutationPending || isAddingColumn}
-                  onChange={event => void switchWorksheet(event.target.value)}
-                >
-                  {sheets.map(sheet => (
-                    <option key={sheet.name} value={sheet.name}>
-                      {sheet.name} ({sheet.rows} rows)
-                    </option>
-                  ))}
-                </select>
-                {isSwitchingSheet && <span className="text-xs text-blue-500">Extracting…</span>}
-              </label>
+              <span className="ml-auto text-sm text-blue-700">
+                Worksheets: {(data.selectedSheets?.length ? data.selectedSheets : [data.selectedSheet ?? sheets[0].name]).join(', ')}
+              </span>
             )}
           </div>
           )}

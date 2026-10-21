@@ -126,8 +126,9 @@ class ReviewResponse(BaseModel):
     # the review screen as suggestions for the "Add column" control (see CustomColumnRequest).
     # Empty for free-text documents, which have no detected header row to offer choices from.
     availableColumns: list[str] = Field(default_factory=list)
-    # Spreadsheets: every worksheet and the one imported (switchable during review).
+    # Spreadsheet inventory and the selection confirmed before extraction.
     sheets: list[WorksheetInfo] = Field(default_factory=list)
+    selectedSheets: list[str] = Field(default_factory=list)
     selectedSheet: str | None = None
 
 

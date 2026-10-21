@@ -25,13 +25,22 @@ export function getRecentImports() {
   return requestJson<RecentImport[]>('/api/imports/recent');
 }
 
-export function createImport(file: File) {
+export function createImport(file: File, selectedSheets?: string[]) {
   const formData = new FormData();
   formData.append('file', file);
+  selectedSheets?.forEach(sheet => formData.append('selected_sheets', sheet));
 
   return requestJson<ReviewResponse>('/api/imports', {
     method: 'POST',
     body: formData,
+  });
+}
+
+export function inspectImport(file: File) {
+  const body = new FormData();
+  body.append('file', file);
+  return requestJson<{ sheets: { name: string; rows: number }[] }>('/api/imports/inspect', {
+    method: 'POST', body,
   });
 }
 

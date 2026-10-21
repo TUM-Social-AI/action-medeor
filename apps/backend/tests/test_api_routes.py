@@ -589,3 +589,31 @@ async def test_unknown_worksheet_is_rejected() -> None:
         "POST", f"/api/requests/{created.json()['requestId']}/worksheet", json={"sheet": "Nope"}
     )
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_upload_extracts_only_confirmed_worksheets(monkeypatch):
+    from app.api import routes
+    from tests.test_excel_first_sheet import workbook_bytes
+
+    async def basic_mode(*args):
+        return "basic"
+
+    monkeypatch.setattr(routes, "extraction_mode", basic_mode)
+    content = workbook_bytes(
+        [["Product", "Quantity", "Unit"], ["First device", 2, "pcs"]],
+        [["Product", "Quantity", "Unit"], ["Other device", 9, "pcs"]],
+    )
+    for selection, expected in [
+        (["Other request"], ["Other device"]),
+        (["First sheet", "Other request"], ["First device", "Other device"]),
+    ]:
+        response = await request("POST", "/api/imports",
+                                 files={"file": ("two.xlsx", content)},
+                                 data={"selected_sheets": selection})
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["name"] for item in body["items"]] == expected
+        assert body["selectedSheets"] == selection
+        saved = await request("GET", f'/api/requests/{body["requestId"]}/review')
+        assert saved.json()["selectedSheets"] == selection

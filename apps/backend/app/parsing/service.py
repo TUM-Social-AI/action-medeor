@@ -22,8 +22,9 @@ def parse_upload(
     custom_columns: list[CustomColumnSpec] | None = None,
     table_mappings: dict | None = None,
     sheet: str | None = None,
+    selected_sheets: list[str] | None = None,
 ) -> ParsedDocument:
-    """sheet picks a spreadsheet worksheet by name (default: the first); ignored for other formats."""
+    """Extract selected worksheets in workbook order; legacy imports default to the first sheet."""
     extension = filename.lower().rsplit(".", maxsplit=1)[-1] if "." in filename else ""
     custom_columns = (custom_columns or [])[:MAX_CUSTOM_COLUMNS]
 
@@ -36,6 +37,7 @@ def parse_upload(
                 custom_columns=custom_columns,
                 mapping_session=mapping_session,
                 sheet=sheet,
+                selected_sheets=selected_sheets,
             )
         elif extension == "pdf":
             document = parse_pdf(
