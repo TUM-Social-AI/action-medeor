@@ -78,6 +78,12 @@ def detect_priority_from_column_value(text: str) -> Priority | None:
     return detect_priority(text)
 
 
+DEFAULT_UNIT = "Stück"
+# Stored as the unit's inference evidence; the review screen recognizes this prefix to label the
+# value "default" rather than "AI inferred".
+DEFAULT_UNIT_EVIDENCE = "No unit in the request; defaulted to Stück"
+
+
 def classify_item(name: str, quantity: int | None, unit: str) -> tuple[ItemStatus, int]:
     """Derive a status + confidence score from how complete the extracted fields are."""
     if not name.strip():
@@ -107,11 +113,28 @@ def build_item(
     source_type: str = "",
     llm_domain: str | None = None,
 ) -> ParsedLineItem:
+    domain = (
+        llm_domain
+        if llm_domain in {"medicine", "equipment"}
+        else suggest_domain(name, unit, source_type=source_type)
+    )
+    inferred_fields: dict[str, str] = {}
+    review_reasons: list[str] = []
+    if not unit.strip():
+        # Requests usually omit the unit for individual items, and reviewers were typing "Stück"
+        # into every row. Default it, keep the requested quantity as-is, and mark it as a default
+        # so it's visibly not from the file. The default alone never requires review.
+        unit = DEFAULT_UNIT
+        inferred_fields["unit"] = DEFAULT_UNIT_EVIDENCE
     status, default_confidence = classify_item(name, quantity, unit)
+    if review_reasons and status == "verified":
+        status = "needs_review"
     return ParsedLineItem(
         name=name.strip(),
         quantity=quantity,
         unit=unit.strip(),
+        inferred_fields=inferred_fields,
+        review_reasons=review_reasons,
         notes=notes.strip(),
         item_number=item_number.strip(),
         shelf_life=shelf_life.strip(),
@@ -121,11 +144,7 @@ def build_item(
         priority=priority or detect_priority(f"{name} {notes}") or default_priority or "medium",
         confidence=confidence if confidence is not None else default_confidence,
         status=status,
-        domain=(
-            llm_domain
-            if llm_domain in {"medicine", "equipment"}
-            else suggest_domain(name, unit, source_type=source_type)
-        ),
+        domain=domain,
         page=page,
         row=row,
         excerpt=excerpt.strip(),

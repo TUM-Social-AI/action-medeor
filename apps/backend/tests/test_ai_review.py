@@ -207,7 +207,9 @@ def test_ambiguous_medicine_packaging_not_inferred(monkeypatch):
     )
     review_document(doc)
     assert doc.items[0].domain == "medicine"
-    assert doc.items[0].unit == "" and doc.items[0].status == "needs_review"
+    # An unsupported AI correction still requires review; the default itself does not.
+    assert doc.items[0].unit == "Stück" and doc.items[0].status == "needs_review"
+    assert "Only clear individual-device counts may use inferred pcs" in doc.items[0].review_reasons
 
 
 def test_pack_arithmetic_conflict_remains_unresolved(monkeypatch):
@@ -260,10 +262,11 @@ def test_character_batches_and_oversized_source_are_explicit(monkeypatch):
 def test_manual_rows_are_not_sent_or_changed(monkeypatch):
     doc = device()
     doc.items[0].manual = True
+    before = doc.items[0].unit
     call = install(monkeypatch)
     review_document(doc)
     assert call.call_count == 0
-    assert doc.items[0].unit == ""
+    assert doc.items[0].unit == before
 
 
 def test_missing_or_extra_rows_are_reported_without_changing_count(monkeypatch):
@@ -337,7 +340,7 @@ def test_packaging_noun_is_not_a_source_stated_requested_unit(monkeypatch):
     doc.items[0].domain = "medicine"
     install(monkeypatch, response([patch("unit", "vial", evidence="vial")]))
     review_document(doc)
-    assert doc.items[0].unit == ""
+    assert doc.items[0].unit == "Stück"  # the unverified packaging noun doesn't replace the default
     assert doc.items[0].status == "needs_review"
     assert doc.review_summary["status"] == "unavailable"
 
@@ -442,3 +445,39 @@ def test_safe_failure_reason_is_available_to_review_interface(monkeypatch, reaso
     review_document(doc)
     assert doc.review_summary["failures"] == {reason: 1}
     assert "Basic extraction has been retained" in doc.review_summary["message"]
+
+
+def test_medicine_default_unit_passes_ai_review_without_corrections(monkeypatch):
+    doc = device(quantity=2000, name="Amoxicillin 500mg capsules")
+    install(monkeypatch, response())
+    review_document(doc)
+    item = doc.items[0]
+    assert (item.quantity, item.unit) == (2000, "Stück")
+    assert item.status == "verified"
+    assert item.review_reasons == []
+    assert item.inferred_fields["unit"] == ai_review.DEFAULT_UNIT_EVIDENCE
+
+
+@pytest.mark.parametrize("name", ["Plastic Gloves", "Ibuprofen"])
+def test_ai_review_receives_default_unit_provenance(monkeypatch, name):
+    doc = device(quantity=20, name=name)
+
+    def accept_default(prompt, schema):
+        payload = json.loads(prompt.rsplit("\n", 1)[1])
+        row = payload["rows"][0]
+        assert row["copied"]["unit"] == "Stück"
+        assert row["unit_is_default"] is True
+        assert row["inferred_fields"]["unit"] == ai_review.DEFAULT_UNIT_EVIDENCE
+        assert "When unit_is_default=true" in prompt
+        return response()
+
+    install(monkeypatch, accept_default)
+    review_document(doc)
+    assert doc.items[0].status == "verified"
+    assert doc.items[0].review_reasons == []
+
+
+def test_explicit_unit_is_not_sent_as_default():
+    doc = parse_table_rows([["Product", "Quantity", "Unit"], ["Gloves", 20, "boxes"]])
+    record = ai_review._record(doc.items[0])
+    assert record["unit_is_default"] is False
