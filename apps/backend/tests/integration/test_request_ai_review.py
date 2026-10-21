@@ -156,8 +156,11 @@ async def test_empty_first_sheet_warning_persists_for_both_upload_paths(
         assert body["items"] == []
         assert body["partner"]["confirmed"] is False
         assert mapper.call_count == 0
-        # The empty first sheet is still what's imported, and the user is pointed at the picker.
-        assert any("Worksheet selector" in note for note in body["parserWarnings"])
+        # Legacy uploads still import the first sheet and point users to sheet selection on upload.
+        assert any(
+            "other worksheets" in note and "select them when uploading" in note
+            for note in body["parserWarnings"]
+        )
         assert len(body["sheets"]) > 1 and body["selectedSheet"] == body["sheets"][0]["name"]
         reopened = await client.get(f"/api/requests/{rid}/review")
         assert reopened.status_code == 200, reopened.text
