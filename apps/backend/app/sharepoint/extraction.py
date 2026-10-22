@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from app.offers.contracts import NormalizedOfferUpsertV1
 from app.offers.dates import resolve_validity
-from app.offers.extraction import PROMPT_VERSION, OfferExtraction, extract_offers
+from app.offers.extraction import (
+    PROMPT_VERSION,
+    ExtractionCheckpoint,
+    OfferExtraction,
+    extract_offers,
+)
 from app.sharepoint.changes import SharePointChange
 from app.sharepoint.scope import content_version
 
@@ -60,6 +67,10 @@ class ExtractionFailure(RuntimeError):
     pass
 
 
+class ExtractionDeferred(RuntimeError):
+    """Successful chunks were saved, but the document needs another processing turn."""
+
+
 @dataclass(frozen=True)
 class OfferBatch:
     offers: list[NormalizedOfferUpsertV1]
@@ -75,6 +86,13 @@ def normalize(
         raise ExtractionFailure("; ".join(result.failures))
     if any("unsupported" in warning for warning in result.warnings):
         raise UnsupportedDocument("; ".join(result.warnings))
+    if result.chunks_remaining:
+        if not result.chunks_attempted:
+            raise ExtractionFailure("No new chunk could be processed within the turn's time budget")
+        raise ExtractionDeferred(
+            f"Processing budget reached: {result.chunks_succeeded}/{result.chunks_total} "
+            "chunks completed; progress saved"
+        )
     if not result.chunks_succeeded:
         raise UnsupportedDocument(
             "; ".join(result.warnings) or "Document contains no readable data"
@@ -170,8 +188,26 @@ async def extract(
     document: DownloadedDocument,
     *,
     max_chunks: int = 32,
+    checkpoint: dict | None = None,
+    save_checkpoint: Callable[[str, dict], Awaitable[None]] | None = None,
+    time_budget_seconds: float | None = None,
 ) -> OfferBatch:
     cancelled = threading.Event()
+    loop = asyncio.get_running_loop()
+    deadline = monotonic() + time_budget_seconds - 70 if time_budget_seconds is not None else None
+
+    def persist(progress: ExtractionCheckpoint, chunk_key: str) -> None:
+        if cancelled.is_set():
+            raise RuntimeError("Document extraction cancelled before saving the next chunk")
+        if save_checkpoint is not None:
+            asyncio.run_coroutine_threadsafe(
+                save_checkpoint(
+                    progress.fingerprint,
+                    {chunk_key: progress.chunks[chunk_key].model_dump(mode="json")},
+                ),
+                loop,
+            ).result()
+
     try:
         result = await asyncio.to_thread(
             extract_offers,
@@ -179,6 +215,9 @@ async def extract(
             document.filename,
             max_chunks=max_chunks,
             should_stop=cancelled.is_set,
+            should_pause=lambda: deadline is not None and monotonic() >= deadline,
+            checkpoint=ExtractionCheckpoint.model_validate(checkpoint) if checkpoint else None,
+            save_checkpoint=persist,
         )
     except asyncio.CancelledError:
         cancelled.set()

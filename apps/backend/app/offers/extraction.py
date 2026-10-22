@@ -6,6 +6,7 @@ Document content is untrusted data. Results carry evidence for human review.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -83,11 +84,18 @@ class OfferExtraction(StrictModel):
     prompt_version: str = PROMPT_VERSION
     chunks_attempted: int = 0
     chunks_succeeded: int = 0
+    chunks_total: int = 0
+    chunks_remaining: int = 0
 
 
 class _LlmResult(StrictModel):
     offers: list[ExtractedOffer]
     warnings: list[str]
+
+
+class ExtractionCheckpoint(StrictModel):
+    fingerprint: str
+    chunks: dict[str, _LlmResult] = Field(default_factory=dict)
 
 
 class SourceChunk(StrictModel):
@@ -403,8 +411,13 @@ def extract_offers(
     max_chars: int = MAX_INPUT_CHARS,
     max_chunks: int | None = None,
     should_stop: Callable[[], bool] | None = None,
+    should_pause: Callable[[], bool] | None = None,
+    checkpoint: ExtractionCheckpoint | None = None,
+    save_checkpoint: Callable[[ExtractionCheckpoint, str], None] | None = None,
 ) -> OfferExtraction:
-    """Extract locally with the configured provider; failures never masquerade as empty success."""
+    """Process a bounded turn, reusing successful chunks without publishing partial results."""
+    if max_chunks is not None and max_chunks < 1:
+        raise ValueError("max_chunks must be positive")
     result = OfferExtraction()
     try:
         chunks, warnings = read_offer_document(content, filename, max_chars=max_chars)
@@ -412,20 +425,37 @@ def extract_offers(
         result.failures.append(f"Document read failed: {type(exc).__name__}: {exc}")
         return result
     result.warnings.extend(warnings)
-    if max_chunks is not None and len(chunks) > max_chunks:
-        result.failures.append(f"Document needs {len(chunks)} chunks; limit is {max_chunks}")
-        return result
+    result.chunks_total = len(chunks)
+    fingerprint = hashlib.sha256(
+        content
+        + f"{PROMPT_VERSION}:{_PROMPT}:{Path(filename).suffix.lower()}:{max_chars}:{MAX_ROWS}".encode()
+    ).hexdigest()
+    if checkpoint is None or checkpoint.fingerprint != fingerprint:
+        checkpoint = ExtractionCheckpoint(fingerprint=fingerprint)
     seen: dict[tuple[str, int], ExtractedOffer] = {}
     for index, chunk in enumerate(chunks, 1):
         if should_stop is not None and should_stop():
             result.failures.append("Document extraction cancelled before the next model call")
             break
-        result.chunks_attempted += 1
-        try:
-            extracted = llm(_PROMPT + chunk.text, _LlmResult)
-        except Exception as exc:
-            result.failures.append(f"Chunk {index} ({chunk.label}): {type(exc).__name__}: {exc}")
-            continue
+        chunk_key = hashlib.sha256(f"{index}:{chunk.label}:{chunk.text}".encode()).hexdigest()
+        extracted = checkpoint.chunks.get(chunk_key)
+        if extracted is None:
+            if (max_chunks is not None and result.chunks_attempted >= max_chunks) or (
+                should_pause is not None and should_pause()
+            ):
+                continue
+            result.chunks_attempted += 1
+            try:
+                extracted = llm(_PROMPT + chunk.text, _LlmResult)
+            except Exception as exc:
+                result.failures.append(f"Chunk {index} ({chunk.label}): {type(exc).__name__}: {exc}")
+                continue
+            checkpoint.chunks[chunk_key] = extracted.model_copy(deep=True)
+            if save_checkpoint is not None:
+                # A persistence/lease error must stop the worker before another model call.
+                save_checkpoint(checkpoint, chunk_key)
+        # Evidence verification adds warnings; never mutate the cached raw response.
+        extracted = extracted.model_copy(deep=True)
         result.chunks_succeeded += 1
         result.warnings.extend(extracted.warnings)
         source = _source_lookup(chunk)
@@ -458,4 +488,5 @@ def extract_offers(
                     )
             seen[key] = offer
             result.offers.append(offer)
+    result.chunks_remaining = result.chunks_total - result.chunks_succeeded
     return result

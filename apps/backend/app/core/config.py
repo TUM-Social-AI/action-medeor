@@ -43,9 +43,9 @@ class Settings(BaseSettings):
     sharepoint_medication_folder_id: str = ""
     sharepoint_equipment_folder_id: str = ""
     sharepoint_processing_enabled: bool = False
-    sharepoint_max_documents_per_run: int = 1
+    sharepoint_max_documents_per_run: int = 1  # Processing turns, including continuations.
     sharepoint_max_document_bytes: int = 20_000_000
-    sharepoint_max_extraction_chunks: int = 32
+    sharepoint_max_extraction_chunks: int = 32  # New chunks per document turn.
     sharepoint_document_timeout_seconds: int = 600
     sharepoint_max_attempts: int = 3
 

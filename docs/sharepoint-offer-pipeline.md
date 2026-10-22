@@ -136,10 +136,10 @@ Configure these on the **job**, not just the web container:
 | `SHAREPOINT_DRIVE_ID`, `SHAREPOINT_ROOT_FOLDER_ID` | Permitted source root |
 | `SHAREPOINT_EQUIPMENT_FOLDER_ID`, `SHAREPOINT_MEDICATION_FOLDER_ID` | Explicit domain folders; at least one required |
 | `SHAREPOINT_PROCESSING_ENABLED` | `false` |
-| `SHAREPOINT_MAX_DOCUMENTS_PER_RUN` | `1`; embeddings follow the same attempted files, or retry existing pending files when there is no extraction work |
+| `SHAREPOINT_MAX_DOCUMENTS_PER_RUN` | `1` processing turn per run, including continuations; embeddings follow completed files |
 | `SHAREPOINT_MAX_DOCUMENT_BYTES` | `20000000`; streamed download limit |
-| `SHAREPOINT_MAX_EXTRACTION_CHUNKS` | `32`; reject excessive input before model calls |
-| `SHAREPOINT_DOCUMENT_TIMEOUT_SECONDS` | `600` |
+| `SHAREPOINT_MAX_EXTRACTION_CHUNKS` | `32` new chunks per document turn; successful chunks are checkpointed |
+| `SHAREPOINT_DOCUMENT_TIMEOUT_SECONDS` | `600` per turn; stop starting model calls with fewer than 70 seconds left |
 | `SHAREPOINT_MAX_ATTEMPTS` | `3` durable attempts per document/embedding job |
 | `LLM_PROVIDER`, `AZURE_OPENAI_DEPLOYMENT` and extraction endpoint/key | Configured Azure Luna deployment |
 | Embedding provider/deployment/name/version/dimensions and endpoint/key | Must match the query model; current local configuration is `text-embedding-3-large`, 3072 dimensions |
@@ -201,6 +201,43 @@ az containerapp job start --name JOB_NAME --resource-group RESOURCE_GROUP \
 This overrides only that execution, using the same job environment and secrets. Inspect its
 execution logs for the summary and individual offer writes. Azure documents this
 [per-execution template override](https://learn.microsoft.com/en-us/azure/container-apps/jobs#override-the-job-configuration-for-an-execution).
+
+Documents are split into requests with repeated source context. A chunk contains at most 24
+source units (Excel rows or PDF pages/lines/table rows) and 24,000 characters of document data.
+The chunk limit bounds each processing turn, not the total length of a document.
+
+Each successful chunk is checkpointed in the existing job's `result_json`. When the chunk or
+time budget is reached, the document returns immediately to the back of the eligible queue
+without consuming a failed attempt. Other documents get their turns before it continues.
+Rediscovery preserves queue age and checkpoints for unchanged files. No migrations or separate
+queue service are needed. Each run stops after its configured number of turns or when no work
+is eligible; it never waits for API-failure backoff to elapse.
+
+For example, with five turns and a 32-chunk budget, a 39-chunk document can finish in two turns
+in the same run if it is the only document. Five documents get one turn each, leaving unfinished
+work for the next sync. One huge document gets at most five turns, then continues next time.
+The 20 MB file limit, supported-format restrictions and 60-second model-request timeout remain.
+Preparation that exhausts the time budget without processing a new chunk fails with backoff.
+
+Reports and the status API include `turns` and `deferred`; the latter counts distinct documents
+still pending due to a budget pause at run end. Budget-only pauses show an informational
+"Processing budget reached" message in the existing UI status area. Actual failures remain
+errors; mixed outcomes also explain saved progress. If all continuations finish in the same run,
+the final report shows ordinary completion. `process-one` performs one turn only and exits
+successfully with `status: pending` and `deferred: 1` when it saves a budget pause.
+
+Model/API failures keep their existing backoff and three-attempt limit, while retaining successful
+chunks so later attempts call the model only for missing chunks. Results are published and
+embedded only after the whole document succeeds; existing offers remain available meanwhile.
+Checkpoints are fenced by lease and source/extraction version, and tied to document content,
+prompt and chunk layout. Stale workers cannot overwrite a new version's progress. Legacy failures
+specifically reporting `Document needs ... chunks; limit is ...` are automatically requeued,
+including those that exhausted their attempts. Other terminal failures still need an explicit retry.
+
+Release the worker and web app using the same new container image. The current production
+publication workflow updates the web container only, so the SharePoint job image must also be
+updated as part of rollout. No schema upgrade is needed for this change. Monitor `turns`,
+`deferred`, actual failures and the per-document saved-progress logs after rollout.
 
 Transient failures are retried with bounded backoff. Unsupported files are not automatically retried.
 After fixing a terminal failure, explicitly retry this document:

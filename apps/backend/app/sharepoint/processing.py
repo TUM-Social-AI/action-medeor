@@ -8,6 +8,7 @@ import json
 import logging
 from dataclasses import asdict
 from datetime import datetime
+from time import monotonic
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -18,6 +19,7 @@ from app.sharepoint.changes import Item, SharePointChange
 from app.sharepoint.extraction import (
     EXTRACTION_VERSION,
     DownloadedDocument,
+    ExtractionDeferred,
     OfferBatch,
     UnsupportedDocument,
     extract,
@@ -56,30 +58,30 @@ def offer_external_id(job: dict, offer) -> str:
 async def enqueue(session, drive_id: str, folder_id: str, item: Item) -> None:
     if not supported(item) or item.domain is None:
         return
+    reset = """sharepoint_offer_jobs.content_version != EXCLUDED.content_version
+        OR sharepoint_offer_jobs.extraction_version IS DISTINCT FROM EXCLUDED.extraction_version
+        OR sharepoint_offer_jobs.status='archived'
+        OR (sharepoint_offer_jobs.status='failed' AND sharepoint_offer_jobs.error ~
+            '^ExtractionFailure: Document needs [0-9]+ chunks; limit is [0-9]+$')"""
     await session.execute(
-        text("""
+        text(f"""
         INSERT INTO sharepoint_offer_jobs
             (drive_id,folder_id,item_id,content_version,domain,item_json,extraction_version)
         VALUES (:drive,:folder,:item,:version,:domain,CAST(:data AS jsonb),:extraction)
         ON CONFLICT (drive_id,folder_id,item_id) DO UPDATE SET
             item_json=EXCLUDED.item_json, domain=EXCLUDED.domain,
             content_version=EXCLUDED.content_version, extraction_version=EXCLUDED.extraction_version,
-            status=CASE WHEN sharepoint_offer_jobs.content_version != EXCLUDED.content_version
-                OR sharepoint_offer_jobs.extraction_version IS DISTINCT FROM EXCLUDED.extraction_version
-                OR sharepoint_offer_jobs.status='archived' THEN 'pending'
+            status=CASE WHEN {reset} THEN 'pending'
                 ELSE sharepoint_offer_jobs.status END,
-            attempts=CASE WHEN sharepoint_offer_jobs.content_version != EXCLUDED.content_version
-                OR sharepoint_offer_jobs.extraction_version IS DISTINCT FROM EXCLUDED.extraction_version
-                OR sharepoint_offer_jobs.status='archived' THEN 0 ELSE sharepoint_offer_jobs.attempts END,
-            next_attempt_at=CASE WHEN sharepoint_offer_jobs.content_version != EXCLUDED.content_version
-                OR sharepoint_offer_jobs.extraction_version IS DISTINCT FROM EXCLUDED.extraction_version
-                OR sharepoint_offer_jobs.status='archived' THEN NULL
+            attempts=CASE WHEN {reset} THEN 0 ELSE sharepoint_offer_jobs.attempts END,
+            next_attempt_at=CASE WHEN {reset} THEN NULL
                 ELSE sharepoint_offer_jobs.next_attempt_at END,
-            lease_token=CASE WHEN sharepoint_offer_jobs.content_version != EXCLUDED.content_version
-                OR sharepoint_offer_jobs.extraction_version IS DISTINCT FROM EXCLUDED.extraction_version
-                OR sharepoint_offer_jobs.status='archived' THEN NULL
+            lease_token=CASE WHEN {reset} THEN NULL
                 ELSE sharepoint_offer_jobs.lease_token END,
-            updated_at=now()
+            result_json=CASE WHEN {reset} THEN NULL ELSE sharepoint_offer_jobs.result_json END,
+            error=CASE WHEN {reset} THEN NULL ELSE sharepoint_offer_jobs.error END,
+            updated_at=CASE WHEN {reset} THEN clock_timestamp()
+                ELSE sharepoint_offer_jobs.updated_at END
     """),
         {
             **source_params(drive_id, folder_id, item.item_id),
@@ -143,7 +145,8 @@ async def claim(session, drive_id: str, folder_id: str, settings: Settings, item
                    OR (status='running' AND lease_until < now()))
             ORDER BY updated_at,item_id FOR UPDATE SKIP LOCKED LIMIT 1
         ) UPDATE sharepoint_offer_jobs j SET status='running',attempts=j.attempts+1,
-            lease_token=:token,lease_until=now()+make_interval(secs=>:lease_seconds),error=NULL
+            lease_token=:token,lease_until=now()+make_interval(secs=>:lease_seconds),error=NULL,
+            updated_at=clock_timestamp()
         FROM picked p WHERE j.drive_id=p.drive_id AND j.folder_id=p.folder_id AND j.item_id=p.item_id
         RETURNING j.*
     """),
@@ -263,6 +266,55 @@ async def fail(session, job: dict, exc: Exception) -> None:
     await session.commit()
 
 
+async def save_checkpoint(session, job: dict, fingerprint: str, chunks: dict) -> None:
+    saved = await session.scalar(
+        text("""
+        UPDATE sharepoint_offer_jobs SET result_json=jsonb_build_object(
+            'checkpoint', jsonb_build_object(
+                'fingerprint', CAST(:fingerprint AS text),
+                'chunks', (CASE WHEN result_json->'checkpoint'->>'fingerprint'=:fingerprint
+                    THEN COALESCE(result_json->'checkpoint'->'chunks', '{}'::jsonb)
+                    ELSE '{}'::jsonb END) || CAST(:chunks AS jsonb)))
+        WHERE drive_id=:drive AND folder_id=:folder AND item_id=:item
+            AND status='running' AND lease_token=:token AND lease_until > now()
+            AND content_version=:version AND extraction_version=:extraction
+        RETURNING item_id
+    """),
+        {
+            **source_params(job["drive_id"], job["folder_id"], job["item_id"]),
+            "token": job["lease_token"],
+            "version": job["content_version"],
+            "extraction": job["extraction_version"],
+            "fingerprint": fingerprint,
+            "chunks": json.dumps(chunks),
+        },
+    )
+    if saved is None:
+        raise RuntimeError("Document lease or version changed; checkpoint discarded")
+    await session.commit()
+
+
+async def defer(session, job: dict) -> bool:
+    released = await session.scalar(
+        text("""
+        UPDATE sharepoint_offer_jobs SET status='pending',attempts=GREATEST(attempts-1,0),
+            lease_token=NULL,next_attempt_at=NULL,error=NULL,updated_at=clock_timestamp()
+        WHERE drive_id=:drive AND folder_id=:folder AND item_id=:item
+            AND status='running' AND lease_token=:token AND lease_until > now()
+            AND content_version=:version AND extraction_version=:extraction
+        RETURNING item_id
+    """),
+        {
+            **source_params(job["drive_id"], job["folder_id"], job["item_id"]),
+            "token": job["lease_token"],
+            "version": job["content_version"],
+            "extraction": job["extraction_version"],
+        },
+    )
+    await session.commit()
+    return released is not None
+
+
 async def process_pending(
     graph,
     folder_id: str,
@@ -275,6 +327,8 @@ async def process_pending(
     result = {
         "processed": 0,
         "failed": 0,
+        "turns": 0,
+        "deferred": 0,
         "offers": 0,
         "offer_ids": [],
         "offer_repository_writes": [],
@@ -286,13 +340,22 @@ async def process_pending(
         "attempted_item_ids": [],
     }
     limit = 1 if item_id else settings.sharepoint_max_documents_per_run
+    deferred = set()
     for _ in range(limit):
         async with sessions() as session:
             job = await claim(session, graph.drive_id, folder_id, settings, item_id)
         if job is None:
             break
+        result["turns"] += 1
+        deferred.discard(job["item_id"])
         result["attempted_item_ids"].append(job["item_id"])
         item = stored_item(job["item_json"])
+        started = monotonic()
+
+        async def persist(fingerprint: str, chunks: dict, *, claimed_job=job) -> None:
+            async with sessions() as session:
+                await save_checkpoint(session, claimed_job, fingerprint, chunks)
+
         try:
             async with asyncio.timeout(settings.sharepoint_document_timeout_seconds):
                 current = await resolve_item(
@@ -320,6 +383,11 @@ async def process_pending(
                         current.created_at,
                     ),
                     max_chunks=settings.sharepoint_max_extraction_chunks,
+                    checkpoint=(job.get("result_json") or {}).get("checkpoint"),
+                    save_checkpoint=persist,
+                    time_budget_seconds=max(
+                        0, settings.sharepoint_document_timeout_seconds - (monotonic() - started)
+                    ),
                 )
                 after = await resolve_item(graph, folder_id, item.item_id, domain_folders(settings))
                 if (
@@ -356,10 +424,28 @@ async def process_pending(
                     for offer, offer_id in zip(batch.offers, ids, strict=True)
                 )
                 result["offer_repository_write_count"] += len(ids)
+        except ExtractionDeferred as exc:
+            async with sessions() as session:
+                released = await defer(session, job)
+            if released:
+                deferred.add(item.item_id)
+                logger.info("Offer extraction paused item=%s: %s", item.item_id, exc)
+            else:
+                logger.info("Offer extraction pause discarded after lease change item=%s", item.item_id)
         except Exception as exc:
             logger.exception("Offer extraction failed item=%s", item.item_id)
             async with sessions() as session:
                 await fail(session, job, exc)
             result["failed"] += 1
             result["failures"].append({"item_id": item.item_id, "error": str(exc)})
+    if deferred:
+        async with sessions() as session:
+            result["deferred"] = await session.scalar(
+                text("""
+                SELECT count(*) FROM sharepoint_offer_jobs
+                WHERE drive_id=:drive AND folder_id=:folder
+                    AND item_id=ANY(CAST(:items AS text[])) AND status='pending'
+            """),
+                {"drive": graph.drive_id, "folder": folder_id, "items": list(deferred)},
+            )
     return result

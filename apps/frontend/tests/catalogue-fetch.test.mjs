@@ -146,6 +146,63 @@ test('scheduled completion refreshes the catalogue once and enables fetching', a
   assert.equal(loads, 2);
 });
 
+test('budget-only pauses show informational saved progress and allow another fetch', async () => {
+  for (const count of [1, 2]) {
+    const render = await screen({
+      getCatalogueArticles: async () => [],
+      getCatalogueFetchAvailability: async () => ({ enabled: true }),
+      getCatalogueSyncStatus: async () => ({ runs: [run('completed', {
+        summary: { processed: 0, failed: 0, turns: 5, deferred: count },
+      })] }),
+    });
+    render(); await settle();
+    const ui = render();
+    assert.match(ui.html, /role="status"/);
+    assert.doesNotMatch(ui.html, /role="alert"/);
+    assert.match(ui.html, /Processing budget reached/);
+    assert.ok(ui.html.includes(`Progress saved for ${count} unfinished document${count === 1 ? '' : 's'}.`));
+    assert.match(ui.html, /Processing will continue on a later sync/);
+    assert.equal(ui.button('Fetch new data').props.disabled, false);
+    ui.unmount();
+  }
+});
+
+test('a later completed run clears an earlier budget pause message', async () => {
+  let runs = [run('completed', { summary: { processed: 0, deferred: 1, turns: 5 } })];
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => ({ runs }),
+  });
+  render(); await settle();
+  let ui = render();
+  assert.match(ui.html, /Processing budget reached/);
+  runs = [run('completed', { id: 'continued-run', summary: { processed: 1, deferred: 0, turns: 1 } })];
+  await ui.poll(); render(); await settle();
+  ui = render();
+  assert.match(ui.html, /Fetch completed/);
+  assert.doesNotMatch(ui.html, /budget reached|unfinished document/);
+  ui.unmount();
+});
+
+test('mixed failures and budget pauses remain an error with the saved-progress explanation', async () => {
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => ({ runs: [run('failed', {
+      summary: { processed: 1, failed: 1, deferred: 1, turns: 5 },
+      message: 'Some documents or embeddings failed. Processing budget reached. Progress saved for 1 unfinished document. Processing will continue on a later sync.',
+    })] }),
+  });
+  render(); await settle();
+  const ui = render();
+  assert.match(ui.html, /role="alert"/);
+  assert.match(ui.html, /Some documents or embeddings failed/);
+  assert.match(ui.html, /Progress saved for 1 unfinished document/);
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
+  ui.unmount();
+});
+
 test('a different execution cannot complete the requested fetch', async () => {
   let runs = [];
   const render = await screen({

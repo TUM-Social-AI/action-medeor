@@ -425,7 +425,10 @@ offer embedding and matching. See the runbook for Azure one-file execution and r
 `sync` runs once and exits; retain that command in the existing scheduled Azure Container Apps
 Job using the updated backend image. It commits complete discovery and durable pending work
 before processing. With `SHAREPOINT_PROCESSING_ENABLED=false`, it performs metadata discovery
-only. When enabled, the default processing limit is one document per run. Embedding failures retry
+only. When enabled, the default limit is one processing turn per run, with up to 32 new chunks
+per turn. Successful chunks are saved; unfinished documents return to the back of the queue and
+can continue in unused turns or the next sync. Budget pauses have a distinct informational
+status message. Embedding failures retry
 independently and never activate/requeue the ERP catalog model. Expired quotes remain searchable
 supplier history with unconfirmed availability.
 

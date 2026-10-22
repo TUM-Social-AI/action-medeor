@@ -25,6 +25,66 @@ JOB_RESOURCE_ID = re.compile(
     r"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/?#\s]+"
     r"/providers/Microsoft\.App/jobs/[-\w.()]+"
 )
+AZURE_ERROR_CODES = frozenset({
+    "AuthorizationFailed", "DenyAssignmentAuthorizationFailed", "LinkedAuthorizationFailed",
+    "InvalidAuthenticationToken", "InvalidAuthenticationTokenTenant", "AuthenticationFailed",
+    "ResourceNotFound", "ResourceGroupNotFound", "SubscriptionNotFound",
+    "InvalidSubscriptionId", "InvalidApiVersionParameter", "NoRegisteredProviderFound",
+    "MissingSubscriptionRegistration", "InvalidRequestContent", "BadRequest", "Conflict",
+    "TooManyRequests", "InternalServerError", "ServiceUnavailable",
+    "invalid_request", "invalid_client", "invalid_resource", "unauthorized_client",
+})
+
+
+class AzureJobRequestError(Exception):
+    """Safe Azure diagnostics; never retain a response body, token, or request headers."""
+
+    def __init__(self, stage: Literal["identity", "start"], response: httpx.Response):
+        self.stage = stage
+        self.status_code = response.status_code
+        self.azure_code = None
+        self.request_id = None
+        try:
+            error = response.json().get("error")
+            code = error.get("code") if isinstance(error, dict) else error
+            if isinstance(code, str) and code in AZURE_ERROR_CODES:
+                self.azure_code = code
+        except (ValueError, AttributeError):
+            pass
+        for header in ("x-ms-correlation-request-id", "x-ms-request-id"):
+            try:
+                self.request_id = str(UUID(response.headers[header]))
+                break
+            except (KeyError, ValueError):
+                pass
+        super().__init__("Azure job request failed")
+
+    def public_detail(self) -> str:
+        diagnostic = f"Azure HTTP {self.status_code}"
+        if self.azure_code:
+            diagnostic += f", {self.azure_code}"
+        if self.stage == "identity":
+            return (
+                f"The web app could not authenticate with its managed identity ({diagnostic}). "
+                "Check the web app's identity configuration. For a system-assigned identity, "
+                "leave AZURE_JOB_MANAGED_IDENTITY_CLIENT_ID empty."
+            )
+        if self.status_code == 403:
+            return (
+                f"Azure denied the job start ({diagnostic}). The web app's managed identity "
+                "needs Microsoft.App/jobs/start/action on the configured SharePoint job."
+            )
+        if self.status_code == 404:
+            return (
+                f"Azure could not find the configured SharePoint job ({diagnostic}). "
+                "Check AZURE_SHAREPOINT_JOB_RESOURCE_ID on the web app."
+            )
+        if self.status_code == 401:
+            return f"Azure rejected the web app's managed identity token ({diagnostic}). Check its identity and tenant."
+        return (
+            f"Azure could not start the SharePoint job ({diagnostic}). "
+            "Check the job's Activity log and execution history before trying again."
+        )
 
 
 class FetchAvailability(BaseModel):
@@ -82,14 +142,20 @@ async def sync_status(
 
 def availability(request: Request, settings: Settings) -> FetchAvailability:
     # Deliberately no Azure CLI, developer login, or service-principal fallback.
-    if settings.app_env.lower() != "production" or not all(
-        os.environ.get(key) for key in ("CONTAINER_APP_NAME", "IDENTITY_ENDPOINT", "IDENTITY_HEADER")
-    ):
+    if not os.environ.get("CONTAINER_APP_NAME"):
         return FetchAvailability(enabled=False, reason="Fetching is available in the Azure app only.")
-    if not JOB_RESOURCE_ID.fullmatch(settings.azure_sharepoint_job_resource_id) or not re.fullmatch(
+    if settings.app_env.lower() != "production":
+        return FetchAvailability(
+            enabled=False, reason="Fetching is disabled because this deployment is not set to production."
+        )
+    if not all(os.environ.get(key) for key in ("IDENTITY_ENDPOINT", "IDENTITY_HEADER")):
+        return FetchAvailability(enabled=False, reason="The web app's managed identity is not available.")
+    if not JOB_RESOURCE_ID.fullmatch(settings.azure_sharepoint_job_resource_id):
+        return FetchAvailability(enabled=False, reason="The SharePoint job has not been configured.")
+    if not re.fullmatch(
         r"https://[^/?#\s]+", settings.azure_job_app_origin
     ):
-        return FetchAvailability(enabled=False, reason="Fetching has not been configured in Azure.")
+        return FetchAvailability(enabled=False, reason="The Azure app address has not been configured.")
     # These headers are trusted only behind Container Apps' required-authentication ingress.
     if not request.headers.get("x-ms-client-principal-id"):
         return FetchAvailability(enabled=False, reason="Sign in to fetch new data.")
@@ -115,7 +181,8 @@ async def start_azure_job(settings: Settings) -> str | None:
             params=token_params,
             headers={"X-IDENTITY-HEADER": os.environ["IDENTITY_HEADER"]},
         )
-        token_response.raise_for_status()
+        if token_response.status_code != 200:
+            raise AzureJobRequestError("identity", token_response)
         token = token_response.json()["access_token"]
         if not isinstance(token, str) or not token:
             raise ValueError("Missing managed identity access token")
@@ -123,15 +190,18 @@ async def start_azure_job(settings: Settings) -> str | None:
         result = await client.post(
             ARM_ORIGIN + settings.azure_sharepoint_job_resource_id + "/start",
             params={"api-version": "2025-07-01"},
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )
-        result.raise_for_status()
         if result.status_code not in (200, 202):
-            raise ValueError("Unexpected Azure job start response")
+            raise AzureJobRequestError("start", result)
         # Azure may accept asynchronously and return an empty body.
         if not result.content:
             return None
-        name = result.json().get("name")
+        try:
+            name = result.json().get("name")
+        except (ValueError, AttributeError):
+            # A confirmed start stays successful even if Azure omits readable execution metadata.
+            return None
         return name if isinstance(name, str) else None
 
 
@@ -157,6 +227,12 @@ async def fetch_new_data(
             status_code=504,
             detail="Azure did not respond in time. Check job executions before trying again.",
         ) from None
+    except AzureJobRequestError as exc:
+        logger.warning(
+            "Azure catalogue job start failed stage=%s status=%s code=%s request_id=%s",
+            exc.stage, exc.status_code, exc.azure_code or "unknown", exc.request_id or "unavailable",
+        )
+        raise HTTPException(status_code=502, detail=exc.public_detail()) from None
     except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
         # Exception messages and Azure bodies can contain internal URLs or credentials.
         logger.warning("Azure catalogue job start failed (%s)", type(exc).__name__)
