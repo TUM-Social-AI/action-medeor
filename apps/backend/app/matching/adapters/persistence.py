@@ -33,6 +33,7 @@ from app.matching.contracts import (
 from app.matching.domain import RetrievalHit
 from app.matching.feedback import validate_decision_against_run
 from app.matching.packaging import required_stock_quantity
+from app.offers.documents import offer_document_name
 
 
 def _attributes(value: object) -> dict[str, AttributeValue]:
@@ -264,9 +265,15 @@ class PostgresHistoryRepository:
             text(
                 """
                 SELECT h.*, s.source_type, s.document_id, s.external_id, s.uri,
-                       s.checksum, s.captured_at AS source_captured_at, s.locator
+                       s.checksum, s.captured_at AS source_captured_at, s.locator,
+                       f.name AS file_name
                 FROM historical_offers h
                 JOIN source_snapshots s ON s.id = h.source_snapshot_id
+                LEFT JOIN LATERAL (
+                    SELECT name FROM sharepoint_offer_files
+                    WHERE external_id = h.source_item_id AND is_current = TRUE
+                    ORDER BY updated_at DESC LIMIT 1
+                ) f ON TRUE
                 WHERE h.is_current = TRUE AND h.active = TRUE AND h.matching_eligible
                   AND COALESCE(h.metadata_json->>'extraction_status', '') != 'mock'
                   AND (
@@ -297,6 +304,9 @@ class PostgresHistoryRepository:
                 captured_at=row["source_captured_at"],
                 locator={
                     **(row["locator"] or {}),
+                    **({"file_name": offer_document_name(
+                        row.get("file_name"), (row["metadata_json"] or {}).get("path"), row["uri"],
+                    )} if row["source_type"] == "sharepoint" else {}),
                     **(
                         {"source_id": row["metadata_json"]["source_id"]}
                         if (row["metadata_json"] or {}).get("source_id")
@@ -343,8 +353,13 @@ class PostgresHistoryRepository:
         }
         base = """
             SELECT h.*,s.source_type,s.document_id,s.external_id,s.uri,s.checksum,
-                   s.captured_at AS source_captured_at,s.locator
+                   s.captured_at AS source_captured_at,s.locator,f.name AS file_name
             FROM historical_offers h JOIN source_snapshots s ON s.id=h.source_snapshot_id
+            LEFT JOIN LATERAL (
+                SELECT name FROM sharepoint_offer_files
+                WHERE external_id = h.source_item_id AND is_current = TRUE
+                ORDER BY updated_at DESC LIMIT 1
+            ) f ON TRUE
         """
         eligible = """h.is_current AND h.active AND h.matching_eligible AND h.domain=:domain
             AND h.item_number IS NULL
@@ -538,6 +553,7 @@ class PostgresMatchRunRepository:
         if not row or not row["result_payload"]:
             return None
         result = MatchRunResponseV1.model_validate(row["result_payload"])
+        result = await self._with_offer_document_names(result)
         # Older saved runs lack quantity or package display fields.
         # Enrich the response only; saved rankings, decisions, and payloads stay intact.
         missing = {
@@ -582,6 +598,37 @@ class PostgresMatchRunRepository:
                 if candidate.required_stock_quantity is None:
                     updates["required_stock_quantity"] = required_stock_quantity(request.inquiry_line.quantity, item)
             candidates.append(candidate.model_copy(update=updates) if updates else candidate)
+        return result.model_copy(update={"candidates": tuple(candidates)})
+
+    async def _with_offer_document_names(self, result: MatchRunResponseV1) -> MatchRunResponseV1:
+        document_ids = sorted({
+            source.document_id
+            for candidate in result.candidates for source in candidate.provenance
+            if source.source_type.value == "sharepoint"
+        })
+        if not document_ids:
+            return result
+        files = (await self._session.execute(text("""
+            SELECT DISTINCT ON (external_id) external_id, name, metadata_json
+            FROM sharepoint_offer_files
+            WHERE external_id = ANY(CAST(:document_ids AS TEXT[])) AND is_current = TRUE
+            ORDER BY external_id, updated_at DESC
+        """), {"document_ids": document_ids})).mappings()
+        names = {row["external_id"]: row for row in files}
+        candidates = []
+        for candidate in result.candidates:
+            provenance = []
+            for source in candidate.provenance:
+                file = names.get(source.document_id)
+                if source.source_type.value == "sharepoint" and file:
+                    source = source.model_copy(update={"locator": {
+                        **source.locator,
+                        "file_name": offer_document_name(
+                            file["name"], (file["metadata_json"] or {}).get("path"), source.uri,
+                        ),
+                    }})
+                provenance.append(source)
+            candidates.append(candidate.model_copy(update={"provenance": tuple(provenance)}))
         return result.model_copy(update={"candidates": tuple(candidates)})
 
     async def save_decision(self, decision: MatchDecisionRequestV1) -> MatchDecisionResponseV1:

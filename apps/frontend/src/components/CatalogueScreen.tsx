@@ -71,6 +71,10 @@ export function CatalogueScreen() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const fetchInFlight = useRef(false);
   const syncStatus = useCatalogueSyncStatus(() => setReload(value => value + 1));
+  const canFetch = Boolean(fetchAvailability?.enabled && syncStatus.statusKnown && !fetchPending && !syncStatus.busy);
+  const checkingFetchStatus = !syncStatus.statusKnown && !syncStatus.statusError;
+  const fetchLabel = fetchPending ? 'Starting fetch…' : syncStatus.busy ? 'Fetching…'
+    : syncStatus.statusError ? 'Fetch status unavailable' : checkingFetchStatus ? 'Checking fetch status…' : 'Fetch new data';
   useOfferDateRefresh();
   const today = berlinDay(new Date());
 
@@ -85,7 +89,7 @@ export function CatalogueScreen() {
   }, []);
 
   const fetchNewData = async () => {
-    if (fetchInFlight.current || syncStatus.busy || !fetchAvailability?.enabled) return;
+    if (fetchInFlight.current || !canFetch) return;
     fetchInFlight.current = true;
     setFetchPending(true);
     setFetchError(null);
@@ -135,9 +139,14 @@ export function CatalogueScreen() {
         <button type="button" onClick={() => setShowImport(true)} className="inline-flex items-center gap-1.5 rounded-lg bg-[#1B4E8A] px-3 py-1.5 font-semibold text-white hover:bg-[#163f70]">
           <Upload size={13} /> Update ERP catalogue
         </button>
-        <button type="button" onClick={() => void fetchNewData()} disabled={!fetchAvailability?.enabled || fetchPending || syncStatus.busy} title={fetchAvailability?.reason ?? (fetchAvailability ? 'Start a SharePoint fetch' : 'Checking fetch availability…')} className="mr-1 inline-flex items-center gap-1.5 rounded-lg bg-[#1B4E8A] px-3 py-1.5 font-semibold text-white hover:bg-[#163f70] disabled:cursor-not-allowed disabled:opacity-50">
-          <RefreshCw size={13} className={fetchPending || syncStatus.busy ? 'animate-spin' : undefined} /> {fetchPending ? 'Starting fetch…' : syncStatus.busy ? 'Fetching…' : 'Fetch new data'}
+        <button type="button" onClick={() => void fetchNewData()} disabled={!canFetch} title={fetchAvailability?.reason ?? (!fetchAvailability ? 'Checking fetch availability…' : syncStatus.statusError ?? (canFetch ? 'Start a SharePoint fetch' : fetchLabel))} className="mr-1 inline-flex items-center gap-1.5 rounded-lg bg-[#1B4E8A] px-3 py-1.5 font-semibold text-white hover:bg-[#163f70] disabled:cursor-not-allowed disabled:opacity-50">
+          <RefreshCw size={13} className={fetchPending || syncStatus.busy || checkingFetchStatus ? 'animate-spin' : undefined} /> {fetchLabel}
         </button>
+        {syncStatus.lastUpdatedAt && <span className="text-gray-500">
+          Last updated <time dateTime={syncStatus.lastUpdatedAt}>{new Date(syncStatus.lastUpdatedAt).toLocaleString(undefined, {
+            dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Berlin',
+          })}</time>
+        </span>}
         <span title="ERP articles matching the current filters" className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 font-semibold text-blue-700"><Database size={11} /> {visibleSourceCounts.erp} ERP articles</span>
         <span title="Supplier offers matching the current filters" className="inline-flex items-center gap-1.5 rounded-full bg-violet-100 px-2.5 py-1 font-semibold text-violet-700"><FileText size={11} /> {visibleSourceCounts.sharepoint} supplier offers</span>
       </div>

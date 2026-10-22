@@ -1,4 +1,4 @@
-"""The sync job writes run status; the web application only reads it."""
+"""Track progress for scheduled jobs and backend-hosted development syncs."""
 
 import asyncio
 import logging
@@ -47,9 +47,12 @@ async def heartbeat(run_id: UUID) -> None:
             logger.warning("Could not update sync heartbeat (%s)", type(exc).__name__)
 
 
-async def track_sync(job_name: str, operation: Callable[[], Awaitable[dict]]) -> dict:
+async def track_sync(
+    job_name: str, operation: Callable[[], Awaitable[dict]], *, run_id: UUID | None = None,
+) -> dict:
     # Commit before discovery starts, so another process can immediately see this run.
-    run_id = await begin_run(job_name)
+    if run_id is None:
+        run_id = await begin_run(job_name)
     pulse = asyncio.create_task(heartbeat(run_id))
     try:
         result = await operation()

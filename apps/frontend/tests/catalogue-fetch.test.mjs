@@ -36,7 +36,20 @@ function find(node, predicate) {
 
 async function screen(api) {
   const slots = [], effects = [], timers = new Map();
-  let timerId = 0;
+  let timerId = 0, timerNow = 0;
+  async function advance(milliseconds) {
+    const target = timerNow + milliseconds;
+    while (true) {
+      const next = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next || next[1].at > target) break;
+      const [id, timer] = next;
+      timerNow = timer.at;
+      timers.delete(id);
+      timer.callback();
+      await settle();
+    }
+    timerNow = target;
+  }
   api = { getCatalogueSyncStatus: async () => ({ runs: [] }), ...api };
   let cursor = 0;
   const hooks = {
@@ -60,7 +73,11 @@ async function screen(api) {
   const sync = await load('../src/features/catalogue/use-sync-status.ts', {
     react: hooks, '../../api/catalogue': api,
   }, {
-    setTimeout(callback, delay) { assert.equal(delay, 5000); timers.set(++timerId, callback); return timerId; },
+    setTimeout(callback, delay) {
+      assert.ok(delay > 0 && delay <= 8000);
+      timers.set(++timerId, { callback, at: timerNow + delay });
+      return timerId;
+    },
     clearTimeout(id) { timers.delete(id); },
   });
   const { CatalogueScreen } = await load('../src/components/CatalogueScreen.tsx', {
@@ -78,11 +95,13 @@ async function screen(api) {
     return {
       html: renderToStaticMarkup(tree),
       button: label => find(tree, node => node.type === 'button' && renderToStaticMarkup(node).includes(label)),
-      async poll() {
-        const callbacks = [...timers.values()]; timers.clear();
-        callbacks.forEach(callback => callback()); await settle();
+      lastUpdated: find(tree, node => node.type === 'time'),
+      poll: () => advance(5000),
+      advance,
+      unmount() {
+        slots.forEach(slot => slot?.cleanup?.());
+        assert.equal(timers.size, 0);
       },
-      unmount() { slots.forEach(slot => slot?.cleanup?.()); },
     };
   };
 }
@@ -105,7 +124,7 @@ test('a click starts one job and waits for its database status', async () => {
     getCatalogueFetchAvailability: async () => ({ enabled: true, reason: null }),
     startCatalogueFetch: () => { starts++; return new Promise(resolve => { accept = resolve; }); },
   });
-  assert.equal(render().button('Fetch new data').props.disabled, true);
+  assert.equal(render().button('Checking fetch status…').props.disabled, true);
   await settle();
   const click = render().button('Fetch new data').props.onClick;
   click(); click();
@@ -119,11 +138,129 @@ test('a click starts one job and waits for its database status', async () => {
   assert.equal(loads, 2);
 });
 
+test('local acceptance reports backend execution and never mentions an Azure job', async () => {
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    startCatalogueFetch: async () => ({
+      status: 'accepted', execution_name: 'local-execution',
+      execution_mode: 'local', requested_at: new Date().toISOString(),
+    }),
+  });
+  render(); await settle();
+  render().button('Fetch new data').props.onClick(); await settle();
+  let ui = render(); await settle(); ui = render();
+  assert.match(ui.html, /The backend accepted the fetch request/);
+  assert.doesNotMatch(ui.html, /Azure/);
+  assert.equal(ui.button('Fetching…').props.disabled, true);
+  ui.unmount();
+});
+
 const run = (status, extra = {}) => ({
   id: 'run-1', execution_name: 'job-123', status,
   started_at: '2026-10-22T10:00:00Z', updated_at: '2026-10-22T10:01:00Z',
-  finished_at: status === 'running' ? null : '2026-10-22T10:01:00Z',
+  finished_at: status === 'running' ? null : new Date(Date.now()).toISOString(),
   summary: { processed: 2, failed: 0, processing_enabled: true }, message: null, ...extra,
+});
+
+for (const status of ['running', 'idle']) {
+  test(`fetching waits for delayed initial status before confirming ${status}`, async () => {
+    let reportStatus, starts = 0;
+    const render = await screen({
+      getCatalogueArticles: async () => [],
+      getCatalogueFetchAvailability: async () => ({ enabled: true }),
+      getCatalogueSyncStatus: () => new Promise(resolve => { reportStatus = resolve; }),
+      startCatalogueFetch: async () => { starts++; },
+    });
+    let ui = render();
+    assert.equal(ui.button('Checking fetch status…').props.disabled, true);
+    await settle();
+    ui = render();
+    const checking = ui.button('Checking fetch status…');
+    assert.equal(checking.props.disabled, true);
+    checking.props.onClick();
+    assert.equal(starts, 0);
+
+    reportStatus({ runs: status === 'running' ? [run('running')] : [] });
+    await settle();
+    ui = render();
+    const button = ui.button(status === 'running' ? 'Fetching…' : 'Fetch new data');
+    assert.equal(button.props.disabled, status === 'running');
+    if (status === 'running') {
+      button.props.onClick();
+      assert.equal(starts, 0);
+    }
+    ui.unmount();
+  });
+}
+
+test('background polling retains known status and blocks fetching after an error until recovery', async () => {
+  let polls = 0, starts = 0, rejectStatus, reportStatus;
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: () => {
+      polls++;
+      if (polls === 1) return Promise.resolve({ runs: [] });
+      return new Promise((resolve, reject) => { reportStatus = resolve; rejectStatus = reject; });
+    },
+    startCatalogueFetch: async () => { starts++; },
+  });
+  render(); await settle();
+  let ui = render();
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
+
+  await ui.poll();
+  ui = render();
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
+  rejectStatus(new Error('offline'));
+  await settle();
+  ui = render();
+  assert.match(ui.html, /Retrying automatically/);
+  assert.equal(ui.button('Fetch status unavailable').props.disabled, true);
+  ui.button('Fetch status unavailable').props.onClick();
+  assert.equal(starts, 0);
+
+  await ui.poll();
+  ui = render();
+  assert.equal(ui.button('Fetch status unavailable').props.disabled, true);
+  ui.button('Fetch status unavailable').props.onClick();
+  assert.equal(starts, 0);
+  reportStatus({ runs: [] });
+  await settle();
+  ui = render();
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
+  assert.doesNotMatch(ui.html, /Retrying automatically/);
+  ui.unmount();
+});
+
+test('unknown fetch status hides the previous job error until a confirmed result is available', async () => {
+  let polls = 0;
+  const failed = run('failed', { message: 'Some documents or embeddings failed. Check the job logs.' });
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => {
+      polls++;
+      if (polls === 2) throw new Error('offline');
+      return { runs: polls === 1 ? [failed] : [run('failed', { id: 'confirmed-failure', message: failed.message })] };
+    },
+  });
+  render(); await settle();
+  let ui = render();
+  assert.match(ui.html, /Some documents or embeddings failed/);
+  assert.doesNotMatch(ui.html, /Could not read fetch status/);
+
+  await ui.poll(); ui = render();
+  assert.match(ui.html, /Could not read fetch status. Retrying automatically/);
+  assert.doesNotMatch(ui.html, /Some documents or embeddings failed|role="alert"|Reload catalogue/);
+  assert.equal(ui.button('Fetch status unavailable').props.disabled, true);
+
+  await ui.poll(); ui = render();
+  assert.doesNotMatch(ui.html, /Could not read fetch status/);
+  assert.match(ui.html, /Some documents or embeddings failed/);
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
+  ui.unmount();
 });
 
 test('scheduled completion refreshes the catalogue once and enables fetching', async () => {
@@ -144,6 +281,118 @@ test('scheduled completion refreshes the catalogue once and enables fetching', a
   assert.equal(loads, 2);
   await ui.poll(); render();
   assert.equal(loads, 2);
+});
+
+test('completion notices disappear after eight seconds and polling does not bring them back', async () => {
+  let runs = [run('completed')];
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => ({ runs: runs.map(value => ({ ...value })) }),
+  });
+  render(); await settle();
+  let ui = render();
+  assert.match(ui.html, /Fetch completed/);
+  assert.match(ui.html, /Last updated/);
+  assert.equal(ui.lastUpdated.props.dateTime, runs[0].finished_at);
+
+  await ui.advance(8000);
+  ui = render();
+  assert.doesNotMatch(ui.html, /Fetch completed|Reload catalogue/);
+  assert.match(ui.html, /Last updated/);
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
+  await ui.poll();
+  ui = render();
+  assert.doesNotMatch(ui.html, /Fetch completed|Reload catalogue/);
+
+  runs = [run('running', { id: 'next-run' })];
+  await ui.poll(); ui = render();
+  assert.match(ui.html, /Fetching new data from SharePoint/);
+  runs = [run('completed', { id: 'next-run' })];
+  await ui.poll(); ui = render();
+  assert.match(ui.html, /Fetch completed/);
+  await ui.advance(8000); ui = render();
+  assert.doesNotMatch(ui.html, /Fetch completed|Reload catalogue/);
+  ui.unmount();
+});
+
+test('older completions show only the last successful update time on page load', async () => {
+  const finishedAt = '2026-10-01T10:01:00Z';
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => ({ runs: [run('completed', { finished_at: finishedAt })] }),
+  });
+  render(); await settle();
+  const ui = render();
+  assert.doesNotMatch(ui.html, /Fetch completed|Reload catalogue/);
+  assert.match(ui.html, /Last updated/);
+  assert.equal(ui.lastUpdated.props.dateTime, finishedAt);
+  ui.unmount();
+});
+
+test('failed run notices expire and preserve the last successful update time', async () => {
+  const finishedAt = '2026-10-01T10:01:00Z';
+  let runs = [run('failed'), run('completed', { id: 'previous-run', finished_at: finishedAt })];
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => ({ runs: runs.map(value => ({ ...value })) }),
+  });
+  render(); await settle();
+  let ui = render();
+  assert.match(ui.html, /SharePoint fetch failed/);
+  assert.match(ui.html, /role="alert"/);
+  await ui.advance(8000); ui = render();
+  assert.doesNotMatch(ui.html, /SharePoint fetch failed|role="alert"|Reload catalogue/);
+  assert.equal(ui.lastUpdated.props.dateTime, finishedAt);
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
+  await ui.poll(); ui = render();
+  assert.doesNotMatch(ui.html, /SharePoint fetch failed|role="alert"/);
+
+  runs = [run('failed', { id: 'new-failure' }), runs[1]];
+  await ui.poll(); ui = render();
+  assert.match(ui.html, /SharePoint fetch failed/);
+  assert.equal(ui.lastUpdated.props.dateTime, finishedAt);
+  ui.unmount();
+});
+
+for (const status of ['failed', 'stale', 'skipped']) {
+  test(`old ${status} notices stay hidden on page load and after polling`, async () => {
+    const render = await screen({
+      getCatalogueArticles: async () => [],
+      getCatalogueFetchAvailability: async () => ({ enabled: true }),
+      getCatalogueSyncStatus: async () => ({ runs: [run(status, {
+        finished_at: status === 'stale' ? null : '2026-10-01T10:01:00Z',
+        updated_at: '2026-10-01T10:01:00Z',
+      })] }),
+    });
+    render(); await settle();
+    let ui = render();
+    assert.doesNotMatch(ui.html, /role="alert"|Reload catalogue|Last updated/);
+    assert.equal(ui.button('Fetch new data').props.disabled, false);
+    await ui.poll(); ui = render();
+    assert.doesNotMatch(ui.html, /role="alert"|Reload catalogue/);
+    ui.unmount();
+  });
+}
+
+test('a run can show a fresh completion notice after its stale notice expires', async () => {
+  let runs = [run('stale')];
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => ({ runs }),
+  });
+  render(); await settle();
+  let ui = render();
+  assert.match(ui.html, /stopped reporting progress/);
+  await ui.advance(8000); ui = render();
+  assert.doesNotMatch(ui.html, /stopped reporting progress/);
+  runs = [run('completed')];
+  await ui.poll(); ui = render();
+  assert.match(ui.html, /Fetch completed/);
+  ui.unmount();
 });
 
 test('budget-only pauses show informational saved progress and allow another fetch', async () => {
@@ -236,7 +485,7 @@ test('a failed or stale run is visible and does not keep the button disabled', a
 });
 
 test('poll errors retry and unmount aborts pending reads', async () => {
-  let polls = 0, signal;
+  let polls = 0, starts = 0, signal;
   const render = await screen({
     getCatalogueArticles: async () => [],
     getCatalogueFetchAvailability: async () => ({ enabled: true }),
@@ -245,11 +494,16 @@ test('poll errors retry and unmount aborts pending reads', async () => {
       if (polls === 1) throw new Error('offline');
       return { runs: [] };
     },
+    startCatalogueFetch: async () => { starts++; },
   });
   render(); await settle(); let ui = render();
   assert.match(ui.html, /Retrying automatically/);
+  assert.equal(ui.button('Fetch status unavailable').props.disabled, true);
+  ui.button('Fetch status unavailable').props.onClick();
+  assert.equal(starts, 0);
   await ui.poll(); ui = render();
   assert.doesNotMatch(ui.html, /Retrying automatically/);
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
   assert.equal(polls, 2);
   ui.unmount();
   assert.equal(signal.aborted, true);
