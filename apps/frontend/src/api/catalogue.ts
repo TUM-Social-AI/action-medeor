@@ -31,6 +31,40 @@ export function getCatalogueArticles(signal?: AbortSignal) {
   return requestJson<CatalogueArticle[]>('/api/v1/catalogue/articles', { signal });
 }
 
+export type CatalogueFetchAvailability = { enabled: boolean; reason: string | null };
+
+export function getCatalogueFetchAvailability(signal?: AbortSignal) {
+  return requestJson<CatalogueFetchAvailability>('/api/v1/catalogue/fetch', { signal });
+}
+
+export function startCatalogueFetch() {
+  return requestJson<CatalogueFetchAccepted>(
+    '/api/v1/catalogue/fetch', {
+      method: 'POST', headers: { 'X-Catalogue-Fetch': 'true' },
+    },
+  );
+}
+
+export type CatalogueFetchAccepted = {
+  status: 'accepted'; execution_name: string | null; requested_at: string;
+};
+
+export type CatalogueSyncRun = {
+  id: string;
+  execution_name: string | null;
+  status: 'running' | 'completed' | 'failed' | 'skipped' | 'stale';
+  started_at: string;
+  updated_at: string;
+  finished_at: string | null;
+  summary: { processed?: number; failed?: number; changes?: number; processing_enabled?: boolean;
+    embedded?: number; embedding_failed?: number };
+  message: string | null;
+};
+
+export function getCatalogueSyncStatus(signal?: AbortSignal) {
+  return requestJson<{ runs: CatalogueSyncRun[] }>('/api/v1/catalogue/fetch/status', { signal });
+}
+
 export type CatalogImportResult = {
   import_id: string;
   catalog_snapshot_id: string | null;

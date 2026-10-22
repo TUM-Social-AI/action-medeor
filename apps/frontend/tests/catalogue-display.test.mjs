@@ -46,12 +46,14 @@ async function render(articles, sort) {
         return [index === 0 ? articles : index === 5 && sort ? sort : typeof initial === 'function' ? initial() : initial, () => {}];
       },
       useEffect: () => {}, useMemo: callback => callback(),
+      useRef: initial => ({ current: initial }),
     },
     './CatalogueImportDialog': { CatalogueImportDialog: () => null },
     '../api/catalogue': { getCatalogueArticles: () => { throw new Error('Unexpected fetch'); } },
     '../features/catalogue/filtering': filtering,
     '../features/matching/offer-display': display,
     '../features/matching/use-offer-date-refresh': { useOfferDateRefresh: () => {} },
+    '../features/catalogue/use-sync-status': { useCatalogueSyncStatus: () => ({ busy: false }) },
   }, FixedDate);
   return renderToStaticMarkup(React.createElement(CatalogueScreen));
 }
@@ -117,7 +119,7 @@ test('missing prices and dates have honest fallbacks; ERP keeps its stock displa
   assert.ok(!html.includes('EUR'));
 });
 
-test('ERP updates and future SharePoint fetching have separate controls', async () => {
+test('ERP updates and Azure-only SharePoint fetching have separate controls', async () => {
   const html = await render([]);
   assert.match(html, /<button[^>]*>[^]*?Update ERP catalogue<\/button>/);
   assert.match(html, /<button[^>]*disabled=""[^>]*>[^]*?Fetch new data<\/button>/);

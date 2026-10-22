@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -38,6 +39,7 @@ from app.sharepoint.changes import (
 from app.sharepoint.extraction import EXTRACTION_VERSION, DownloadedDocument, extract, extract_mock
 from app.sharepoint.graph import GraphClient, GraphError, MsalTokenProvider
 from app.sharepoint.processing import enqueue, process_pending
+from app.sharepoint.run_status import track_sync
 from app.sharepoint.scope import (
     assign_domains,
     content_version,
@@ -491,6 +493,27 @@ async def run(
     retry_failed=False,
     folder_id: str | None = None,
 ) -> dict[str, object]:
+    try:
+        if command == "sync":
+            settings = get_settings()
+            job_name = os.environ.get("CONTAINER_APP_JOB_NAME") or (
+                settings.azure_sharepoint_job_resource_id.rsplit("/", 1)[-1] or "sharepoint-sync"
+            )
+            return await track_sync(
+                job_name, lambda: run_command(command, api_url, item_id, retry_failed, folder_id)
+            )
+        return await run_command(command, api_url, item_id, retry_failed, folder_id)
+    finally:
+        await engine.dispose()
+
+
+async def run_command(
+    command: str,
+    api_url: str,
+    item_id: str | None = None,
+    retry_failed=False,
+    folder_id: str | None = None,
+) -> dict[str, object]:
     if folder_id and command != "inspect":
         raise ValueError("--folder-id is only valid with inspect")
     if item_id and command != "process-one":
@@ -502,33 +525,30 @@ async def run(
         settings.sharepoint_client_id,
         settings.sharepoint_client_secret,
     )
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            graph = GraphClient(settings.sharepoint_drive_id, token_provider, client)
-            if command == "test":
-                return await test_connection(graph, settings.sharepoint_root_folder_id)
-            if command == "sync":
-                return await sync(graph, settings.sharepoint_root_folder_id, settings=settings)
-            if command == "process-one":
-                return await process_one(
-                    graph,
-                    settings.sharepoint_root_folder_id,
-                    item_id,
-                    settings,
-                    retry_failed=retry_failed,
-                )
-            if command == "inspect":
-                return await inspect_folder(graph, settings.sharepoint_root_folder_id, folder_id)
-            if command == "offer-smoke":
-                return await offer_smoke(
-                    graph,
-                    settings.sharepoint_root_folder_id,
-                    api_url,
-                    client,
-                )
-            raise ValueError(f"Unknown SharePoint job command: {command}")
-    finally:
-        await engine.dispose()
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        graph = GraphClient(settings.sharepoint_drive_id, token_provider, client)
+        if command == "test":
+            return await test_connection(graph, settings.sharepoint_root_folder_id)
+        if command == "sync":
+            return await sync(graph, settings.sharepoint_root_folder_id, settings=settings)
+        if command == "process-one":
+            return await process_one(
+                graph,
+                settings.sharepoint_root_folder_id,
+                item_id,
+                settings,
+                retry_failed=retry_failed,
+            )
+        if command == "inspect":
+            return await inspect_folder(graph, settings.sharepoint_root_folder_id, folder_id)
+        if command == "offer-smoke":
+            return await offer_smoke(
+                graph,
+                settings.sharepoint_root_folder_id,
+                api_url,
+                client,
+            )
+        raise ValueError(f"Unknown SharePoint job command: {command}")
 
 
 def main() -> None:

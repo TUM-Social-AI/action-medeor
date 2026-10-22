@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from app.api.catalogue_fetch import router as catalogue_fetch_router
 from app.api.identity import router as identity_router
 from app.api.routes import router as api_router
 from app.catalog.api import router as catalog_router
@@ -42,6 +43,7 @@ app.include_router(offers_router)
 app.include_router(offer_files_router)
 app.include_router(api_router)
 app.include_router(identity_router)
+app.include_router(catalogue_fetch_router)
 
 if settings.cors_origin_list:
     app.add_middleware(

@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown, ArrowUp, ArrowUpDown, CalendarX2, Database, ExternalLink,
   FileText, PackageSearch, PauseCircle, RefreshCw, Search, Upload, X,
 } from 'lucide-react';
-import { getCatalogueArticles, type CatalogueArticle } from '../api/catalogue';
+import {
+  getCatalogueArticles, getCatalogueFetchAvailability, startCatalogueFetch,
+  type CatalogueArticle, type CatalogueFetchAvailability,
+} from '../api/catalogue';
 import {
   availableStatuses, categoryLabel, changeSource, DEFAULT_FILTERS, getCatalogueView,
   selectStatus, statusOf, type CatalogueFilters, type Status,
 } from '../features/catalogue/filtering';
 import { berlinDay, formatOfferPrice, getOfferStatus } from '../features/matching/offer-display';
 import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh';
+import { useCatalogueSyncStatus } from '../features/catalogue/use-sync-status';
 import { CatalogueImportDialog } from './CatalogueImportDialog';
 
 type SortKey = 'name' | 'vendor' | 'category' | 'reference' | 'availability' | 'price';
@@ -62,8 +66,39 @@ export function CatalogueScreen() {
   const { query, source, category, status } = filters;
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 });
   const [showImport, setShowImport] = useState(false);
+  const [fetchAvailability, setFetchAvailability] = useState<CatalogueFetchAvailability | null>(null);
+  const [fetchPending, setFetchPending] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const fetchInFlight = useRef(false);
+  const syncStatus = useCatalogueSyncStatus(() => setReload(value => value + 1));
   useOfferDateRefresh();
   const today = berlinDay(new Date());
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void getCatalogueFetchAvailability(controller.signal)
+      .then(data => { if (!controller.signal.aborted) setFetchAvailability(data); })
+      .catch(() => {
+        if (!controller.signal.aborted) setFetchAvailability({ enabled: false, reason: 'Could not check whether fetching is available. Reload to try again.' });
+      });
+    return () => controller.abort();
+  }, []);
+
+  const fetchNewData = async () => {
+    if (fetchInFlight.current || syncStatus.busy || !fetchAvailability?.enabled) return;
+    fetchInFlight.current = true;
+    setFetchPending(true);
+    setFetchError(null);
+    try {
+      const accepted = await startCatalogueFetch();
+      syncStatus.watchRun(accepted);
+    } catch (caught) {
+      setFetchError(caught instanceof Error ? caught.message : 'Could not start fetching new data.');
+    } finally {
+      fetchInFlight.current = false;
+      setFetchPending(false);
+    }
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -100,8 +135,8 @@ export function CatalogueScreen() {
         <button type="button" onClick={() => setShowImport(true)} className="inline-flex items-center gap-1.5 rounded-lg bg-[#1B4E8A] px-3 py-1.5 font-semibold text-white hover:bg-[#163f70]">
           <Upload size={13} /> Update ERP catalogue
         </button>
-        <button type="button" disabled title="Fetching new data is coming later" className="mr-1 inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-[#1B4E8A] px-3 py-1.5 font-semibold text-white opacity-50">
-          <RefreshCw size={13} /> Fetch new data
+        <button type="button" onClick={() => void fetchNewData()} disabled={!fetchAvailability?.enabled || fetchPending || syncStatus.busy} title={fetchAvailability?.reason ?? (fetchAvailability ? 'Start a SharePoint fetch' : 'Checking fetch availability…')} className="mr-1 inline-flex items-center gap-1.5 rounded-lg bg-[#1B4E8A] px-3 py-1.5 font-semibold text-white hover:bg-[#163f70] disabled:cursor-not-allowed disabled:opacity-50">
+          <RefreshCw size={13} className={fetchPending || syncStatus.busy ? 'animate-spin' : undefined} /> {fetchPending ? 'Starting fetch…' : syncStatus.busy ? 'Fetching…' : 'Fetch new data'}
         </button>
         <span title="ERP articles matching the current filters" className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 font-semibold text-blue-700"><Database size={11} /> {visibleSourceCounts.erp} ERP articles</span>
         <span title="Supplier offers matching the current filters" className="inline-flex items-center gap-1.5 rounded-full bg-violet-100 px-2.5 py-1 font-semibold text-violet-700"><FileText size={11} /> {visibleSourceCounts.sharepoint} supplier offers</span>
@@ -111,6 +146,12 @@ export function CatalogueScreen() {
     {error && <div role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
       Could not load the catalogue: {error} <button type="button" onClick={() => setReload(value => value + 1)} className="ml-2 font-semibold underline">Try again</button>
     </div>}
+
+    {syncStatus.message && <div role={syncStatus.failed ? 'alert' : 'status'} className={`mb-4 rounded-xl border px-4 py-3 text-sm ${syncStatus.failed ? 'border-red-200 bg-red-50 text-red-800' : 'border-blue-200 bg-blue-50 text-blue-900'}`}>
+      {syncStatus.message} <button type="button" onClick={() => setReload(value => value + 1)} className="ml-2 font-semibold underline">Reload catalogue</button>
+    </div>}
+    {syncStatus.statusError && <div role="status" className="mb-4 text-sm text-amber-800">{syncStatus.statusError}</div>}
+    {fetchError && <div role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{fetchError}</div>}
 
     <div className="space-y-3 rounded-t-xl border border-b-0 border-gray-200 bg-white px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
