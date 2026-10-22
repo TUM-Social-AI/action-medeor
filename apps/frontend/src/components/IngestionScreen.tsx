@@ -204,8 +204,8 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
           {inspectionError && <ErrorPanel message={inspectionError} />}
           {sheets.length > 0 && (
             <fieldset className="mt-3 rounded-xl border border-gray-200 bg-white p-4">
-              <legend className="px-1 text-sm font-semibold">Select worksheets to extract</legend>
-              <p className="mb-2 text-xs text-gray-500">Items from selected worksheets will appear together. Copies on different sheets will produce duplicate items.</p>
+              <legend className="float-left mb-2 w-full text-sm font-semibold">Select worksheets to extract</legend>
+              <p className="clear-both mb-2 text-xs text-gray-500">Items from selected worksheets will appear together. Copies on different sheets will produce duplicate items.</p>
               {sheets.map(sheet => (
                 <label key={sheet.name} className="flex items-center gap-2 py-1 text-sm">
                   <input type="checkbox" checked={selectedSheets.includes(sheet.name)}
