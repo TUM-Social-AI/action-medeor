@@ -36,6 +36,7 @@ from app.api.schemas import (
     ReviewResponse,
     SummaryResponse,
     TrendsResponse,
+    WorksheetSelection,
 )
 from app.db import repository
 from app.db.models import ImportProgressRow
@@ -44,7 +45,7 @@ from app.db.session import get_session
 from app.matching.api import get_matching_service
 from app.matching.auto_select import auto_select_item
 from app.matching.contracts import DecisionType, MatchDecisionRequestV1
-from app.parsing import ParsingError, parse_upload
+from app.parsing import CustomColumnSpec, ParsingError, parse_upload
 from app.parsing.ai_review import fingerprint, review_document
 from app.parsing.review_sources import fill_legacy_sources
 
@@ -97,6 +98,7 @@ async def recent_imports() -> list[RecentImport]:
 async def create_import(
     http_request: Request,
     file: UploadFile = File(...),
+    selected_sheets: list[str] | None = Form(None),
     progress_token: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
@@ -104,7 +106,9 @@ async def create_import(
     mode = await extraction_mode(http_request, session)
     await session.commit()
     try:
-        file_name, content, parsed = await _parse_request_file(file, mode, token)
+        file_name, content, parsed = await _parse_request_file(
+            file, mode, selected_sheets=selected_sheets, token=token
+        )
         request = await repository.save_parsed_request(
             session, parsed=parsed, file_name=file_name, raw_file=content
         )
@@ -113,7 +117,7 @@ async def create_import(
     return repository.to_review_response(request)
 
 
-async def _parse_request_file(file: UploadFile, mode: str = "basic", token: str | None = None):
+async def _read_request_file(file: UploadFile):
     file_name = file.filename or ""
     file_extension = file_name.lower().rsplit(".", maxsplit=1)[-1] if "." in file_name else ""
 
@@ -131,9 +135,34 @@ async def _parse_request_file(file: UploadFile, mode: str = "basic", token: str 
         if len(content) > MAX_IMPORT_BYTES:
             raise HTTPException(status_code=413, detail="File exceeds 20 MB limit")
 
+    return file_name, bytes(content)
+
+
+@router.post("/imports/inspect")
+async def inspect_import(file: UploadFile = File(...)) -> dict:
+    from app.parsing.excel_parser import inspect_excel
+
+    file_name, content = await _read_request_file(file)
+    try:
+        sheets = (
+            await run_in_threadpool(inspect_excel, content, file_name)
+            if file_name.lower().endswith((".xlsx", ".xls"))
+            else []
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Could not read workbook") from exc
+    return {"sheets": sheets}
+
+
+async def _parse_request_file(
+    file: UploadFile, mode: str = "basic", selected_sheets=None, token: str | None = None
+):
+    file_name, content = await _read_request_file(file)
     try:
         await import_progress.report(token, "reading", mode=mode)
-        parsed = await run_in_threadpool(parse_upload, filename=file_name, content=bytes(content))
+        parsed = await run_in_threadpool(
+            parse_upload, filename=file_name, content=content, selected_sheets=selected_sheets
+        )
         parsed.extraction_mode = mode
         if mode == "balanced":
             await import_progress.report(token, "reviewing", mode=mode, items=len(parsed.items))
@@ -206,6 +235,7 @@ async def upload_request_file(
     http_request: Request,
     request_id: str,
     file: UploadFile = File(...),
+    selected_sheets: list[str] | None = Form(None),
     progress_token: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewResponse:
@@ -218,7 +248,9 @@ async def upload_request_file(
     mode = await extraction_mode(http_request, session)
     await session.commit()
     try:
-        file_name, content, parsed = await _parse_request_file(file, mode, token)
+        file_name, content, parsed = await _parse_request_file(
+            file, mode, selected_sheets=selected_sheets, token=token
+        )
         saved = await repository.save_parsed_request(
             session, parsed=parsed, file_name=file_name, raw_file=content, request_id=request_id
         )
@@ -436,6 +468,50 @@ async def add_custom_column(
     )
 
 
+@router.post("/requests/{request_id}/worksheet")
+async def select_worksheet(
+    request_id: str,
+    payload: WorksheetSelection,
+    session: AsyncSession = Depends(get_session),
+) -> ReviewResponse:
+    """Re-extract a spreadsheet request from another of its worksheets (issue #20). Extra sheets
+    in real requests are usually scratch copies, so the user picks one rather than combining all.
+    Replaces the extracted rows; manual rows, partner details and requested custom columns stay."""
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if request.workflow_status != "review":
+        raise HTTPException(status_code=409, detail="Review is locked after matching starts")
+    if payload.sheet not in {sheet["name"] for sheet in request.sheets or []}:
+        raise HTTPException(status_code=400, detail="Unknown worksheet")
+    if payload.sheet == request.selected_sheet:
+        return repository.to_review_response(request)
+    if not request.raw_file:
+        raise HTTPException(
+            status_code=422,
+            detail="The original file is unavailable; re-upload it to switch sheets",
+        )
+    content, file_name, mode = request.raw_file, request.source_file_name, request.extraction_mode
+    specs = [CustomColumnSpec(**entry) for entry in request.custom_columns or []]
+    # Release the read transaction during provider work, then re-check before replacing rows.
+    await session.commit()
+    try:
+        parsed = await run_in_threadpool(
+            parse_upload, filename=file_name, content=content, custom_columns=specs,
+            sheet=payload.sheet,
+        )
+        parsed.extraction_mode = mode
+        if mode == "balanced":
+            parsed = await run_in_threadpool(review_document, parsed)
+    except ParsingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    request = await repository.get_request_by_id(session, request_id, lock=True)
+    if request is None or request.workflow_status != "review":
+        raise HTTPException(status_code=409, detail="Review is locked after matching starts")
+    updated = await repository.replace_extracted_items(session, request, parsed)
+    return repository.to_review_response(updated)
+
+
 @router.post("/requests/{request_id}/matching", status_code=202)
 async def start_matching(
     request_id: str,
@@ -587,7 +663,12 @@ async def decide_match(
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
     if request.workflow_status not in {
-        "matching_queued", "matching", "matching_failed", "match_review", "complete", "finalized"
+        "matching_queued",
+        "matching",
+        "matching_failed",
+        "match_review",
+        "complete",
+        "finalized",
     }:
         raise HTTPException(status_code=409, detail="Matching has not started")
     item = next((item for item in request.items if item.id == item_id), None)
@@ -602,7 +683,14 @@ async def decide_match(
     run = await service.get_run(item.current_match_run_id)
     if run is None:
         raise HTTPException(status_code=409, detail="Match run is unavailable")
-    candidate = next((candidate for candidate in run.candidates if candidate.candidate_id == payload.candidateId), None)
+    candidate = next(
+        (
+            candidate
+            for candidate in run.candidates
+            if candidate.candidate_id == payload.candidateId
+        ),
+        None,
+    )
     if not payload.noMatch and candidate is None:
         raise HTTPException(status_code=422, detail="Choose a candidate or No match")
     if payload.noMatch and payload.candidateId is not None:
@@ -776,6 +864,8 @@ async def ai_review(
     content = request.raw_file
     file_name = request.source_file_name
     table_mappings = request.table_mappings
+    sheet = request.selected_sheet
+    selected_sheets = request.selected_sheets or None
     before = fingerprint(content, document)
     cached = request.ai_review or {}
     if (
@@ -785,7 +875,9 @@ async def ai_review(
         return repository.to_review_response(request)
     # Release the read transaction during provider work so edits and matching can proceed.
     await session.commit()
-    await run_in_threadpool(fill_legacy_sources, document, file_name, content, table_mappings)
+    await run_in_threadpool(
+        fill_legacy_sources, document, file_name, content, table_mappings, sheet, selected_sheets
+    )
     await run_in_threadpool(review_document, document)
     current = await repository.get_request_by_id(session, request_id, lock=True)
     if (

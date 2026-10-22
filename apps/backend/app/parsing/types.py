@@ -77,6 +77,10 @@ class ParsedDocument:
     # Ordered labels of the extra columns this document contributed, in source column order.
     # Columns that were empty for every row are dropped, so this reflects what's worth showing.
     attribute_columns: list[str] = field(default_factory=list)
+    # Spreadsheet inventory, legacy single selection, and confirmed worksheet selection.
+    sheets: list[dict] = field(default_factory=list)
+    selected_sheet: str | None = None
+    selected_sheets: list[str] = field(default_factory=list)
     # Header labels this document's table has but that weren't extracted (supplier/admin columns
     # scoped out by classify_columns) - offered back to the user after the fact as "other columns
     # you can add" (see custom_columns.py / the /custom-columns endpoint). Empty for headerless

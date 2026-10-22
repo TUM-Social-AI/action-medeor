@@ -149,15 +149,15 @@ export default function App() {
     navigate('ingestion', null);
   };
 
-  const handleImport = async (file: File) => {
+  const handleImport = async (file: File, selectedSheets?: string[]) => {
     setWorkflowError(null);
     const token = newProgressToken();
     setProgressToken(token);
     setLoadingType('extracting');
     try {
       const response = requestId
-        ? await uploadRequestFile(requestId, file, token)
-        : await createImport(file, token);
+        ? await uploadRequestFile(requestId, file, selectedSheets, token)
+        : await createImport(file, selectedSheets, token);
       setRequestId(response.requestId);
       setReviewData(response);
       navigate('review', response.requestId);
@@ -252,7 +252,7 @@ export default function App() {
       {currentScreen === 'dashboard' && <TrendDashboard />}
       {currentScreen === 'catalogue' && <CatalogueScreen />}
       {currentScreen === 'ingestion' && <IngestionScreen
-        onContinue={file => void handleImport(file)} error={workflowError} onOpenRequest={openRequest}
+        onContinue={(file, selectedSheets) => void handleImport(file, selectedSheets)} error={workflowError} onOpenRequest={openRequest}
         onStartManual={handleStartManual}
       />}
       {currentScreen === 'review' && (requestId || manualDraft) && <ReviewItemsScreen

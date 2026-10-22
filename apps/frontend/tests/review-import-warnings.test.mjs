@@ -278,6 +278,14 @@ test('AI review locks the application while pending and removes the button after
   }
 });
 
+test('review displays the saved worksheet selection', () => {
+  const sheets = [{ name: 'Tabelle1', rows: 94 }, { name: 'Tabelle2', rows: 12 }];
+  const html = render({ ...data, sheets, selectedSheets: ['Tabelle1', 'Tabelle2'] });
+  assert.ok(html.includes('Worksheets: Tabelle1, Tabelle2'));
+  assert.ok(!html.includes('aria-label="Worksheet"'));
+  assert.ok(render({ ...data, sheets, selectedSheet: 'Tabelle2' }).includes('Worksheets: Tabelle2'));
+});
+
 test('a defaulted unit is visibly marked as a default, not as source data', () => {
   const item = {
     id: 1, name: 'Examination gloves, nitrile, M', quantity: 4, unit: 'Stück', notes: '',

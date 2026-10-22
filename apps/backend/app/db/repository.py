@@ -17,6 +17,7 @@ from app.api.schemas import (
     ReviewResponse,
     SourceInfo,
     SourceReference,
+    WorksheetInfo,
 )
 from app.db.models import ImportRequestRow, RequestItemRow, RequestSourceReferenceRow
 from app.parsing.ai_review import FIELDS, fingerprint
@@ -74,11 +75,34 @@ async def save_parsed_request(
     request.attribute_columns = parsed.attribute_columns
     request.available_columns = parsed.available_columns
     request.raw_file = raw_file
+    request.sheets = parsed.sheets
+    request.selected_sheet = parsed.selected_sheet
+    request.selected_sheets = parsed.selected_sheets
     request.workflow_status = "review"
 
-    for position, parsed_item in enumerate(parsed.items):
+    new_items = _append_parsed_items(request, parsed)
+    session.add(request)
+    await session.flush()
+    _store_review_state(request, new_items, parsed)
+    await session.commit()
+
+    # session.refresh(request, attribute_names=["items"]) reloads the items collection but does
+    # NOT eager-load each item's source_reference - to_review_response() touching it afterward
+    # (a plain sync call, not awaited) then triggers a real lazy-load outside any async-bridged
+    # context, which fails with MissingGreenlet. get_request_by_id() eager-loads both levels in
+    # one query via selectinload, so nothing downstream ever needs an implicit lazy load.
+    refreshed = await get_request_by_id(session, request.request_id)
+    assert refreshed is not None  # we just committed this row in the same session
+    return refreshed
+
+
+def _append_parsed_items(
+    request: ImportRequestRow, parsed: ParsedDocument, start: int = 0
+) -> list[RequestItemRow]:
+    added = []
+    for position, parsed_item in enumerate(parsed.items, start):
         item = RequestItemRow(
-            request_id=request_id,
+            request_id=request.request_id,
             position=position,
             name=parsed_item.name,
             quantity=parsed_item.quantity,
@@ -99,34 +123,59 @@ async def save_parsed_request(
         )
         if parsed_item.excerpt:
             item.source_reference = RequestSourceReferenceRow(
-                request_id=request_id,
+                request_id=request.request_id,
                 page=parsed_item.page,
                 row=parsed_item.row,
                 excerpt=parsed_item.excerpt,
             )
         request.items.append(item)
+        added.append(item)
+    return added
 
-    session.add(request)
-    await session.flush()
+
+def _store_review_state(
+    request: ImportRequestRow, new_items: list[RequestItemRow], parsed: ParsedDocument
+) -> None:
+    """Needs flushed item ids. Saves each extracted row's source context for the AI review."""
     sources = {
         str(item.id): source.review_source
-        for item, source in zip(request.items, parsed.items, strict=True)
+        for item, source in zip(new_items, parsed.items, strict=True)
     }
     request.ai_review = {"summary": parsed.review_summary, "sources": sources}
-    saved_document = review_document_from_request(request)
     request.ai_review = {
         **request.ai_review,
-        "fingerprint": fingerprint(raw_file or b"", saved_document),
+        "fingerprint": fingerprint(request.raw_file or b"", review_document_from_request(request)),
     }
-    await session.commit()
 
-    # session.refresh(request, attribute_names=["items"]) reloads the items collection but does
-    # NOT eager-load each item's source_reference - to_review_response() touching it afterward
-    # (a plain sync call, not awaited) then triggers a real lazy-load outside any async-bridged
-    # context, which fails with MissingGreenlet. get_request_by_id() eager-loads both levels in
-    # one query via selectinload, so nothing downstream ever needs an implicit lazy load.
-    refreshed = await get_request_by_id(session, request_id)
-    assert refreshed is not None  # we just committed this row in the same session
+
+async def replace_extracted_items(
+    session: AsyncSession, request: ImportRequestRow, parsed: ParsedDocument
+) -> ImportRequestRow:
+    """Swap the extracted rows for a freshly parsed set (e.g. another worksheet), keeping manual
+    rows and the partner details. Only valid during review, before matching references items."""
+    manual = [item for item in request.items if item.manual]
+    for item in [item for item in request.items if not item.manual]:
+        request.items.remove(item)  # delete-orphan removes the row and its source reference
+    request.rows_detected = parsed.rows_detected
+    request.used_llm_fallback = parsed.used_llm_fallback
+    request.parser_warnings = parsed.warnings
+    request.table_mappings = parsed.table_mappings
+    request.attribute_columns = parsed.attribute_columns
+    request.available_columns = parsed.available_columns
+    request.sheets = parsed.sheets
+    request.selected_sheet = parsed.selected_sheet
+    request.selected_sheets = parsed.selected_sheets
+    new_items = _append_parsed_items(request, parsed)
+    for position, item in enumerate(manual, len(new_items)):
+        item.position = position  # manual rows stay after the extracted ones
+    # The loaded collection keeps insertion order (kept manual rows first) and a re-fetch in this
+    # session won't reorder an already-loaded collection, so put it in position order here.
+    request.items.sort(key=lambda item: item.position)
+    await session.flush()
+    _store_review_state(request, new_items, parsed)
+    await session.commit()
+    refreshed = await get_request_by_id(session, request.request_id)
+    assert refreshed is not None
     return refreshed
 
 
@@ -312,8 +361,12 @@ async def add_custom_column(
 
     all_specs = [*existing_specs, spec]
     parsed = parse_upload(
-        filename=request.source_file_name, content=request.raw_file, custom_columns=all_specs,
-        table_mappings=request.table_mappings or {}
+        filename=request.source_file_name,
+        content=request.raw_file,
+        custom_columns=all_specs,
+        table_mappings=request.table_mappings or {},
+        sheet=request.selected_sheet,
+        selected_sheets=request.selected_sheets or None,
     )
 
     tabular_file = request.source_file_name.lower().endswith((".xlsx", ".xls", ".csv"))
@@ -426,6 +479,9 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
         attributeColumns=row.attribute_columns or [],
         columnLabels=row.column_labels or {},
         availableColumns=row.available_columns or [],
+        sheets=[WorksheetInfo(**sheet) for sheet in row.sheets or []],
+        selectedSheet=row.selected_sheet,
+        selectedSheets=row.selected_sheets or ([row.selected_sheet] if row.selected_sheet else []),
         parserWarnings=row.parser_warnings or [],
         usedLlm=bool(row.used_llm_fallback),
         extractionMode=row.extraction_mode,
@@ -608,8 +664,13 @@ def apply_ai_review(request: ImportRequestRow, document: ParsedDocument) -> None
     history = list((request.ai_review or {}).get("attempt_history", []))
     previous = (request.ai_review or {}).get("summary", {})
     if previous.get("status") in {"unavailable", "partial"}:
-        history.append({"status": previous["status"], "failures": previous.get("failures", {}),
-                        "checked": previous.get("checked", 0)})
+        history.append(
+            {
+                "status": previous["status"],
+                "failures": previous.get("failures", {}),
+                "checked": previous.get("checked", 0),
+            }
+        )
     request.ai_review = {
         "attempt_history": history[-5:],
         "summary": document.review_summary,

@@ -249,6 +249,9 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   // availableColumns (an exact detected header, so the deterministic hint match resolves it for
   // free) or typed freely by the user, in which case it still guides the LLM fallback match the
   // same way a hint would - see CustomColumnRequest / app.parsing.custom_columns.
+  const sheets = data?.sheets ?? [];
+
+
   const submitNewColumn = async () => {
     if (!requestId) return;
     const trimmed = newColumnName.trim();
@@ -368,7 +371,8 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const missing = items.filter(item => item.status === 'missing').length;
   const manualCount = items.filter(item => item.manual).length;
   const isManualRequest = !!data && !data.source.fileName;
-  const itemMutationPending = isReviewingAi || isSavingItem || removingItemId !== null;
+  const itemMutationPending =
+    isReviewingAi || isSavingItem || removingItemId !== null;
   const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain && !item.reviewReasons?.length)
     && !itemMutationPending && !isAddingColumn;
   const blockedItems = items.filter(needsManualReview);
@@ -628,6 +632,11 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
             <span className="text-sm text-blue-600">
               {data.source.rowsDetected} rows detected{manualCount > 0 && ` · ${manualCount} added manually`} · Partner: {partnerDetails.partner || '—'}
             </span>
+            {sheets.length > 1 && (
+              <span className="ml-auto text-sm text-blue-700">
+                Worksheets: {(data.selectedSheets?.length ? data.selectedSheets : [data.selectedSheet ?? sheets[0].name]).join(', ')}
+              </span>
+            )}
           </div>
           )}
 

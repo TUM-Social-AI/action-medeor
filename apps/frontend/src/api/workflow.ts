@@ -91,10 +91,11 @@ export const listRequests = () => requestJson<SavedRequest[]>('/api/requests');
 export const deleteRequest = (id: string) =>
   requestJson<void>(`/api/requests/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const getRequest = (id: string) => requestJson<SavedRequest>(`/api/requests/${id}`);
-export function uploadRequestFile(id: string, file: File, progressToken?: string) {
+export function uploadRequestFile(id: string, file: File, selectedSheets?: string[], progressToken?: string) {
   const body = new FormData();
   body.append('file', file);
   if (progressToken) body.append('progress_token', progressToken);
+  selectedSheets?.forEach(sheet => body.append('selected_sheets', sheet));
   return requestJson<ReviewResponse>(`/api/requests/${id}/file`, { method: 'POST', body });
 }
 export const startRequestMatching = (id: string) =>

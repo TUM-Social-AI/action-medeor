@@ -9,12 +9,13 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { inspectImport } from '../api/client';
 import { listRequests, type SavedRequest } from '../api/workflow';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { WorkflowStepper } from './WorkflowStepper';
 
 type IngestionScreenProps = {
-  onContinue: (file: File) => void;
+  onContinue: (file: File, selectedSheets?: string[]) => void;
   error?: string | null;
   onOpenRequest: (request: SavedRequest) => void;
   onStartManual: () => void;
@@ -30,6 +31,29 @@ function isValidFile(file: File) {
 export function IngestionScreen({ onContinue, error: workflowError, onOpenRequest, onStartManual, isStartingManual = false }: IngestionScreenProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [sheets, setSheets] = useState<{ name: string; rows: number }[]>([]);
+  const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
+  const [isInspecting, setIsInspecting] = useState(false);
+  const [inspectionError, setInspectionError] = useState<string | null>(null);
+  const [inspectedFile, setInspectedFile] = useState<File | null>(null);
+  useEffect(() => {
+    let active = true;
+    setSheets([]);
+    setSelectedSheets([]);
+    setInspectionError(null);
+    setInspectedFile(null);
+    if (!uploadedFile) return;
+    setIsInspecting(true);
+    inspectImport(uploadedFile).then(result => {
+      if (!active) return;
+      setSheets(result.sheets);
+      setSelectedSheets(result.sheets.length ? [result.sheets[0].name] : []);
+      setInspectedFile(uploadedFile);
+    }).catch(error => {
+      if (active) setInspectionError(error instanceof Error ? error.message : 'Unable to inspect file');
+    }).finally(() => { if (active) setIsInspecting(false); });
+    return () => { active = false; };
+  }, [uploadedFile]);
   const [imports, setImports] = useState<SavedRequest[]>([]);
   const [isLoadingImports, setIsLoadingImports] = useState(true);
   const [importsError, setImportsError] = useState<string | null>(null);
@@ -176,10 +200,29 @@ export function IngestionScreen({ onContinue, error: workflowError, onOpenReques
             )}
           </div>
 
+          {uploadedFile && isInspecting && <LoadingPanel label="Reading file details" />}
+          {inspectionError && <ErrorPanel message={inspectionError} />}
+          {sheets.length > 0 && (
+            <fieldset className="mt-3 rounded-xl border border-gray-200 bg-white p-4">
+              <legend className="float-left mb-2 w-full text-sm font-semibold">Select worksheets to extract</legend>
+              <p className="clear-both mb-2 text-xs text-gray-500">Items from selected worksheets will appear together. Copies on different sheets will produce duplicate items.</p>
+              {sheets.map(sheet => (
+                <label key={sheet.name} className="flex items-center gap-2 py-1 text-sm">
+                  <input type="checkbox" checked={selectedSheets.includes(sheet.name)}
+                    onChange={event => {
+                      const checked = event.currentTarget.checked;
+                      setSelectedSheets(current => checked
+                        ? [...current, sheet.name] : current.filter(name => name !== sheet.name));
+                    }} />
+                  {sheet.name} ({sheet.rows} non-empty rows)
+                </label>
+              ))}
+            </fieldset>
+          )}
           <div className="mt-2 flex items-center justify-end">
             <button
-              onClick={() => uploadedFile && onContinue(uploadedFile)}
-              disabled={!uploadedFile || isStartingManual}
+              onClick={() => uploadedFile && onContinue(uploadedFile, sheets.length ? selectedSheets : undefined)}
+              disabled={!uploadedFile || inspectedFile !== uploadedFile || isInspecting || !!inspectionError || (sheets.length > 0 && !selectedSheets.length) || isStartingManual}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all ${
                 uploadedFile
                   ? 'bg-[#1B4E8A] text-white hover:bg-[#163d6d] shadow-sm cursor-pointer'

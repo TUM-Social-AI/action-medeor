@@ -95,6 +95,9 @@ export type ReviewCounts = {
   missing: number;
 };
 
+export type WorksheetInfo = { name: string; rows: number };
+
+
 /** Live stage of an upload being extracted (see getImportProgress). */
 export type ImportProgress = {
   stage: 'reading' | 'reviewing' | 'saving';
@@ -134,6 +137,10 @@ export type ReviewResponse = {
    * detected header row to offer choices from).
    */
   availableColumns: string[];
+  /** Spreadsheets: every worksheet (with its non-empty row count) and the one imported. */
+  sheets?: WorksheetInfo[];
+  selectedSheets?: string[];
+  selectedSheet?: string | null;
 };
 
 export type ItemUpdate = Partial<

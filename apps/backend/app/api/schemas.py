@@ -94,6 +94,15 @@ class ReviewCounts(BaseModel):
     missing: int
 
 
+class WorksheetInfo(BaseModel):
+    name: str
+    rows: int  # non-empty rows, so users can tell a request sheet from a scratch sheet
+
+
+class WorksheetSelection(BaseModel):
+    sheet: str = Field(min_length=1)
+
+
 class ImportProgress(BaseModel):
     stage: Literal["reading", "reviewing", "saving"]
     mode: Literal["basic", "balanced"]
@@ -123,6 +132,10 @@ class ReviewResponse(BaseModel):
     # the review screen as suggestions for the "Add column" control (see CustomColumnRequest).
     # Empty for free-text documents, which have no detected header row to offer choices from.
     availableColumns: list[str] = Field(default_factory=list)
+    # Spreadsheet inventory and the selection confirmed before extraction.
+    sheets: list[WorksheetInfo] = Field(default_factory=list)
+    selectedSheets: list[str] = Field(default_factory=list)
+    selectedSheet: str | None = None
 
 
 class CustomColumnRequest(BaseModel):

@@ -30,15 +30,23 @@ export function getRecentImports() {
   return requestJson<RecentImport[]>('/api/imports/recent');
 }
 
-/** progressToken lets the loading screen poll getImportProgress while this upload runs. */
-export function createImport(file: File, progressToken?: string) {
+export function createImport(file: File, selectedSheets?: string[], progressToken?: string) {
   const formData = new FormData();
   formData.append('file', file);
   if (progressToken) formData.append('progress_token', progressToken);
+  selectedSheets?.forEach(sheet => formData.append('selected_sheets', sheet));
 
   return requestJson<ReviewResponse>('/api/imports', {
     method: 'POST',
     body: formData,
+  });
+}
+
+export function inspectImport(file: File) {
+  const body = new FormData();
+  body.append('file', file);
+  return requestJson<{ sheets: { name: string; rows: number }[] }>('/api/imports/inspect', {
+    method: 'POST', body,
   });
 }
 
@@ -95,6 +103,14 @@ export function updateColumnLabel(requestId: string, columnKey: string, label: s
  * control. Re-parses the original file server-side and returns the full, updated review payload
  * (new attribute values merged into the existing items, availableColumns/attributeColumns
  * updated) rather than just the one new column, since every item can gain a value at once. */
+/** Re-extract the request from another worksheet of its spreadsheet; manual rows are kept. */
+export function selectWorksheet(requestId: string, sheet: string) {
+  return requestJson<ReviewResponse>(`/api/requests/${requestId}/worksheet`, {
+    method: 'POST',
+    body: JSON.stringify({ sheet }),
+  });
+}
+
 export function addCustomColumn(requestId: string, column: CustomColumnRequest) {
   return requestJson<ReviewResponse>(`/api/requests/${requestId}/custom-columns`, {
     method: 'POST',

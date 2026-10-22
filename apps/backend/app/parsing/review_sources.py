@@ -9,7 +9,12 @@ from app.parsing.types import ParsedDocument
 
 
 def fill_legacy_sources(
-    document: ParsedDocument, filename: str, content: bytes, table_mappings: dict | None = None
+    document: ParsedDocument,
+    filename: str,
+    content: bytes,
+    table_mappings: dict | None = None,
+    sheet: str | None = None,
+    selected_sheets: list[str] | None = None,
 ) -> None:
     missing = [item for item in document.items if not item.manual and not item.review_source]
     if not missing:
@@ -55,7 +60,13 @@ def fill_legacy_sources(
     else:
         from app.parsing.service import parse_upload
 
-        parsed = parse_upload(filename=filename, content=content, table_mappings=table_mappings)
+        parsed = parse_upload(
+            filename=filename,
+            content=content,
+            table_mappings=table_mappings,
+            sheet=sheet,
+            selected_sheets=selected_sheets,
+        )
         table_sources = {(item.page, item.row): item.review_source for item in parsed.items}
         document.used_llm_fallback |= parsed.used_llm_fallback
     for item in missing:
@@ -64,4 +75,6 @@ def fill_legacy_sources(
             item.review_source = source
         else:
             text = texts.get(item.page, texts.get(0, ""))
-            item.review_source = text_review_source(text, item) if text else {"mappingUncertain": True}
+            item.review_source = (
+                text_review_source(text, item) if text else {"mappingUncertain": True}
+            )
