@@ -22,7 +22,8 @@ export function sharePointDocuments(provenance: SourceReferenceV1[]): SharePoint
       const lastSegment = url.pathname.split('/').filter(Boolean).at(-1) ?? '';
       let name = lastSegment;
       try { name = decodeURIComponent(lastSegment); } catch { /* Keep the encoded name. */ }
-      return [{ url: url.href, name: name || 'Offer document', id: source.document_id }];
+      const fileName = source.locator.file_name;
+      return [{ url: url.href, name: typeof fileName === 'string' && fileName.trim() ? fileName : name || 'Supplier offer', id: source.document_id }];
     } catch {
       return [];
     }

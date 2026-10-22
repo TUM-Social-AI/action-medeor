@@ -59,6 +59,84 @@ async def test_development_remains_disabled_with_azure_configuration(configured)
     assert "not set to production" in (await request(app, "GET", HEADERS)).json()["reason"]
 
 
+@pytest.fixture
+def local(monkeypatch):
+    monkeypatch.delenv("CONTAINER_APP_NAME", raising=False)
+    settings = Settings(
+        _env_file=None, app_env="development",
+        sharepoint_tenant_id="tenant", sharepoint_client_id="client",
+        sharepoint_client_secret="private-secret", sharepoint_drive_id="drive",
+        sharepoint_root_folder_id="root",
+    )
+    app = FastAPI()
+    app.include_router(catalogue_fetch.router)
+    app.dependency_overrides[get_settings] = lambda: settings
+    return app, settings
+
+
+async def test_local_development_starts_backend_sync_without_azure_or_user_headers(local, monkeypatch):
+    app, _ = local
+    starts = []
+
+    async def start(job_name):
+        starts.append(job_name)
+        return "local-execution"
+
+    async def unexpected(_settings):
+        pytest.fail("Local development must not start an Azure job")
+
+    monkeypatch.setattr(catalogue_fetch, "start_local_sync", start)
+    monkeypatch.setattr(catalogue_fetch, "start_azure_job", unexpected)
+    assert (await request(app, "GET")).json() == {"enabled": True, "reason": None}
+    assert starts == []
+    response = await request(app, headers={
+        "origin": "http://localhost:5173", "x-catalogue-fetch": "true",
+    })
+    assert response.status_code == 202
+    assert response.json()["execution_mode"] == "local"
+    assert response.json()["execution_name"] == "local-execution"
+    assert response.headers["cache-control"] == "no-store"
+    assert starts == ["sharepoint-sync"]
+
+
+@pytest.mark.parametrize("field", [
+    "sharepoint_tenant_id", "sharepoint_client_id", "sharepoint_client_secret",
+    "sharepoint_drive_id", "sharepoint_root_folder_id",
+])
+async def test_local_fetch_requires_sharepoint_configuration(local, field):
+    app, settings = local
+    setattr(settings, field, "")
+    response = await request(app, "GET")
+    assert response.json()["enabled"] is False
+    assert field.upper() in response.json()["reason"]
+    assert "private-secret" not in response.text
+    assert (await request(app, headers=HEADERS)).status_code == 403
+
+
+@pytest.mark.parametrize("headers", [
+    {}, {"origin": "http://localhost:5173"},
+    {"x-catalogue-fetch": "true"},
+    {"origin": "https://untrusted.example", "x-catalogue-fetch": "true"},
+])
+async def test_local_starts_require_a_trusted_origin_and_fetch_header(local, headers):
+    app, _ = local
+    assert (await request(app, headers=headers)).status_code == 403
+
+
+async def test_local_duplicate_start_is_rejected(local, monkeypatch):
+    app, _ = local
+
+    async def start(_job_name):
+        raise catalogue_fetch.SyncAlreadyRunning
+
+    monkeypatch.setattr(catalogue_fetch, "start_local_sync", start)
+    response = await request(app, headers={
+        "origin": "http://127.0.0.1:3000", "x-catalogue-fetch": "true",
+    })
+    assert response.status_code == 409
+    assert "already running" in response.json()["detail"]
+
+
 @pytest.mark.parametrize("field,value", [
     ("azure_sharepoint_job_resource_id", ""),
     ("azure_sharepoint_job_resource_id", JOB_ID + "/start?override=bad"),

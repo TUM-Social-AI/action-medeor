@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from urllib.parse import unquote, urlparse
-
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.catalog.contracts import CatalogueArticleV1
 from app.catalog.state import is_master_item, restriction_flags
+from app.offers.documents import offer_document_name
 
 
 async def list_catalogue_articles(session: AsyncSession) -> list[CatalogueArticleV1]:
@@ -82,10 +81,7 @@ async def list_catalogue_articles(session: AsyncSession) -> list[CatalogueArticl
     )
     for row in offers.mappings():
         metadata = row["metadata_json"] or {}
-        reference = row["file_name"] or metadata.get("path")
-        if not isinstance(reference, str) or not reference.strip():
-            reference = unquote(urlparse(row["source_url"]).path).rstrip("/").split("/")[-1]
-        reference = reference.rstrip("/").split("/")[-1] or "Supplier offer"
+        reference = offer_document_name(row["file_name"], metadata.get("path"), row["source_url"])
         articles.append(
             CatalogueArticleV1(
                 id=f"offer:{row['id']}",

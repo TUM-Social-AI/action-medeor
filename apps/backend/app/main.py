@@ -18,6 +18,7 @@ from app.jobs.match_requests import run_forever
 from app.matching.api import router as matching_router
 from app.offers.api import file_router as offer_files_router
 from app.offers.api import router as offers_router
+from app.sharepoint.local_sync import stop_local_syncs
 
 settings = get_settings()
 
@@ -28,6 +29,7 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        await stop_local_syncs()
         worker.cancel()
         catalog_worker.cancel()
         with suppress(asyncio.CancelledError):

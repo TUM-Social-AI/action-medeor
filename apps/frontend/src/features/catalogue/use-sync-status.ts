@@ -10,7 +10,7 @@ const TERMINAL_NOTICE_MS = 8000;
 function describe(run: CatalogueSyncRun): string {
   if (run.status === 'running') return 'Fetching new data from SharePoint…';
   if (run.status === 'failed') return run.message ?? 'SharePoint fetch failed. Check the job logs.';
-  if (run.status === 'stale') return 'The fetch has stopped reporting progress. Check the Azure job execution logs.';
+  if (run.status === 'stale') return run.message ?? 'The fetch has stopped reporting progress. Check the Azure job execution logs.';
   if (run.status === 'skipped') return 'Fetch skipped because another discovery was already running.';
   if (run.summary.processing_enabled === false) return 'SharePoint discovery completed. Offer processing is disabled for this job.';
   if (run.summary.deferred) {
@@ -101,9 +101,13 @@ export function useCatalogueSyncStatus(onFinished: () => void) {
   }, [noticeKey, noticeAt]);
 
   const message = !statusKnown ? null : startTimedOut
-    ? 'The job has not reported a status yet. Check its Azure execution logs before starting another fetch.'
+    ? watch?.execution_mode === 'local'
+      ? 'The sync has not reported a status yet. Check the backend logs before starting another fetch.'
+      : 'The job has not reported a status yet. Check its Azure execution logs before starting another fetch.'
     : watch && !requested
-      ? 'Azure accepted the fetch request. Waiting for the job to start…'
+      ? watch.execution_mode === 'local'
+        ? 'The backend accepted the fetch request. Waiting for the sync to start…'
+        : 'Azure accepted the fetch request. Waiting for the job to start…'
       : displayed && (displayed.status === 'running' || showTerminalNotice) ? describe(displayed) : null;
   return {
     busy, message, statusKnown, statusError, lastUpdatedAt,

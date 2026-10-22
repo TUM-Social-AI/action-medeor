@@ -47,6 +47,7 @@ export function startCatalogueFetch() {
 
 export type CatalogueFetchAccepted = {
   status: 'accepted'; execution_name: string | null; requested_at: string;
+  execution_mode?: 'azure' | 'local';
 };
 
 export type CatalogueSyncRun = {

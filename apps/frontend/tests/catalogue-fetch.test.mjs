@@ -138,6 +138,24 @@ test('a click starts one job and waits for its database status', async () => {
   assert.equal(loads, 2);
 });
 
+test('local acceptance reports backend execution and never mentions an Azure job', async () => {
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    startCatalogueFetch: async () => ({
+      status: 'accepted', execution_name: 'local-execution',
+      execution_mode: 'local', requested_at: new Date().toISOString(),
+    }),
+  });
+  render(); await settle();
+  render().button('Fetch new data').props.onClick(); await settle();
+  let ui = render(); await settle(); ui = render();
+  assert.match(ui.html, /The backend accepted the fetch request/);
+  assert.doesNotMatch(ui.html, /Azure/);
+  assert.equal(ui.button('Fetching…').props.disabled, true);
+  ui.unmount();
+});
+
 const run = (status, extra = {}) => ({
   id: 'run-1', execution_name: 'job-123', status,
   started_at: '2026-10-22T10:00:00Z', updated_at: '2026-10-22T10:01:00Z',

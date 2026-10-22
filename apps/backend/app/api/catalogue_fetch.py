@@ -1,4 +1,4 @@
-"""Start the configured Azure job through the authenticated web app."""
+"""Start SharePoint sync locally in development or through Azure in production."""
 
 import logging
 import os
@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.db.models import SharePointSyncRunRow
 from app.db.session import get_session
+from app.jobs.sharepoint_sync import required_config
+from app.sharepoint.local_sync import SyncAlreadyRunning, start_local_sync
 from app.sharepoint.run_status import STALE_SECONDS
 
 router = APIRouter(prefix="/api/v1/catalogue/fetch", tags=["catalogue"])
@@ -96,6 +98,7 @@ class FetchAccepted(BaseModel):
     status: str = "accepted"
     execution_name: str | None = None
     requested_at: datetime
+    execution_mode: Literal["azure", "local"] = "azure"
 
 
 class SyncRunStatus(BaseModel):
@@ -111,6 +114,10 @@ class SyncRunStatus(BaseModel):
 
 class SyncStatus(BaseModel):
     runs: list[SyncRunStatus]
+
+
+def local_backend(settings: Settings) -> bool:
+    return settings.app_env.lower() == "development" and not os.environ.get("CONTAINER_APP_NAME")
 
 
 @router.get("/status", response_model=SyncStatus)
@@ -134,13 +141,22 @@ async def sync_status(
             status="stale" if stale else row.status,
             started_at=row.started_at, updated_at=row.updated_at, finished_at=row.finished_at,
             summary=row.summary,
-            message="No recent update from the job. Check its Azure execution logs." if stale else row.message,
+            message=(
+                "No recent update from the job. Check the backend logs." if local_backend(settings)
+                else "No recent update from the job. Check its Azure execution logs."
+            ) if stale else row.message,
         ))
     response.headers["Cache-Control"] = "no-store"
     return SyncStatus(runs=runs)
 
 
 def availability(request: Request, settings: Settings) -> FetchAvailability:
+    if local_backend(settings):
+        try:
+            required_config(settings)
+        except ValueError as exc:
+            return FetchAvailability(enabled=False, reason=str(exc))
+        return FetchAvailability(enabled=True)
     # Deliberately no Azure CLI, developer login, or service-principal fallback.
     if not os.environ.get("CONTAINER_APP_NAME"):
         return FetchAvailability(enabled=False, reason="Fetching is available in the Azure app only.")
@@ -212,6 +228,25 @@ async def fetch_new_data(
     allowed = availability(request, settings)
     if not allowed.enabled:
         raise HTTPException(status_code=403, detail=allowed.reason)
+    if local_backend(settings):
+        origin = request.headers.get("origin", "")
+        trusted_origin = (
+            origin == str(request.base_url).rstrip("/")
+            or origin in settings.cors_origin_list
+            or bool(settings.cors_origin_regex and re.fullmatch(settings.cors_origin_regex, origin))
+        )
+        if not trusted_origin or request.headers.get("x-catalogue-fetch") != "true":
+            raise HTTPException(status_code=403, detail="Start fetching from the local app.")
+        requested_at = datetime.now(UTC)
+        job_name = settings.azure_sharepoint_job_resource_id.rsplit("/", 1)[-1] or "sharepoint-sync"
+        try:
+            execution_name = await start_local_sync(job_name)
+        except SyncAlreadyRunning:
+            raise HTTPException(status_code=409, detail="A SharePoint fetch is already running.") from None
+        response.headers["Cache-Control"] = "no-store"
+        return FetchAccepted(
+            execution_name=execution_name, requested_at=requested_at, execution_mode="local",
+        )
     if (
         request.headers.get("origin") != settings.azure_job_app_origin
         or request.headers.get("x-catalogue-fetch") != "true"

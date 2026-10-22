@@ -771,7 +771,13 @@ validated operation without direct database access. This keeps credentials and d
 the backend.
 
 A cron job is simply a task triggered on a schedule. No always-running cron process is embedded in
-the web application. In Azure, a scheduled job should periodically read SharePoint through Microsoft
+the web application. With `APP_ENV=development` outside Azure, **Fetch new data** starts the same
+SharePoint sync in the backend as a background task. Configure the SharePoint settings in
+`apps/backend/.env`; `SHAREPOINT_PROCESSING_ENABLED` controls whether discovery also processes
+documents and embeddings. Progress is stored in the database, and another fetch is rejected while
+one is running. Stopping or reloading the backend interrupts its local sync.
+
+In Azure, a scheduled job should periodically read SharePoint through Microsoft
 Graph and register changed file metadata and normalized offers using the shared database services; another scheduled or manual process can
 upload the latest ERP CSV pair. Separating scheduled work from the web container makes retries,
 credentials, and failures observable and prevents a long sync from blocking user requests.

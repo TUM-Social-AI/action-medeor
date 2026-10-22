@@ -520,7 +520,8 @@ async def run_command(
         raise ValueError("--item-id is only valid with process-one")
     settings = get_settings()
     required_config(settings)
-    token_provider = MsalTokenProvider(
+    token_provider = await asyncio.to_thread(
+        MsalTokenProvider,
         settings.sharepoint_tenant_id,
         settings.sharepoint_client_id,
         settings.sharepoint_client_secret,
