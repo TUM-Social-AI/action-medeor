@@ -227,7 +227,9 @@ existing active model. The import CLI defaults to `Artikeldaten (2).csv` and
 three restriction columns cannot be uploaded; previously imported database records remain usable.
 
 The Article Catalogue has a separate **Update ERP catalogue** upload dialog with import summaries
-and real embedding progress. **Fetch new data** remains reserved for future SharePoint updates.
+and real embedding progress. **Fetch new data** starts the configured scheduled SharePoint job
+from the authenticated Azure app. It stays disabled locally. See the
+[Azure fetch setup](docs/sharepoint-offer-pipeline.md#fetch-from-the-azure-web-app).
 See [the catalogue documentation](docs/article-catalogue.md) for restriction rules and progress.
 
 The easiest manual method is `http://localhost:8000/docs`: open

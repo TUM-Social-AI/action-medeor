@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 32
     azure_foundry_endpoint: str = ""
     azure_foundry_api_key: str = ""
+    # Web app only: start the existing scheduled job with its deployed template.
+    azure_sharepoint_job_resource_id: str = ""
+    azure_job_app_origin: str = ""
+    azure_job_managed_identity_client_id: str = ""
     sharepoint_tenant_id: str = ""
     sharepoint_client_id: str = ""
     sharepoint_client_secret: str = ""

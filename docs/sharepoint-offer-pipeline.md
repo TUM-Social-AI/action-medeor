@@ -5,6 +5,84 @@ queues extraction, persists multiple offers per document, and processes supplier
 It uses the same database services as the API, rather than making HTTP calls to its own backend.
 The embedding API is the configured external provider; no new public extraction endpoint is needed.
 
+## Fetch from the Azure web app
+
+**Fetch new data** calls `POST /api/v1/catalogue/fetch` on the web backend. The backend obtains
+an ARM token from the Container App's managed identity endpoint and calls the existing job's
+`start` operation. This creates an extra execution using the job's existing image, command,
+environment and secrets; the cron schedule continues unchanged. No Azure token reaches the browser.
+The UI reports acceptance, not successful completion. Use **Reload catalogue** after processing
+to load the latest offers; execution progress and failures remain in Azure's job execution logs.
+
+Configure the **web Container App**:
+
+1. Keep Microsoft Entra built-in authentication set to **Require authentication**, with HTTPS
+   ingress. All requests must pass through that authentication layer; the API trusts its
+   `X-MS-CLIENT-PRINCIPAL-ID` header. Do not expose a route directly to the container.
+2. Enable its system-assigned managed identity under **Identity**. Alternatively, attach a
+   user-assigned identity and set `AZURE_JOB_MANAGED_IDENTITY_CLIENT_ID` to that identity's client ID.
+3. Grant that identity a custom Azure role containing `Microsoft.App/jobs/start/action`, with
+   its role assignment scoped to the specific SharePoint job resource. The application needs no
+   job update, secret-read, or subscription-wide Contributor role. Avoid wildcard permissions.
+4. Set these runtime environment variables and deploy the updated image:
+
+   ```text
+   APP_ENV=production
+   AZURE_SHAREPOINT_JOB_RESOURCE_ID=/subscriptions/SUBSCRIPTION_ID/resourceGroups/RESOURCE_GROUP/providers/Microsoft.App/jobs/JOB_NAME
+   AZURE_JOB_APP_ORIGIN=https://YOUR-DEPLOYED-APP-HOSTNAME
+   ```
+
+Copy the full **Resource ID** from the job's Azure portal **Properties**. Use the exact app origin,
+including a custom domain or port if applicable, without a trailing slash. Leave the optional
+managed identity client ID empty for a system-assigned identity. Azure injects `CONTAINER_APP_NAME`,
+`IDENTITY_ENDPOINT` and `IDENTITY_HEADER`; never copy those into local configuration.
+
+The target job must already run `python -m app.jobs.sharepoint_sync sync`, with the database,
+Graph, extraction and embedding settings listed below. `SHAREPOINT_PROCESSING_ENABLED=true` on
+the job enables extraction; otherwise a successful job execution performs discovery only.
+Starting the job from the button does not override its processing limits or settings.
+
+### Save the job's normal sync command
+
+If the job's saved argument override still contains `process-one`, replace it with `sync`
+and remove both `--item-id` and its document ID. For a job whose **Command override** is `uv`,
+set its **Arguments override** to these separate arguments, in order:
+
+```text
+run, python, -m, app.jobs.sharepoint_sync, sync
+```
+
+This runs `uv run python -m app.jobs.sharepoint_sync sync`. The commas above separate arguments
+in the portal; they are not part of the argument values. With the repository's container image,
+you can alternatively set **Command override** to `python` and **Arguments override** to
+`-m, app.jobs.sharepoint_sync, sync`, since `/app/.venv/bin` is already on `PATH`.
+
+Save this in the **Container Apps Job's container configuration**. Changing only a single
+execution's overrides does not update the saved job template used by later scheduled runs or
+the web app's **Fetch new data** button.
+
+Confirm `SHAREPOINT_PROCESSING_ENABLED=true` in the **job's** environment to process offers.
+`SHAREPOINT_MAX_DOCUMENTS_PER_RUN` still limits each execution (default `1`); `sync` does not
+automatically remove that limit. Keep `process-one --item-id DOCUMENT_ID` for deliberate
+single-document checks using a per-execution override.
+
+`GET /api/v1/catalogue/fetch` controls button availability without contacting ARM. The backend
+rejects starts outside its production Container Apps runtime, unsigned requests, and browser
+requests whose origin differs from `AZURE_JOB_APP_ORIGIN`. A dedicated header also prevents
+ordinary cross-site form submissions. Local development has no CLI or developer-credential
+fallback. Every signed-in app user can start the configured job. This protects the backend entry
+point; it cannot prove that an authenticated HTTP request came from a physical button click.
+Azure principals with independently granted job permissions can still use the Azure portal or CLI.
+
+There are no automatic retries of a start request: a timeout can occur after Azure has accepted it.
+Check execution history before retrying an ambiguous failure. The UI prevents repeated clicks
+while a start is pending; separate accepted requests create separate executions, and the existing
+pipeline's discovery lock and document leases coordinate overlapping work.
+
+See Microsoft's [job start API](https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/jobs/start?view=rest-resource-manager-containerapps-2025-07-01),
+[managed identity endpoint](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity#rest-endpoint-reference)
+and [job permissions](https://learn.microsoft.com/en-us/azure/container-apps/jobs#permissions).
+
 ## Current defaults and folder configuration
 
 `SHAREPOINT_PROCESSING_ENABLED=false` keeps scheduled extraction and embedding work off.

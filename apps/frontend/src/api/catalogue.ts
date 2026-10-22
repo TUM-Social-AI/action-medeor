@@ -31,6 +31,20 @@ export function getCatalogueArticles(signal?: AbortSignal) {
   return requestJson<CatalogueArticle[]>('/api/v1/catalogue/articles', { signal });
 }
 
+export type CatalogueFetchAvailability = { enabled: boolean; reason: string | null };
+
+export function getCatalogueFetchAvailability(signal?: AbortSignal) {
+  return requestJson<CatalogueFetchAvailability>('/api/v1/catalogue/fetch', { signal });
+}
+
+export function startCatalogueFetch() {
+  return requestJson<{ status: 'accepted'; execution_name: string | null }>(
+    '/api/v1/catalogue/fetch', {
+      method: 'POST', headers: { 'X-Catalogue-Fetch': 'true' },
+    },
+  );
+}
+
 export type CatalogImportResult = {
   import_id: string;
   catalog_snapshot_id: string | null;
