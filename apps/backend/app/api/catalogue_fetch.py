@@ -3,12 +3,20 @@
 import logging
 import os
 import re
+from datetime import UTC, datetime
+from typing import Literal
+from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
+from app.db.models import SharePointSyncRunRow
+from app.db.session import get_session
+from app.sharepoint.run_status import STALE_SECONDS
 
 router = APIRouter(prefix="/api/v1/catalogue/fetch", tags=["catalogue"])
 logger = logging.getLogger(__name__)
@@ -27,6 +35,49 @@ class FetchAvailability(BaseModel):
 class FetchAccepted(BaseModel):
     status: str = "accepted"
     execution_name: str | None = None
+    requested_at: datetime
+
+
+class SyncRunStatus(BaseModel):
+    id: UUID
+    execution_name: str | None
+    status: Literal["running", "completed", "failed", "skipped", "stale"]
+    started_at: datetime
+    updated_at: datetime
+    finished_at: datetime | None
+    summary: dict[str, int | bool]
+    message: str | None
+
+
+class SyncStatus(BaseModel):
+    runs: list[SyncRunStatus]
+
+
+@router.get("/status", response_model=SyncStatus)
+async def sync_status(
+    request: Request, response: Response,
+    settings: Settings = Depends(get_settings), session: AsyncSession = Depends(get_session),
+) -> SyncStatus:
+    if settings.app_env.lower() == "production" and not request.headers.get("x-ms-client-principal-id"):
+        raise HTTPException(status_code=401, detail="Sign in to view sync status.")
+    job_name = settings.azure_sharepoint_job_resource_id.rsplit("/", 1)[-1] or "sharepoint-sync"
+    rows = (await session.scalars(
+        select(SharePointSyncRunRow).where(SharePointSyncRunRow.job_name == job_name)
+        .order_by(SharePointSyncRunRow.updated_at.desc(), SharePointSyncRunRow.id.desc()).limit(20)
+    )).all()
+    now = datetime.now(UTC)
+    runs = []
+    for row in rows:
+        stale = row.status == "running" and (now - row.updated_at).total_seconds() > STALE_SECONDS
+        runs.append(SyncRunStatus(
+            id=row.id, execution_name=row.execution_name,
+            status="stale" if stale else row.status,
+            started_at=row.started_at, updated_at=row.updated_at, finished_at=row.finished_at,
+            summary=row.summary,
+            message="No recent update from the job. Check its Azure execution logs." if stale else row.message,
+        ))
+    response.headers["Cache-Control"] = "no-store"
+    return SyncStatus(runs=runs)
 
 
 def availability(request: Request, settings: Settings) -> FetchAvailability:
@@ -98,6 +149,7 @@ async def fetch_new_data(
     ):
         raise HTTPException(status_code=403, detail="Start fetching from the Azure app.")
     try:
+        requested_at = datetime.now(UTC)
         execution_name = await start_azure_job(settings)
     except httpx.TimeoutException:
         # Never retry a start automatically: Azure might already have accepted it.
@@ -114,4 +166,4 @@ async def fetch_new_data(
         ) from None
     logger.info("Catalogue fetch accepted for user %s", request.headers["x-ms-client-principal-id"])
     response.headers["Cache-Control"] = "no-store"
-    return FetchAccepted(execution_name=execution_name)
+    return FetchAccepted(execution_name=execution_name, requested_at=requested_at)

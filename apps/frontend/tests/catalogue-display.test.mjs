@@ -53,6 +53,7 @@ async function render(articles, sort) {
     '../features/catalogue/filtering': filtering,
     '../features/matching/offer-display': display,
     '../features/matching/use-offer-date-refresh': { useOfferDateRefresh: () => {} },
+    '../features/catalogue/use-sync-status': { useCatalogueSyncStatus: () => ({ busy: false }) },
   }, FixedDate);
   return renderToStaticMarkup(React.createElement(CatalogueScreen));
 }

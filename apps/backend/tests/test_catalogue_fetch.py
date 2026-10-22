@@ -135,7 +135,9 @@ async def test_managed_identity_starts_only_configured_job(configured, monkeypat
         response = await client.post("/api/v1/catalogue/fetch", headers=HEADERS,
                                      json={"job": "other-job", "containers": [{"image": "bad"}]})
     assert response.status_code == 202
-    assert response.json() == {"status": "accepted", "execution_name": expected}
+    assert response.json()["status"] == "accepted"
+    assert response.json()["execution_name"] == expected
+    assert response.json()["requested_at"].endswith("Z")
     assert len(calls) == 2
     assert "private" not in response.text
 

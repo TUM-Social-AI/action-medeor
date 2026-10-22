@@ -5,12 +5,31 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import JSON, ForeignKey, LargeBinary, Uuid, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, LargeBinary, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class SharePointSyncRunRow(Base):
+    """Job-written progress shared by all web app replicas."""
+
+    __tablename__ = "sharepoint_sync_runs"
+    __table_args__ = (
+        Index("ix_sharepoint_sync_runs_recent", "job_name", "updated_at", "id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    job_name: Mapped[str]
+    execution_name: Mapped[str | None] = mapped_column(index=True)
+    status: Mapped[str]
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    message: Mapped[str | None]
 
 
 class UserAvatarPreferenceRow(Base):

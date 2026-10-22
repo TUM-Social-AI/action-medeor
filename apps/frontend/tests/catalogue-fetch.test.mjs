@@ -7,14 +7,17 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 
 const require = createRequire(import.meta.url);
-async function load(path, dependencies) {
+async function load(path, dependencies, timers = {}) {
   const source = await readFile(new URL(path, import.meta.url), 'utf8');
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
       jsx: ts.JsxEmit.ReactJSX },
   });
   const exports = {};
-  new Function('require', 'exports', outputText)(name => dependencies[name] ?? require(name), exports);
+  new Function('require', 'exports', 'setTimeout', 'clearTimeout', outputText)(
+    name => dependencies[name] ?? require(name), exports,
+    timers.setTimeout ?? setTimeout, timers.clearTimeout ?? clearTimeout,
+  );
   return exports;
 }
 
@@ -32,7 +35,9 @@ function find(node, predicate) {
 }
 
 async function screen(api) {
-  const slots = [], effects = [];
+  const slots = [], effects = [], timers = new Map();
+  let timerId = 0;
+  api = { getCatalogueSyncStatus: async () => ({ runs: [] }), ...api };
   let cursor = 0;
   const hooks = {
     ...React,
@@ -45,18 +50,26 @@ async function screen(api) {
     useMemo(callback) { return callback(); },
     useEffect(callback, deps) {
       const index = cursor++;
-      if (!slots[index] || deps.some((value, i) => value !== slots[index][i])) {
-        slots[index] = deps;
-        effects.push(callback);
+      if (!slots[index] || deps.some((value, i) => value !== slots[index].deps[i])) {
+        const previous = slots[index];
+        slots[index] = { deps };
+        effects.push(() => { previous?.cleanup?.(); slots[index].cleanup = callback(); });
       }
     },
   };
+  const sync = await load('../src/features/catalogue/use-sync-status.ts', {
+    react: hooks, '../../api/catalogue': api,
+  }, {
+    setTimeout(callback, delay) { assert.equal(delay, 5000); timers.set(++timerId, callback); return timerId; },
+    clearTimeout(id) { timers.delete(id); },
+  });
   const { CatalogueScreen } = await load('../src/components/CatalogueScreen.tsx', {
     react: hooks, '../api/catalogue': api,
     './CatalogueImportDialog': { CatalogueImportDialog: () => null },
     '../features/catalogue/filtering': filtering,
     '../features/matching/offer-display': display,
     '../features/matching/use-offer-date-refresh': { useOfferDateRefresh() {} },
+    '../features/catalogue/use-sync-status': sync,
   });
   return () => {
     cursor = 0;
@@ -65,6 +78,11 @@ async function screen(api) {
     return {
       html: renderToStaticMarkup(tree),
       button: label => find(tree, node => node.type === 'button' && renderToStaticMarkup(node).includes(label)),
+      async poll() {
+        const callbacks = [...timers.values()]; timers.clear();
+        callbacks.forEach(callback => callback()); await settle();
+      },
+      unmount() { slots.forEach(slot => slot?.cleanup?.()); },
     };
   };
 }
@@ -80,7 +98,7 @@ test('local availability keeps fetching disabled with an explanation', async () 
   assert.equal(button.props.title, 'Azure app only');
 });
 
-test('a click starts one job, waits for acceptance, and offers catalogue reload', async () => {
+test('a click starts one job and waits for its database status', async () => {
   let starts = 0, loads = 0, accept;
   const render = await screen({
     getCatalogueArticles: async () => { loads++; return []; },
@@ -93,12 +111,137 @@ test('a click starts one job, waits for acceptance, and offers catalogue reload'
   click(); click();
   assert.equal(starts, 1);
   assert.equal(render().button('Starting fetch').props.disabled, true);
-  accept({ status: 'accepted', execution_name: 'job-123' }); await settle();
+  accept({ status: 'accepted', execution_name: 'job-123', requested_at: new Date().toISOString() }); await settle();
   const accepted = render();
   assert.match(accepted.html, /Azure accepted the fetch request/);
-  assert.match(accepted.html, /background/);
+  assert.match(accepted.html, /Waiting for the job to start/);
   accepted.button('Reload catalogue').props.onClick(); render();
   assert.equal(loads, 2);
+});
+
+const run = (status, extra = {}) => ({
+  id: 'run-1', execution_name: 'job-123', status,
+  started_at: '2026-10-22T10:00:00Z', updated_at: '2026-10-22T10:01:00Z',
+  finished_at: status === 'running' ? null : '2026-10-22T10:01:00Z',
+  summary: { processed: 2, failed: 0, processing_enabled: true }, message: null, ...extra,
+});
+
+test('scheduled completion refreshes the catalogue once and enables fetching', async () => {
+  let runs = [run('running')], loads = 0;
+  const render = await screen({
+    getCatalogueArticles: async () => { loads++; return []; },
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => ({ runs }),
+  });
+  render(); await settle();
+  let ui = render();
+  assert.equal(ui.button('Fetching…').props.disabled, true);
+  runs = [run('completed')];
+  await ui.poll(); render(); await settle();
+  ui = render();
+  assert.match(ui.html, /2 documents processed/);
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
+  assert.equal(loads, 2);
+  await ui.poll(); render();
+  assert.equal(loads, 2);
+});
+
+test('a different execution cannot complete the requested fetch', async () => {
+  let runs = [];
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => ({ runs }),
+    startCatalogueFetch: async () => ({ status: 'accepted', execution_name: 'job-123', requested_at: '2026-10-22T09:59:00Z' }),
+  });
+  render(); await settle(); render().button('Fetch new data').props.onClick(); await settle();
+  let ui = render(); await settle();
+  runs = [run('completed', { id: 'other', execution_name: 'other-job' })];
+  await ui.poll(); ui = render();
+  assert.match(ui.html, /Waiting for the job/);
+  runs.push(run('completed'));
+  await ui.poll(); render(); await settle(); ui = render();
+  assert.match(ui.html, /Fetch completed/);
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
+});
+
+test('a failed or stale run is visible and does not keep the button disabled', async () => {
+  for (const status of ['failed', 'stale']) {
+    const render = await screen({
+      getCatalogueArticles: async () => [],
+      getCatalogueFetchAvailability: async () => ({ enabled: true }),
+      getCatalogueSyncStatus: async () => ({ runs: [run(status)] }),
+    });
+    render(); await settle(); const ui = render();
+    assert.match(ui.html, /role="alert"/);
+    assert.equal(ui.button('Fetch new data').props.disabled, false);
+  }
+});
+
+test('poll errors retry and unmount aborts pending reads', async () => {
+  let polls = 0, signal;
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async value => {
+      polls++; signal = value;
+      if (polls === 1) throw new Error('offline');
+      return { runs: [] };
+    },
+  });
+  render(); await settle(); let ui = render();
+  assert.match(ui.html, /Retrying automatically/);
+  await ui.poll(); ui = render();
+  assert.doesNotMatch(ui.html, /Retrying automatically/);
+  assert.equal(polls, 2);
+  ui.unmount();
+  assert.equal(signal.aborted, true);
+});
+
+test('a job that never starts times out visibly and can still report later', async () => {
+  const originalNow = Date.now;
+  let now = Date.parse('2026-10-22T09:59:00Z'), runs = [];
+  Date.now = () => now;
+  try {
+    const render = await screen({
+      getCatalogueArticles: async () => [],
+      getCatalogueFetchAvailability: async () => ({ enabled: true }),
+      getCatalogueSyncStatus: async () => ({ runs }),
+      startCatalogueFetch: async () => ({ status: 'accepted', execution_name: 'job-123', requested_at: '2026-10-22T09:59:00Z' }),
+    });
+    render(); await settle(); render().button('Fetch new data').props.onClick(); await settle();
+    render(); await settle(); let ui = render();
+    now += 301000;
+    await ui.poll(); ui = render();
+    assert.match(ui.html, /has not reported a status/);
+    assert.equal(ui.button('Fetch new data').props.disabled, false);
+    runs = [run('running')];
+    await ui.poll(); ui = render();
+    assert.doesNotMatch(ui.html, /has not reported a status/);
+    assert.equal(ui.button('Fetching…').props.disabled, true);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('asynchronous acceptance ignores old runs and watches a subsequently reported sync', async () => {
+  let runs = [run('completed', { id: 'old-run' })];
+  const render = await screen({
+    getCatalogueArticles: async () => [],
+    getCatalogueFetchAvailability: async () => ({ enabled: true }),
+    getCatalogueSyncStatus: async () => ({ runs }),
+    startCatalogueFetch: async () => ({ status: 'accepted', execution_name: null, requested_at: '2026-10-22T10:05:00Z' }),
+  });
+  render(); await settle(); render().button('Fetch new data').props.onClick(); await settle();
+  render(); await settle(); let ui = render();
+  assert.match(ui.html, /Waiting for the job to start/);
+  runs = [run('running', { started_at: '2026-10-22T10:06:00Z' })];
+  await ui.poll(); ui = render();
+  assert.match(ui.html, /Fetching new data from SharePoint/);
+  runs = [run('completed', { started_at: '2026-10-22T10:06:00Z', summary: { processing_enabled: false } })];
+  await ui.poll(); render(); await settle(); ui = render();
+  assert.match(ui.html, /Offer processing is disabled/);
+  assert.equal(ui.button('Fetch new data').props.disabled, false);
 });
 
 test('start failures are visible without reporting acceptance', async () => {

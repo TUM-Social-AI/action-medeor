@@ -11,8 +11,10 @@ The embedding API is the configured external provider; no new public extraction 
 an ARM token from the Container App's managed identity endpoint and calls the existing job's
 `start` operation. This creates an extra execution using the job's existing image, command,
 environment and secrets; the cron schedule continues unchanged. No Azure token reaches the browser.
-The UI reports acceptance, not successful completion. Use **Reload catalogue** after processing
-to load the latest offers; execution progress and failures remain in Azure's job execution logs.
+The UI first reports acceptance, then polls job-written database status every five seconds.
+It shows running, completed, failed or skipped runs and automatically refreshes the catalogue
+when a run finishes. **Reload catalogue** remains available for manual refreshes; detailed
+diagnostics remain in Azure's job execution logs.
 
 Configure the **web Container App**:
 
@@ -76,12 +78,47 @@ Azure principals with independently granted job permissions can still use the Az
 
 There are no automatic retries of a start request: a timeout can occur after Azure has accepted it.
 Check execution history before retrying an ambiguous failure. The UI prevents repeated clicks
-while a start is pending; separate accepted requests create separate executions, and the existing
-pipeline's discovery lock and document leases coordinate overlapping work.
+while a start is pending or a sync is reported as running. Separate accepted requests create
+separate executions, and the existing pipeline's discovery lock and document leases coordinate
+overlapping work.
 
 See Microsoft's [job start API](https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/jobs/start?view=rest-resource-manager-containerapps-2025-07-01),
 [managed identity endpoint](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity#rest-endpoint-reference)
 and [job permissions](https://learn.microsoft.com/en-us/azure/container-apps/jobs#permissions).
+
+### Database run status and automatic refresh
+
+Run `uv run alembic upgrade head` from `apps/backend` against the shared database before deploying
+this version. Migration `20261022_0001` creates `sharepoint_sync_runs`. Deploy the updated image
+to **both the web Container App and the SharePoint job**: updating only the web app cannot make
+an older job image report status. Keep both connected to the same `DATABASE_URL`.
+
+Only the `sync` command writes run status. It commits a `running` record before validating Graph
+configuration or starting discovery, updates its heartbeat every 30 seconds, and commits
+`completed`, `failed` or `skipped` after extraction and embeddings finish. The summary contains
+document/embedding counts and whether processing was enabled. Document contents, exception text,
+credentials and SharePoint URLs are not included. Partial extraction/embedding failures count as
+failed runs, even when discovery succeeded. A discovery-lock conflict is reported as skipped.
+
+The web app only reads these records through `GET /api/v1/catalogue/fetch/status`, scoped to
+the job name in `AZURE_SHAREPOINT_JOB_RESOURCE_ID`. It does not write run status or poll Azure's
+management API. No additional Azure role permissions are needed. Scheduled runs and runs started
+by other users are visible to every open catalogue screen; each screen refreshes when it observes
+a new completed or failed run. Reopening the catalogue also shows recent status.
+
+Azure supplies `CONTAINER_APP_JOB_NAME` and `CONTAINER_APP_JOB_EXECUTION_NAME` automatically.
+The app uses the execution name returned by Azure to match the requested run, so another
+scheduled execution cannot mark that request complete. If Azure accepts asynchronously without
+an execution name, the app watches the next reported sync starting after the request and cannot
+distinguish it from an overlapping scheduled run. See the
+[built-in job variables](https://learn.microsoft.com/en-us/azure/container-apps/environment-variables#jobs).
+
+A heartbeat older than five minutes is shown as stale, without changing the database or claiming
+success/failure. A force-killed container cannot write a final status, and a container that fails
+before Python starts cannot write any status. If no run appears within five minutes of a start,
+the UI asks the user to check Azure execution logs and continues polling in case it starts later.
+Azure retries create separate run records with the same execution name. These records describe
+Python sync attempts; they are not a replacement for Azure's execution history.
 
 ## Current defaults and folder configuration
 
