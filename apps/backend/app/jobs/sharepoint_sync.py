@@ -590,7 +590,7 @@ def main() -> None:
             logger.info("Full job report: %s", args.output)
         if result.get("failed") or any(e.get("failed") for e in result.get("embeddings", [])):
             raise SystemExit(1)
-        if args.command == "process-one" and (
+        if args.command == "process-one" and not result.get("deferred") and (
             result.get("status") != "completed"
             or (
                 not result.get("no_offers_detected")

@@ -54,7 +54,7 @@ async def track_sync(job_name: str, operation: Callable[[], Awaitable[dict]]) ->
     try:
         result = await operation()
         summary = {key: result[key] for key in (
-            "processed", "failed", "changes", "processing_enabled"
+            "processed", "failed", "turns", "deferred", "changes", "processing_enabled"
         ) if key in result}
         summary["embedded"] = sum(part.get("embedded", 0) for part in result.get("embeddings", []))
         summary["embedding_failed"] = sum(
@@ -66,6 +66,13 @@ async def track_sync(job_name: str, operation: Callable[[], Awaitable[dict]]) ->
             "Another discovery is already running." if status == "skipped" else
             "Some documents or embeddings failed. Check the job logs." if failed else None
         )
+        if result.get("deferred") and status != "skipped":
+            count = result["deferred"]
+            budget_message = (
+                f"Processing budget reached. Progress saved for {count} unfinished "
+                f"document{'s' if count != 1 else ''}. Processing will continue on a later sync."
+            )
+            message = f"{message} {budget_message}" if message else budget_message
         await update_run(run_id, status=status, finished_at=func.now(), summary=summary, message=message)
         return result
     except BaseException as exc:

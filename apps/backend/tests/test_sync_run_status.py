@@ -38,6 +38,8 @@ def recorded(monkeypatch):
     ({"processed": 1, "failed": 0, "embeddings": [{"failed": 1}]}, "failed"),
     ({"skipped": "Another discovery is running", "processed": 0}, "skipped"),
     ({"processing_enabled": False, "processed": 0}, "completed"),
+    ({"processed": 0, "failed": 0, "turns": 5, "deferred": 1}, "completed"),
+    ({"processed": 1, "failed": 1, "turns": 5, "deferred": 2}, "failed"),
 ])
 async def test_sync_reports_committed_start_then_terminal_summary(recorded, result, status):
     async def operation():
@@ -51,6 +53,13 @@ async def test_sync_reports_committed_start_then_terminal_summary(recorded, resu
     assert terminal["summary"]["processed"] == result.get("processed", 0)
     if status == "failed":
         assert terminal["message"]
+    if result.get("deferred"):
+        assert terminal["summary"]["deferred"] == result["deferred"]
+        assert terminal["summary"]["turns"] == 5
+        assert "Processing budget reached" in terminal["message"]
+        assert "continue on a later sync" in terminal["message"]
+        if status == "failed":
+            assert "Some documents or embeddings failed" in terminal["message"]
 
 
 @pytest.mark.parametrize("error", [RuntimeError("private-key-and-document-url"), asyncio.CancelledError()])

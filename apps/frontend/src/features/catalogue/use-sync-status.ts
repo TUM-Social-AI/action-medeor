@@ -12,6 +12,12 @@ function describe(run: CatalogueSyncRun): string {
   if (run.status === 'stale') return 'The fetch has stopped reporting progress. Check the Azure job execution logs.';
   if (run.status === 'skipped') return 'Fetch skipped because another discovery was already running.';
   if (run.summary.processing_enabled === false) return 'SharePoint discovery completed. Offer processing is disabled for this job.';
+  if (run.summary.deferred) {
+    const count = run.summary.deferred;
+    const processed = run.summary.processed ?? 0;
+    const message = run.message ?? `Processing budget reached. Progress saved for ${count} unfinished document${count === 1 ? '' : 's'}. Processing will continue on a later sync.`;
+    return `Fetch finished. ${processed} document${processed === 1 ? '' : 's'} processed. ${message}`;
+  }
   return `Fetch completed. ${run.summary.processed ?? 0} documents processed. The catalogue has been refreshed.`;
 }
 

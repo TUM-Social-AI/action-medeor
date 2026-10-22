@@ -15,6 +15,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Table, TableStyle
 from app.offers.extraction import (
     Evidence,
     ExtractedOffer,
+    ExtractionCheckpoint,
     _LlmResult,
     extract_offers,
     read_offer_document,
@@ -102,7 +103,7 @@ def test_complete_rows_are_split_with_repeated_headers_and_no_loss() -> None:
     assert rows == list(range(2, 82))
 
 
-def test_chunk_budget_rejects_document_before_any_model_call() -> None:
+def test_chunk_budget_pauses_without_discarding_larger_document() -> None:
     content = workbook_bytes(
         {
             "Offers": [["Supplier I", "Item offered"]]
@@ -113,10 +114,162 @@ def test_chunk_budget_rejects_document_before_any_model_call() -> None:
         content,
         "offers.xlsx",
         max_chunks=1,
-        llm=lambda *_: pytest.fail("Oversized input must not call the model"),
+        llm=lambda *_: _LlmResult(offers=[], warnings=[]),
     )
-    assert result.failures and "chunks" in result.failures[0]
-    assert result.chunks_attempted == 0
+    assert result.failures == []
+    assert result.chunks_attempted == result.chunks_succeeded == 1
+    assert result.chunks_total == 4 and result.chunks_remaining == 3
+
+
+def test_large_workbook_resumes_39_chunks_in_two_turns_without_repeating_rows(monkeypatch) -> None:
+    from app.core.config import Settings
+
+    content = workbook_bytes(
+        {
+            "Offers": [["Supplier I", "Item offered"]]
+            + [["Supplier A", f"Needle {n}"] for n in range(936)]
+        }
+    )
+    requested_rows = []
+    saved = []
+
+    def model(prompt, schema):
+        lines = prompt.split("Document data:\n", 1)[1].splitlines()
+        assert "Supplier I" in lines[0]
+        rows = [json.loads(line) for line in lines[1:]]
+        requested_rows.extend(row["row"] for row in rows)
+        return schema(
+            offers=[
+                offer(
+                    source_id=f"Offers!A{row['row']}",
+                    item_description=row["cells"][f"B{row['row']}"]["value"],
+                )
+                for row in rows
+            ],
+            warnings=[],
+        )
+
+    monkeypatch.delenv("SHAREPOINT_MAX_EXTRACTION_CHUNKS", raising=False)
+    settings = Settings(_env_file=None)
+    result = extract_offers(
+        content,
+        "offers.xlsx",
+        llm=model,
+        max_chunks=settings.sharepoint_max_extraction_chunks,
+        save_checkpoint=lambda progress, key: saved.append(progress.model_dump_json()),
+    )
+    assert result.failures == []
+    assert result.chunks_attempted == result.chunks_succeeded == 32
+    assert result.chunks_remaining == 7
+    resumed = extract_offers(
+        content,
+        "offers.xlsx",
+        llm=model,
+        max_chunks=settings.sharepoint_max_extraction_chunks,
+        checkpoint=ExtractionCheckpoint.model_validate_json(saved[-1]),
+    )
+    assert resumed.failures == [] and resumed.chunks_remaining == 0
+    assert resumed.chunks_attempted == 7 and resumed.chunks_succeeded == 39
+    assert len(resumed.offers) == 936
+    assert requested_rows == list(range(2, 938))
+    assert [o.item_description for o in resumed.offers] == [f"Needle {n}" for n in range(936)]
+
+
+def test_api_failure_retries_only_missing_chunks_and_does_not_duplicate_warnings():
+    content = workbook_bytes(
+        {
+            "Offers": [["Supplier I", "Item offered"]]
+            + [["Supplier A", "Needle 19G"] for _ in range(50)]
+        }
+    )
+    saved, requests = [], []
+
+    def model(*args):
+        requests.append(True)
+        if len(requests) == 2:
+            raise LlmUnavailable("API timeout")
+        return _LlmResult(offers=[offer()], warnings=[])
+
+    first = extract_offers(
+        content,
+        "offers.xlsx",
+        llm=model,
+        save_checkpoint=lambda p, key: saved.append(p.model_dump_json()),
+    )
+    assert first.chunks_remaining == 1 and "API timeout" in first.failures[0]
+    cached = ExtractionCheckpoint.model_validate_json(saved[-1])
+    resumed = extract_offers(content, "offers.xlsx", llm=model, checkpoint=cached)
+    assert len(requests) == 4 and resumed.chunks_attempted == 1
+    assert resumed.failures == [] and resumed.chunks_remaining == 0
+    assert all(o.warnings == [] for response in cached.chunks.values() for o in response.offers)
+
+
+@pytest.mark.parametrize("change", ["content", "layout", "prompt", "prompt_text"])
+def test_checkpoint_is_invalidated_by_content_layout_and_prompt(change, monkeypatch):
+    from app.offers import extraction as module
+
+    content = workbook_bytes({"Offers": [["Supplier I", "Item offered"], ["A", "Needle"]]})
+    saved = []
+    extract_offers(
+        content,
+        "offers.xlsx",
+        llm=lambda *_: _LlmResult(offers=[], warnings=[]),
+        save_checkpoint=lambda p, key: saved.append(p.model_dump_json()),
+    )
+    if change == "content":
+        content = workbook_bytes({"Offers": [["Changed"]]})
+    elif change == "prompt":
+        monkeypatch.setattr(module, "PROMPT_VERSION", "new-prompt")
+    elif change == "prompt_text":
+        monkeypatch.setattr(module, "_PROMPT", "Changed extraction instructions")
+    result = extract_offers(
+        content,
+        "offers.xlsx",
+        llm=lambda *_: _LlmResult(offers=[], warnings=[]),
+        checkpoint=ExtractionCheckpoint.model_validate_json(saved[-1]),
+        max_chars=12_000 if change == "layout" else 24_000,
+    )
+    assert result.chunks_attempted == 1
+
+
+def test_time_budget_stops_new_requests_but_keeps_completed_chunks():
+    content = workbook_bytes(
+        {
+            "Offers": [["Supplier I", "Item offered"]]
+            + [["Supplier A", "Needle 19G"] for _ in range(25)]
+        }
+    )
+    saved = []
+    result = extract_offers(
+        content,
+        "offers.xlsx",
+        llm=lambda *_: _LlmResult(offers=[], warnings=[]),
+        should_pause=lambda: bool(saved),
+        save_checkpoint=lambda p, key: saved.append(p.model_dump_json()),
+    )
+    assert result.failures == [] and result.chunks_remaining == 1
+    assert result.chunks_attempted == 1 and len(saved) == 1
+
+
+def test_checkpoint_write_error_stops_before_another_model_call():
+    content = workbook_bytes(
+        {
+            "Offers": [["Supplier I", "Item offered"]]
+            + [["Supplier A", "Needle 19G"] for _ in range(25)]
+        }
+    )
+    calls = []
+
+    def model(*args):
+        calls.append(True)
+        return _LlmResult(offers=[], warnings=[])
+
+    def save(*args):
+        raise RuntimeError("Lease changed")
+
+    with pytest.raises(RuntimeError, match="Lease changed"):
+        extract_offers(content, "offers.xlsx", llm=model, save_checkpoint=save)
+    assert len(calls) == 1
 
 
 def test_cancelled_extraction_stops_before_another_model_call() -> None:

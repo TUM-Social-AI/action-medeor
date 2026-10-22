@@ -56,7 +56,8 @@ export type CatalogueSyncRun = {
   started_at: string;
   updated_at: string;
   finished_at: string | null;
-  summary: { processed?: number; failed?: number; changes?: number; processing_enabled?: boolean;
+  summary: { processed?: number; failed?: number; turns?: number; deferred?: number;
+    changes?: number; processing_enabled?: boolean;
     embedded?: number; embedding_failed?: number };
   message: string | null;
 };

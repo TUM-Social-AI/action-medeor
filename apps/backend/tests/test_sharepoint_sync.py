@@ -135,6 +135,19 @@ def test_process_one_empty_report_exits_successfully(monkeypatch, tmp_path) -> N
     assert saved["offer_repository_writes"] == []
 
 
+def test_process_one_saved_budget_pause_exits_successfully(monkeypatch, tmp_path):
+    async def run(*args):
+        return {"status": "pending", "processed": 0, "failed": 0, "deferred": 1,
+                "turns": 1, "embeddings": [], "offer_repository_writes": []}
+
+    report = tmp_path / "paused.json"
+    monkeypatch.setattr(job, "run", run)
+    monkeypatch.setattr(sys, "argv", ["sharepoint_sync", "process-one", "--item-id", "f",
+                                      "--output", str(report)])
+    job.main()
+    assert json.loads(report.read_text())["status"] == "pending"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("offer_count", [0, 2])
 async def test_processing_report_lists_each_offer_write(monkeypatch, offer_count) -> None:

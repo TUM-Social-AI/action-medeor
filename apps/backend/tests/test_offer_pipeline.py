@@ -11,6 +11,7 @@ from app.offers.extraction import ExtractedOffer, OfferExtraction
 from app.sharepoint.changes import Item, SharePointChange, parse_item
 from app.sharepoint.extraction import (
     DownloadedDocument,
+    ExtractionDeferred,
     ExtractionFailure,
     UnsupportedDocument,
     normalize,
@@ -177,6 +178,16 @@ def test_partial_failures_and_scans_do_not_publish_partial_batches():
     with pytest.raises(UnsupportedDocument, match="unsupported"):
         normalize_result(batch_result(warnings=["page:2: scanned/empty page unsupported"]))
     assert normalize_result(batch_result([])).offers == []
+
+
+def test_incomplete_extraction_is_a_budget_pause_and_cannot_publish():
+    with pytest.raises(ExtractionDeferred, match="1/39 chunks"):
+        normalize_result(batch_result(chunks_total=39, chunks_remaining=38))
+
+
+def test_no_new_chunk_within_time_budget_is_a_failure():
+    with pytest.raises(ExtractionFailure, match="No new chunk"):
+        normalize_result(OfferExtraction(chunks_total=39, chunks_remaining=39))
 
 
 def test_missing_product_is_retained_for_review_without_failing_the_document():
