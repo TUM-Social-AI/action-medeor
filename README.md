@@ -707,8 +707,11 @@ description from being ranked with current stock or current embeddings.
 Locally, Docker Compose keeps PostgreSQL data in the named `postgres-data` volume (normally shown by
 Docker as `allocura_postgres-data`). In Azure,
 `DATABASE_URL` must point to a separately managed PostgreSQL service with pgvector enabled; rebuilding
-or replacing the application container must not delete the database. Run `alembic upgrade head` as a
-deployment step before serving the new application version.
+or replacing the application container must not delete the database. The production image's `CMD`
+runs `alembic upgrade head` itself before starting uvicorn (see the root `Dockerfile`), so a revision
+only starts listening - and only then becomes eligible for traffic - once its schema is current. A
+failed migration keeps the container from ever reporting healthy, which the existing "Deploy
+production image" step in `publish-container.yml` already waits on and fails loudly for.
 
 ## Combined Production Container
 
@@ -737,9 +740,8 @@ name works without Microsoft Graph access.
 The profile avatar is one of six bundled animal illustrations. A stable hash of the Entra
 user ID assigns an initial avatar; users can choose another from the profile popup in the
 sidebar. The selected avatar is stored in `user_avatar_preferences`, so it follows the user
-across browsers and devices.
-Run `alembic upgrade head` before deploying this version. Neither Microsoft Graph
-permissions nor a Container Apps token store are needed for avatars.
+across browsers and devices. Neither Microsoft Graph permissions nor a Container Apps token
+store are needed for avatars.
 
 ## Embedding model evaluation
 
@@ -789,7 +791,7 @@ The code foundation and production rollout are separate milestones. Complete the
 | Phase | Owner/work | Verification and exit criterion |
 |---|---|---|
 | 1. Review and merge | Backend/database, frontend-contract and Azure reviewers inspect the PR; CI runs PostgreSQL/pgvector integration tests and the frontend build | All checks green, review findings resolved and branch merged to `main` |
-| 2. Secure staging platform | Azure owner provisions managed PostgreSQL with pgvector, backups, Container App, migration job, secret references and protected/private API access | `alembic upgrade head` succeeds and `/api/health` reports a healthy database without exposing credentials |
+| 2. Secure staging platform | Azure owner provisions managed PostgreSQL with pgvector, backups, Container App, secret references and protected/private API access | `alembic upgrade head` succeeds and `/api/health` reports a healthy database without exposing credentials |
 | 3. Initial ERP load | Operator uploads the matching `Artikeldaten.csv` and `Artikeluebersetzungen.csv` pair, saves the response and checks representative articles | Counts are plausible, repeat upload is idempotent and missing/negative quantities are reviewed |
 | 4. Incremental ERP rehearsal | Operator tests a quantity change, text change, new item, first absence and reappearance in staging | Only text/new eligible versions queue embeddings; inventory and missing/reactivated counts match expectations |
 | 5. Embedding evaluation | ML/backend owner runs smoke, full automatic and reviewed-inquiry benchmarks in cloud compute | Failure review completed; model, immutable revision, licence/privacy decision and measured cost are documented |
@@ -862,6 +864,16 @@ The workflow uses GitHub OIDC to obtain an AAD access token, exchanges that toke
 configured login server's `/oauth2/exchange` endpoint, and passes the resulting short-lived ACR
 refresh token to Docker. It does not use a client secret, registry password, long-lived credential,
 registry suffix setting, or registry control-plane discovery command.
+
+### Database migrations run at container startup, not as a separate deploy step
+
+The production image's `CMD` runs `alembic upgrade head` before starting uvicorn (see the root
+`Dockerfile`). A revision only starts listening on its port - and only then can Azure Container
+Apps route traffic to it, same as any other health check - once that finishes, so a failed or slow
+migration blocks traffic the same way a crashed container already would, surfacing in the existing
+"Deploy production image" wait loop below. This needs no extra GitHub secret or Azure role beyond
+what the Container App itself already has: the migration runs inside the already-deployed
+container, using the `DATABASE_URL` it's already configured with.
 
 ### OIDC and ABAC prerequisites
 
