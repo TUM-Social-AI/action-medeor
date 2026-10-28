@@ -13,6 +13,12 @@ prototype's 200ms exit and 230ms entry. Skipping has no success state. Motion re
 reduced-motion preferences. Notifications dismiss after five seconds;
 the separate permanent Undo last action control remains available independently of the toast.
 
+Automatically selected guided tasks are saved as the current task. Individual corrections
+refresh the group's remaining items without changing that selection when the server reorders
+tasks by affected-item count or source order. Preview/cancel and failed saves stay on the same
+task. Completing the group advances normally; skipping and explicit task/request-details
+navigation take priority. The current unfinished group is retained after reload.
+
 Overview initially previews three problems. View all expands the remaining problems inside
 a height-limited, keyboard-scrollable list within the white card; Show fewer restores the
 preview and resets its scroll position. The action footer remains outside that scroll area,
@@ -198,3 +204,10 @@ The overview-list follow-up passed all 15 frontend test files, TypeScript checks
 production build. Read-only browser checks with the comprehensive example covered preview,
 expansion/collapse, reaching the final problem, contained wheel scrolling, and the guided-review
 action at 1440×900, 1024×900, 1024×768, and 768×900. The action remained visible in every case.
+
+The individual-edit navigation regression failed before the fix when a partial type correction
+made quantity sort first. Component lifecycle tests now cover that refresh, next-task selection,
+skipping, explicit navigation, and first-entry request-details priority. All 15 frontend test
+files, TypeScript checks, and the production build passed. Browser checks with a disposable
+three-item request at 1440px/1024px verified actual server reordering, preview/cancel,
+failure/retry, refreshed group membership, session reload, and normal completion transitions.

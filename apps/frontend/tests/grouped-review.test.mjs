@@ -150,6 +150,126 @@ test('request metadata is a separate guided step with no item issues', () => {
   assert.equal(queue.nextTask(steps, progress).id, 'request-details');
 });
 
+// Render the actual guided component across server refreshes, with reduced motion to make
+// navigation deterministic. A pure nextTask test would miss an automatically selected task
+// never being saved as the current task.
+function guidedHarness() {
+  const slots = [];
+  let cursor = 0, effects = [], dirty = false;
+  const hooks = {
+    ...React,
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
+      return [slots[index], value => {
+        const next = typeof value === 'function' ? value(slots[index]) : value;
+        if (!Object.is(next, slots[index])) { slots[index] = next; dirty = true; }
+      }];
+    },
+    useRef(initial) { return hooks.useState(() => ({ current: initial }))[0]; },
+    useEffect(callback, dependencies) {
+      const index = cursor++;
+      const previous = slots[index];
+      if (!previous || dependencies.some((value, i) => value !== previous.dependencies[i])) {
+        slots[index] = { dependencies, cleanup: previous?.cleanup };
+        effects.push(() => { previous?.cleanup?.(); slots[index].cleanup = callback(); });
+      }
+    },
+  };
+  const component = compile('../src/components/review/ReviewTools.tsx', {
+    react: hooks, '../../features/review/task-queue': queue, './TaskTimeline': timeline,
+  }).GuidedReview;
+  const saved = new Map();
+  const previousWindow = globalThis.window, previousStorage = globalThis.sessionStorage;
+  globalThis.window = { matchMedia: () => ({ matches: true }) };
+  globalThis.sessionStorage = { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value) };
+  return {
+    render(data, extra = {}) {
+      for (let iteration = 0; iteration < 15; iteration++) {
+        cursor = 0; effects = []; dirty = false;
+        const tree = component({ data, hidden: false, operations: {}, onEdit() {}, onAll() {}, ...extra });
+        effects.forEach(effect => effect());
+        if (!dirty) return tree;
+      }
+      throw new Error('Guided component did not settle');
+    },
+    current(tree) { return tree.props.children[0].props.current; },
+    savedCurrent() { return JSON.parse(saved.get('review-progress:v2:guided-test')).current; },
+    restore() { globalThis.window = previousWindow; globalThis.sessionStorage = previousStorage; },
+  };
+}
+
+const typeTask = {
+  id: 'types', category: 'type', code: 'type_required', title: 'Choose product types',
+  itemIds: [1, 3], issueIds: ['type-1', 'type-3'], suggestedValue: null, canAccept: false,
+};
+const quantityTask = {
+  id: 'quantities', category: 'quantity', code: 'quantity_required', title: 'Complete quantities',
+  itemIds: [2], issueIds: ['quantity-2'], suggestedValue: null, canAccept: false,
+};
+const guidedData = {
+  requestId: 'guided-test', tasks: [typeTask, quantityTask], sourceReferences: [],
+  items: [1, 2, 3].map(id => ({ id, name: `Supply ${id}`, quantity: id === 2 ? null : 10, unit: 'pcs' })),
+  issues: [],
+};
+
+function findElement(tree, predicate) {
+  if (!tree || typeof tree !== 'object') return undefined;
+  if (Array.isArray(tree)) return tree.map(child => findElement(child, predicate)).find(Boolean);
+  if (predicate(tree)) return tree;
+  return findElement(tree.props?.children, predicate);
+}
+
+test('an automatic guided task stays selected when an individual save reorders unfinished tasks', () => {
+  const screen = guidedHarness();
+  try {
+    let tree = screen.render(guidedData);
+    assert.equal(screen.current(tree), 'types');
+    // Fixing item 1 leaves one type problem. Quantity now sorts first because its source
+    // row precedes item 3, even though the current type task is not finished.
+    const refreshed = { ...guidedData, tasks: [quantityTask, { ...typeTask, itemIds: [3], issueIds: ['type-3'] }] };
+    tree = screen.render(refreshed);
+    assert.equal(screen.current(tree), 'types');
+    assert.equal(screen.savedCurrent(), 'types');
+    assert.match(renderToStaticMarkup(tree), /Choose product types/);
+    assert.match(renderToStaticMarkup(tree), /Supply 3/);
+    assert.doesNotMatch(renderToStaticMarkup(tree), /Supply 1/);
+    // Resolving the last item still advances normally, and pins the next task as well.
+    tree = screen.render({ ...refreshed, tasks: [quantityTask] });
+    assert.equal(screen.current(tree), 'quantities');
+    assert.equal(screen.savedCurrent(), 'quantities');
+  } finally { screen.restore(); }
+});
+
+test('explicit guided navigation, skipping, and request-details navigation override the active task', () => {
+  const screen = guidedHarness();
+  try {
+    let tree = screen.render(guidedData);
+    tree.props.children[0].props.onSelect('quantities');
+    tree = screen.render(guidedData);
+    assert.equal(screen.current(tree), 'quantities');
+    const skip = findElement(tree, element => element.type === 'button' && renderToStaticMarkup(element).includes('Review later'));
+    skip.props.onClick();
+    tree = screen.render(guidedData);
+    assert.equal(screen.current(tree), 'types');
+    const details = { confirmed: false, open: true, visit: 1, content: React.createElement('p', {}, 'Request metadata') };
+    tree = screen.render(guidedData, { requestDetails: details });
+    assert.equal(screen.current(tree), 'request-details');
+    assert.equal(screen.savedCurrent(), 'request-details');
+  } finally { screen.restore(); }
+});
+
+test('opening request details on first guided entry takes priority over automatic task selection', () => {
+  const screen = guidedHarness();
+  try {
+    const tree = screen.render(guidedData, {
+      requestDetails: { confirmed: false, open: true, visit: 1, content: React.createElement('p', {}, 'Request metadata') },
+    });
+    assert.equal(screen.current(tree), 'request-details');
+    assert.equal(screen.savedCurrent(), 'request-details');
+  } finally { screen.restore(); }
+});
+
 test('timeline retains completed tasks while refreshing the remaining tasks', () => {
   const history = [
     { id: 'columns', title: 'Confirm source columns', itemIds: [1, 2] },

@@ -311,10 +311,22 @@ export function GuidedReview({
   });
   const displayId = useRef(target?.id);
   const resolvedTransition = useRef(false);
+  const lastDetailsVisit = useRef(0);
   const [phase, setPhase] = useState<'hold' | 'in' | 'out' | 'idle'>('idle');
   useEffect(() => {
-    if (requestDetails?.visit) setProgress((p) => ({ ...p, current: requestDetailsTask.id }));
-  }, [requestDetails?.visit]);
+    const visit = requestDetails?.visit ?? 0;
+    const requestedDetails = visit !== lastDetailsVisit.current && visit > 0;
+    lastDetailsVisit.current = visit;
+    if (requestedDetails) {
+      setProgress((p) => ({ ...p, history, current: requestDetailsTask.id }));
+    } else if (!hidden && target) {
+      // A partial save can reorder the server's task list. Keep the displayed task pinned
+      // until it is resolved, skipped, or explicitly changed by the user.
+      setProgress((p) =>
+        tasks.some((task) => task.id === p.current) ? p : { ...p, history, current: target.id },
+      );
+    }
+  }, [hidden, target?.id, requestDetails?.visit]);
   useEffect(() => {
     try {
       sessionStorage.setItem(
