@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, CheckCircle2, FileText, ListChecks, SkipForward, X } from 'lucide-react';
-import type { ExtractedItem, ItemUpdate, ReviewResponse } from '../../api/types';
+import type { ExtractedItem, ItemUpdate, ReviewIssue, ReviewResponse } from '../../api/types';
 import {
   nextTask,
   deferTask,
@@ -45,6 +45,10 @@ function previewValue(field: string, value: unknown) {
   if (field === 'verification_source')
     return value === 'human' ? 'Human verified' : value === 'ai' ? 'AI checked' : 'Ready';
   return value === null || value === undefined || value === '' ? 'Empty' : String(value);
+}
+
+function hasPackCalculation(issue?: ReviewIssue) {
+  return (issue?.packs ?? 0) > 0 && (issue?.unitsPerPack ?? 0) > 0 && (issue?.calculatedTotal ?? 0) > 0;
 }
 
 export function ReviewCheckbox({
@@ -433,6 +437,19 @@ export function GuidedReview({
   const members = taskData.items.filter((item) => task.itemIds.includes(item.id));
   const issues = (taskData.issues ?? []).filter((issue) => task.issueIds.includes(issue.id));
   const selectedIssues = issues.filter((i) => i.itemId === null || selected.includes(i.itemId));
+  const ruleIssues = selectedIssues.length ? selectedIssues : issues;
+  const quantityRules =
+    task.category === 'totals'
+      ? (['requested_total', 'pack_calculation'] as const).filter(
+          (rule) =>
+            ruleIssues.length > 0 &&
+            ruleIssues.every((issue) =>
+              rule === 'requested_total' ? (issue.requestedTotal ?? 0) > 0 : hasPackCalculation(issue),
+            ) &&
+            (rule !== 'pack_calculation' ||
+              ruleIssues.some((issue) => issue.calculatedTotal !== issue.requestedTotal)),
+        )
+      : [];
   const canAccept =
     task.canAccept &&
     (!!draft.groupInspected ||
@@ -494,6 +511,7 @@ export function GuidedReview({
               </h2>
               <p className="text-sm text-gray-500 mt-1">
                 {issues[0]?.message}
+                {issues[0]?.message && !/[.!?]$/.test(issues[0].message.trim()) ? '.' : ''}
                 {issues[0]?.scope !== 'table' && task.code !== 'non_item_row'
                   ? ' Resolve this problem for selected items, or edit exceptions individually.'
                   : ''}
@@ -613,10 +631,14 @@ export function GuidedReview({
                                           : (item.quantity ?? 'Missing')}
                               {task.category === 'totals' && (
                                 <div className="text-xs text-gray-500 mt-1">
-                                  Requested: {issue?.requestedTotal ?? '—'}
-                                  <br />
-                                  {issue?.packs ?? '—'} × {issue?.unitsPerPack ?? '—'} ={' '}
-                                  {issue?.calculatedTotal ?? '—'}
+                                  {issue?.requestedTotal != null && (
+                                    <div>Source quantity: {issue.requestedTotal}</div>
+                                  )}
+                                  {hasPackCalculation(issue) && (
+                                    <div>
+                                      Packs: {issue?.packs} × {issue?.unitsPerPack} = {issue?.calculatedTotal}
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </td>
@@ -661,10 +683,43 @@ export function GuidedReview({
               </p>
             )}
             <div className="p-5 border-t border-gray-200 space-y-3">
+              {quantityRules.length > 0 && (
+                <div className="flex gap-2 flex-wrap">
+                  {quantityRules.map((rule) => {
+                    const value =
+                      rule === 'requested_total'
+                        ? ruleIssues[0].requestedTotal
+                        : ruleIssues[0].calculatedTotal;
+                    return (
+                      <button
+                        key={rule}
+                        type="button"
+                        className={quantityRules.length === 1 ? primary : reviewButton}
+                        disabled={operations.busy || !selected.length}
+                        onClick={() =>
+                          void operations.preview({ action: 'quantity_rule', itemIds: selected, rule })
+                        }
+                      >
+                        {selected.length === 1
+                          ? rule === 'requested_total'
+                            ? `Use source quantity (${value})`
+                            : `Use pack calculation (${value})`
+                          : rule === 'requested_total'
+                            ? 'Use each row’s requested total'
+                            : 'Use each row’s pack calculation'}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               {field && issues[0]?.scope !== 'table' && (
                 <div className="flex flex-wrap items-center gap-3">
                   <label className="text-sm text-gray-600" htmlFor={`task-value-${task.id}`}>
-                    {task.category === 'totals' ? 'Or set an explicit quantity' : 'Set for selected items'}
+                    {task.category === 'totals'
+                      ? quantityRules.length
+                        ? 'Or enter a quantity'
+                        : 'Enter a quantity'
+                      : 'Set for selected items'}
                   </label>
                   {field === 'domain' ? (
                     <select
@@ -700,39 +755,11 @@ export function GuidedReview({
                     }
                     onClick={makeChange}
                   >
-                    Preview for {selected.length} items
+                    Preview for {selected.length} {selected.length === 1 ? 'item' : 'items'}
                   </button>
                   {field === 'unit' && (
                     <span className="text-xs text-gray-500">Quantities stay unchanged.</span>
                   )}
-                </div>
-              )}
-              {task.category === 'totals' && (
-                <div className="flex gap-2 flex-wrap">
-                  {(['requested_total', 'pack_calculation'] as const).map((rule) => (
-                    <button
-                      key={rule}
-                      type="button"
-                      className={reviewButton}
-                      disabled={
-                        operations.busy ||
-                        !selected.length ||
-                        !selectedIssues.every(
-                          (i) =>
-                            (rule === 'requested_total'
-                              ? (i.requestedTotal ?? 0)
-                              : (i.calculatedTotal ?? 0)) > 0,
-                        )
-                      }
-                      onClick={() =>
-                        void operations.preview({ action: 'quantity_rule', itemIds: selected, rule })
-                      }
-                    >
-                      {rule === 'requested_total'
-                        ? 'Use each row’s requested total'
-                        : 'Use each row’s pack calculation'}
-                    </button>
-                  ))}
                 </div>
               )}
               {task.canAccept && issues[0]?.scope !== 'table' && (

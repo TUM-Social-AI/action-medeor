@@ -270,6 +270,83 @@ test('opening request details on first guided entry takes priority over automati
   } finally { screen.restore(); }
 });
 
+function quantityData(facts) {
+  const issues = facts.map((values, index) => ({
+    id: `quantity-${index + 1}`, itemId: index + 1, code: 'quantity_conflict', category: 'totals',
+    fields: ['quantity', 'unit'], state: 'open', canAccept: true,
+    message: 'Copied quantity differs from the requested source total',
+    requestedTotal: 12, packs: null, unitsPerPack: null, calculatedTotal: null, ...values,
+  }));
+  return {
+    requestId: 'quantity-test', issues,
+    items: issues.map(issue => ({ id: issue.itemId, name: `Copied item ${issue.itemId}`, quantity: 9, unit: 'pcs' })),
+    sourceReferences: issues.map(issue => ({ itemId: issue.itemId, row: 8, excerpt: 'Requested quantity in original source' })),
+    tasks: [{ id: 'copied-quantities', category: 'totals', code: 'quantity_conflict', title: 'Check copied quantities',
+      itemIds: issues.map(issue => issue.itemId), issueIds: issues.map(issue => issue.id), suggestedValue: null, canAccept: true }],
+  };
+}
+
+const buttonWithText = (tree, label) => findElement(tree, element => element.type === 'button' && element.props.children === label);
+
+test('a copied-quantity mismatch offers its real source value without empty pack math or an unavailable action', () => {
+  const screen = guidedHarness();
+  const calls = [];
+  try {
+    const tree = screen.render(quantityData([{}]), { operations: { preview: operation => calls.push(operation) } });
+    const html = renderToStaticMarkup(tree);
+    assert.match(html, /Source quantity: 12/);
+    assert.doesNotMatch(html, /×|pack calculation/);
+    const useSource = buttonWithText(tree, 'Use source quantity (12)');
+    assert.equal(useSource.props.disabled, false);
+    useSource.props.onClick();
+    assert.deepEqual(calls, [{ action: 'quantity_rule', itemIds: [1], rule: 'requested_total' }]);
+    assert.match(html, /Or enter a quantity/);
+  } finally { screen.restore(); }
+});
+
+test('real differing pack totals stay available while duplicate, incomplete, and invalid calculations are omitted', () => {
+  const screen = guidedHarness();
+  try {
+    let tree = screen.render(quantityData([{ requestedTotal: 800, packs: 10, unitsPerPack: 100, calculatedTotal: 1000 }]));
+    assert.match(renderToStaticMarkup(tree), /Packs: 10 × 100 = 1000/);
+    assert.equal(buttonWithText(tree, 'Use source quantity (800)').props.disabled, false);
+    assert.equal(buttonWithText(tree, 'Use pack calculation (1000)').props.disabled, false);
+    tree = screen.render(quantityData([{ packs: 2, unitsPerPack: 6, calculatedTotal: 12 }]));
+    assert.match(renderToStaticMarkup(tree), /Packs: 2 × 6 = 12/);
+    assert.equal(buttonWithText(tree, 'Use pack calculation (12)'), undefined);
+    for (const values of [{ packs: 0, unitsPerPack: 100, calculatedTotal: 0 }, { calculatedTotal: 1000 }]) {
+      tree = screen.render(quantityData([values]));
+      assert.doesNotMatch(renderToStaticMarkup(tree), /×|pack calculation/);
+    }
+    tree = screen.render(quantityData([{ requestedTotal: null }]));
+    assert.match(renderToStaticMarkup(tree), />Enter a quantity</);
+    assert.doesNotMatch(renderToStaticMarkup(tree), /Use source quantity|pack calculation/);
+  } finally { screen.restore(); }
+});
+
+test('quantity-rule choices follow the selected rows and preserve per-row source rules', () => {
+  const screen = guidedHarness();
+  const data = quantityData([
+    { packs: 2, unitsPerPack: 10, calculatedTotal: 20 },
+    { requestedTotal: 24 },
+  ]);
+  const calls = [], operations = { preview: operation => calls.push(operation) };
+  try {
+    let tree = screen.render(data, { operations });
+    assert.ok(buttonWithText(tree, 'Use each row’s requested total'));
+    assert.equal(buttonWithText(tree, 'Use each row’s pack calculation'), undefined);
+    findElement(tree, element => element.props?.label === 'Select Copied item 2').props.onChange(false);
+    tree = screen.render(data, { operations });
+    const usePacks = buttonWithText(tree, 'Use pack calculation (20)');
+    assert.equal(usePacks.props.disabled, false);
+    usePacks.props.onClick();
+    assert.deepEqual(calls, [{ action: 'quantity_rule', itemIds: [1], rule: 'pack_calculation' }]);
+    findElement(tree, element => element.props?.label === 'Select Copied item 2').props.onChange(true);
+    tree = screen.render(data, { operations });
+    assert.equal(buttonWithText(tree, 'Use each row’s pack calculation'), undefined);
+  } finally { screen.restore(); }
+});
+
 test('timeline retains completed tasks while refreshing the remaining tasks', () => {
   const history = [
     { id: 'columns', title: 'Confirm source columns', itemIds: [1, 2] },

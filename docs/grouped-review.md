@@ -79,6 +79,13 @@ subsequent AI check or an explicit source acceptance satisfies it. Missing quant
 invalid quantities use separate codes; correcting an invalid source zero does not introduce
 a new conflict against that zero.
 
+Quantity tasks show pack arithmetic only when positive pack counts, units per pack, and a
+calculated total are available. Resolution buttons reflect the current selection: unavailable
+source rules and pack calculations identical to the source total are omitted. For one selected
+item the action names its value, such as "Use source quantity (12)"; batches keep per-row source
+values. Source choices appear before the optional explicit-quantity input. Preview/apply still
+uses the existing server rules and never converts quantities through a unit-label change.
+
 ## Comprehensive example request
 
 Run explicitly from `apps/backend` against the database you want to populate:
@@ -211,3 +218,9 @@ skipping, explicit navigation, and first-entry request-details priority. All 15 
 files, TypeScript checks, and the production build passed. Browser checks with a disposable
 three-item request at 1440px/1024px verified actual server reordering, preview/cancel,
 failure/retry, refreshed group membership, session reload, and normal completion transitions.
+
+Quantity-choice coverage passed all 15 frontend test files, TypeScript checks, and the build.
+Component tests cover absent/incomplete/zero pack data, valid and duplicate calculations,
+and mixed selections. Browser checks at 1440px/1024px reproduced the copied 9 versus source 12
+case and a genuine 800 versus 1000 pack conflict, including real preview/apply, selected-row
+updates, unchanged units, and retention of the unfinished guided group.
