@@ -172,51 +172,86 @@ export function ReviewOverview({
 }) {
   const counts = data.reviewCounts;
   const tasks = data.tasks ?? [];
+  const [expanded, setExpanded] = useState(false);
+  const problemList = useRef<HTMLDivElement>(null);
+  const shownTasks = expanded ? tasks : tasks.slice(0, 3);
   return (
-    <section className="bg-white rounded-xl border border-gray-200 p-6 mb-4" aria-label="Review overview">
-      <div className="flex items-center gap-2 text-[#1B4E8A] mb-3">
+    <section
+      className="review-overview flex flex-col bg-white rounded-xl border border-gray-200 p-4 mb-4"
+      aria-label="Review overview"
+    >
+      <div className="flex items-center gap-2 text-[#1B4E8A] mb-2 shrink-0">
         <ListChecks size={20} />
         <h2 className="text-lg text-gray-900">Review related problems together</h2>
       </div>
-      <p className="text-sm text-gray-500 mb-5">
+      <p className="text-sm text-gray-500 mb-3 shrink-0">
         We’ve grouped related problems so you can review several items together.
       </p>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3 shrink-0">
         {[
           [counts?.active ?? data.items.length, 'Active items'],
           [counts?.ready ?? 0, 'Ready'],
           [counts?.affected ?? 0, 'Need attention'],
           [tasks.length, 'Review tasks'],
         ].map(([value, label]) => (
-          <div key={label} className="rounded-lg border border-gray-200 p-4">
+          <div key={label} className="rounded-lg border border-gray-200 p-3">
             <div className="text-2xl font-semibold text-gray-900">{value}</div>
             <div className="text-xs text-gray-500 mt-1">{label}</div>
           </div>
         ))}
       </div>
-      <div className="divide-y divide-gray-100 mb-5">
-        {tasks.map((task) => (
-          <div key={task.id} className="flex justify-between gap-4 py-2 text-sm">
-            <span className="text-gray-700">
-              {task.title}
-              {task.suggestedValue ? ` · ${task.suggestedValue}` : ''}
-            </span>
-            <span className="text-gray-500">
-              {task.code === 'request_details'
-                ? 'Optional fields'
-                : task.itemIds.length
-                  ? `${task.itemIds.length} items`
-                  : 'Document'}
-            </span>
-          </div>
-        ))}
-      </div>
+      {!!tasks.length && (
+        <div
+          ref={problemList}
+          id="overview-review-problems"
+          role="region"
+          aria-label="Review problems"
+          tabIndex={0}
+          className="min-h-0 max-h-64 overflow-y-auto overscroll-contain divide-y divide-gray-100 rounded focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"
+          style={{ scrollbarGutter: 'stable' }}
+        >
+          {shownTasks.map((task) => (
+            <div key={task.id} className="flex justify-between gap-4 py-1.5 text-sm">
+              <span className="text-gray-700">
+                {task.title}
+                {task.suggestedValue ? ` · ${task.suggestedValue}` : ''}
+              </span>
+              <span className="text-gray-500 shrink-0">
+                {task.code === 'request_details'
+                  ? 'Optional fields'
+                  : task.itemIds.length
+                    ? `${task.itemIds.length} ${task.itemIds.length === 1 ? 'item' : 'items'}`
+                    : 'Document'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {tasks.length > 3 && (
+        <div className="flex justify-between items-center gap-3 mt-2 shrink-0 text-xs">
+          <span className="text-gray-400">
+            {expanded ? `${tasks.length} problems` : `Showing 3 of ${tasks.length} problems`}
+          </span>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls="overview-review-problems"
+            className="px-2 py-1 rounded text-[#1B4E8A] hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"
+            onClick={() => {
+              setExpanded(!expanded);
+              if (problemList.current) problemList.current.scrollTop = 0;
+            }}
+          >
+            {expanded ? 'Show fewer' : `View all ${tasks.length} problems`}
+          </button>
+        </div>
+      )}
       {!tasks.length && (
-        <p className="text-sm text-green-700 mb-4">
+        <p className="text-sm text-green-700 shrink-0">
           No open review tasks. Check the complete list before matching.
         </p>
       )}
-      <div className="flex gap-3">
+      <div className="flex gap-3 mt-3 pt-3 border-t border-gray-100 shrink-0">
         <button type="button" className={primary} onClick={tasks.length ? onStart : onAll}>
           {tasks.length ? 'Start guided review' : 'Review all items'}
         </button>
