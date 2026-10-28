@@ -484,8 +484,10 @@ remain available when the browser is closed or refreshed. Completed lines can be
 while the worker processes other lines. The worker saves a default
 selection of the top candidate when its search similarity is strictly above 50 for medicine
 with a confirmed matching active ingredient, or strictly above 50 for equipment. Otherwise,
-it saves a “No match” decision, including when no candidates exist or the medicine ingredient
-is unconfirmed or differs. Exact article numbers do not bypass these rules. The UI shows
+it saves a “No match” decision, including when no candidates exist. Medicine lines whose top
+candidate has an unconfirmed or differing ingredient remain undecided regardless of score;
+lower-ranked candidates are not considered for automatic decisions. Exact article numbers do
+not bypass these rules. The UI shows
 the same search similarity on a 0–100 scale, calculated from the available lexical and vector
 channels. It is not a calibrated confidence percentage. Name similarity and retrieval evidence
 remain available in candidate details. Automatic selections and “No match” defaults can be

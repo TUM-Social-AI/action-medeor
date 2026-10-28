@@ -503,8 +503,8 @@ apply. After those filters, medicine catalog articles and standalone historical 
 confirmed matching normalized ingredient labels take precedence: if any remain, only these
 are returned. If none remain, the pre-ingredient-check pool is returned (up to top-k) with
 `ingredient_fallback=1`, review status, and an explicit ingredient-not-confirmed label.
-Ingredient failures remain inspectable as review findings. Fallbacks default to “No match,”
-even for an exact item-number reference. No empty result is filled with candidates
+Ingredient failures remain inspectable as review findings. Fallbacks remain undecided for
+manual review, even for an exact item-number reference. No empty result is filled with candidates
 that fail other exclusions or the semantic cutoff. Equipment behavior is unchanged.
 
 Combination medicines must have the same ingredient labels; structured active_ingredient
@@ -522,6 +522,9 @@ excluded and disallowed candidates are never selected. Exact references, name si
 strength and form comparisons do not bypass or add to these automatic selection rules;
 the matching engine's existing constraints still apply before ranking.
 
-Other completed lines receive an automatic `no_match` decision, including empty results.
+Medicine lines whose first candidate has no confirmed matching ingredient remain undecided,
+regardless of its score. Only the first candidate is considered; a confirmed ingredient on a
+lower-ranked candidate does not trigger a decision. Other completed lines receive an automatic
+`no_match` decision, including empty results.
 Both selections and “No match” defaults are persisted with actor `automatic`, can be changed
 during review, and never replace an existing decision when the worker resumes.

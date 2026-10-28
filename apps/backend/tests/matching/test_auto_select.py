@@ -110,8 +110,7 @@ def test_name_similarity_and_normalized_ranking_do_not_replace_search_score():
 @pytest.mark.parametrize("domain,score,ingredient,selected", [
     (ProductDomain.MEDICINE, 51, "match", True),
     (ProductDomain.MEDICINE, 50, "match", False),
-    (ProductDomain.MEDICINE, 99, "mismatch", False),
-    (ProductDomain.MEDICINE, 99, "unverified", False),
+    (ProductDomain.MEDICINE, None, None, False),
     (ProductDomain.EQUIPMENT, 51, None, True),
     (ProductDomain.EQUIPMENT, 50, None, False),
     (ProductDomain.EQUIPMENT, None, None, False),
@@ -135,6 +134,33 @@ async def test_worker_saves_selection_or_no_match(monkeypatch, domain, score, in
     assert decision.selected_item_number == (best.item_number if selected else None)
     assert decision.actor == "automatic"
     assert decision.inquiry_line_id == str(item.id)
+
+
+@pytest.mark.parametrize("score", [40, 50, 100])
+@pytest.mark.parametrize("ingredient", [None, "mismatch", "unverified", "fallback"])
+@pytest.mark.parametrize("confirmed_second", [False, True])
+async def test_worker_leaves_unconfirmed_top_ingredient_undecided(
+    monkeypatch, score, ingredient, confirmed_second,
+):
+    best = candidate(score, ingredient="match" if ingredient == "fallback" else ingredient)
+    if ingredient == "fallback":
+        best = best.model_copy(update={
+            "score_components": {"search_similarity": score, "ingredient_fallback": 1.0},
+        })
+    candidates = (best,)
+    if confirmed_second:
+        candidates += (candidate(score - 1, ingredient="match", rank=2),)
+    run = SimpleNamespace(match_run_id=uuid4(), candidates=candidates)
+    service = SimpleNamespace(get_run=AsyncMock(return_value=run), save_decision=AsyncMock())
+    monkeypatch.setattr(auto_select, "get_matching_service", lambda session: service)
+    session = SimpleNamespace(execute=AsyncMock(), scalar=AsyncMock(return_value=None))
+    item = SimpleNamespace(
+        id=1, domain=ProductDomain.MEDICINE.value,
+        current_match_run_id=run.match_run_id, match_status="completed",
+    )
+
+    assert not await auto_select.auto_select_item(session, item)
+    service.save_decision.assert_not_called()
 
 
 async def test_worker_preserves_existing_decisions(monkeypatch):

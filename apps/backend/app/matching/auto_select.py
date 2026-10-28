@@ -21,6 +21,13 @@ from app.matching.contracts import (
 from app.matching.ranking.features import search_similarity_components
 
 
+def _has_confirmed_ingredient(candidate: MatchCandidateV1) -> bool:
+    return candidate.score_components.get("ingredient_fallback") != 1.0 and any(
+        check.code == "medicine_active_ingredient_match" and check.outcome is RuleOutcome.PASS
+        for check in candidate.constraints
+    )
+
+
 def automatic_candidate(
     domain: ProductDomain,
     candidates: tuple[MatchCandidateV1, ...],
@@ -38,22 +45,14 @@ def automatic_candidate(
     if score is None:
         score = search_similarity_components(best.score_components).get("search_similarity", 0.0)
     if domain == ProductDomain.MEDICINE:
-        ingredient_matches = any(
-            check.code == "medicine_active_ingredient_match" and check.outcome is RuleOutcome.PASS
-            for check in best.constraints
-        )
-        return best if (
-            ingredient_matches
-            and best.score_components.get("ingredient_fallback") != 1.0
-            and score > 50
-        ) else None
+        return best if _has_confirmed_ingredient(best) and score > 50 else None
     if domain == ProductDomain.EQUIPMENT:
         return best if score > 50 else None
     return None
 
 
 async def auto_select_item(session: AsyncSession, item: RequestItemRow) -> bool:
-    """Save one default only when this run has no human or automatic decision yet."""
+    """Save a default for an undecided run, leaving unconfirmed ingredients for review."""
     if item.current_match_run_id is None or item.match_status != "completed":
         return False
     await session.execute(
@@ -69,6 +68,12 @@ async def auto_select_item(session: AsyncSession, item: RequestItemRow) -> bool:
     service = get_matching_service(session)
     run = await service.get_run(item.current_match_run_id)
     if run is None:
+        return False
+    if (
+        item.domain == ProductDomain.MEDICINE
+        and run.candidates
+        and not _has_confirmed_ingredient(run.candidates[0])
+    ):
         return False
     candidate = automatic_candidate(item.domain, run.candidates)
     await service.save_decision(
