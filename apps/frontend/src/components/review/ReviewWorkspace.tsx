@@ -183,7 +183,7 @@ export function ReviewWorkspace({
   const [items, setItems] = useState<ExtractedItem[]>(initialData?.items ?? []);
   const [partnerDetails, setPartnerDetails] = useState<PartnerDetails | null>(initialData?.partner ?? null);
   const [editingItem, setEditingItem] = useState<ExtractedItem | null>(null);
-  const itemDialog = useRef<HTMLDivElement>(null);
+  const itemDialog = useRef<HTMLFormElement>(null);
   const [isNewItem, setIsNewItem] = useState(false);
   const [isSavingItem, setIsSavingItem] = useState(false);
   const [removingItemId, setRemovingItemId] = useState<number | null>(null);
@@ -533,11 +533,16 @@ export function ReviewWorkspace({
 
   const validName = !!editValues.name?.trim();
   const validQuantity = Number.isInteger(editValues.quantity) && (editValues.quantity ?? 0) > 0;
-  const validType = !!editValues.domain;
+  const validType = editValues.domain === 'medicine' || editValues.domain === 'equipment';
   const canSave = validName && validQuantity && validType;
   const nameInvalid = showItemValidation && !validName;
   const quantityInvalid = showItemValidation && !validQuantity;
   const typeInvalid = showItemValidation && !validType;
+  const invalidFieldLabels = [
+    !validName && 'Item name',
+    !validQuantity && 'Quantity',
+    !validType && 'Product type',
+  ].filter(Boolean);
 
   const saveEdit = async () => {
     if (!editingItem || isSavingItem) {
@@ -545,6 +550,10 @@ export function ReviewWorkspace({
     }
     if (!canSave) {
       setShowItemValidation(true);
+      const firstInvalid = !validName ? 'item-name' : !validQuantity ? 'item-quantity' : 'item-type';
+      const field = itemDialog.current?.querySelector<HTMLElement>(`#${firstInvalid}`);
+      field?.focus({ preventScroll: true });
+      field?.scrollIntoView({ block: 'center', inline: 'nearest' });
       return;
     }
 
@@ -1682,11 +1691,17 @@ export function ReviewWorkspace({
             if (event.target === event.currentTarget && !isNewItem && !isSavingItem) setEditingItem(null);
           }}
         >
-          <div
+          <form
             ref={itemDialog}
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveEdit();
+            }}
             role="dialog"
             aria-modal="true"
             aria-labelledby="item-dialog-title"
+            aria-describedby={showItemValidation && !canSave ? 'item-validation-summary' : undefined}
             tabIndex={-1}
             className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden outline-none"
           >
@@ -1709,6 +1724,7 @@ export function ReviewWorkspace({
               </div>
               {!isNewItem && (
                 <button
+                  type="button"
                   disabled={isSavingItem}
                   aria-label="Close item dialog"
                   onClick={() => setEditingItem(null)}
@@ -1894,7 +1910,7 @@ export function ReviewWorkspace({
                     aria-describedby={
                       typeInvalid ? 'item-type-error' : typeInferred ? 'item-type-inference' : undefined
                     }
-                    className={`w-full border rounded-lg px-3 py-2 text-sm ${typeInvalid ? 'border-red-500 bg-red-50' : typeInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'}`}
+                    className={`w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ${typeInvalid ? 'border-red-500 bg-red-50 focus:ring-red-500/20 focus:border-red-500' : `${typeInferred ? 'border-amber-400 bg-amber-50' : 'border-gray-300 bg-white'} focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]`}`}
                     value={editValues.domain ?? ''}
                     onChange={(event) =>
                       setEditValues((values) => ({
@@ -1933,31 +1949,39 @@ export function ReviewWorkspace({
               </div>
             </div>
 
-            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3 shrink-0">
-              <button
-                disabled={isSavingItem}
-                onClick={() => setEditingItem(null)}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-                style={{ fontWeight: 500 }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => void saveEdit()}
-                disabled={isSavingItem || (!isNewItem && !canSave)}
-                className="px-5 py-2 bg-[#1B4E8A] text-white rounded-lg text-sm hover:bg-[#163d6d] transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
-                style={{ fontWeight: 600 }}
-              >
-                {isSavingItem
-                  ? 'Saving…'
-                  : isNewItem
-                    ? 'Add Item'
-                    : structuredReview
-                      ? 'Preview changes'
-                      : 'Save & Mark Verified'}
-              </button>
+            <div className="px-6 py-4 border-t border-gray-200 shrink-0">
+              {showItemValidation && !canSave && (
+                <p id="item-validation-summary" role="alert" className="mb-3 text-sm text-red-700">
+                  Complete required fields: {invalidFieldLabels.join(', ')}.
+                </p>
+              )}
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  disabled={isSavingItem}
+                  onClick={() => setEditingItem(null)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                  style={{ fontWeight: 500 }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingItem}
+                  className="px-5 py-2 bg-[#1B4E8A] text-white rounded-lg text-sm hover:bg-[#163d6d] transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  style={{ fontWeight: 600 }}
+                >
+                  {isSavingItem
+                    ? 'Saving…'
+                    : isNewItem
+                      ? 'Add Item'
+                      : structuredReview
+                        ? 'Preview changes'
+                        : 'Save & Mark Verified'}
+                </button>
+              </div>
             </div>
-          </div>
+          </form>
         </div>
       )}
 

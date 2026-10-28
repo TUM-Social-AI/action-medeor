@@ -256,6 +256,80 @@ function findElement(tree, predicate) {
   return findElement(tree.props?.children, predicate);
 }
 
+for (const manual of [false, true]) {
+  test(`${manual ? 'new' : 'existing'} item submission highlights required fields before making a request`, async () => {
+    const item = {
+      id: 1, name: 'Example item', quantity: null, unit: 'pcs', domain: null, notes: '',
+      itemNumber: '', shelfLife: '', attributes: {}, priority: 'medium', confidence: 60,
+      status: 'missing', manual: false, reviewReasons: [],
+    };
+    const priorDocument = globalThis.document;
+    globalThis.document = { addEventListener() {}, removeEventListener() {} };
+    const calls = [];
+    let finishSave;
+    const save = (...args) => {
+      calls.push(args.at(-1));
+      return new Promise(resolve => { finishSave = resolve; });
+    };
+    const renderTree = interactiveScreen({ ...data, items: manual ? [] : [item] }, {
+      updateItem: save, addManualItem: save,
+    });
+    const dialog = tree => findElement(tree, element => element.props?.['aria-labelledby'] === 'item-dialog-title');
+    const field = (tree, id) => findElement(dialog(tree), element => element.props?.id === id);
+    const submit = tree => findElement(dialog(tree), element => element.type === 'button' && element.props.type === 'submit');
+    const open = () => findElement(renderTree(), element => element.type === 'button' &&
+      (renderToStaticMarkup(element).includes(manual ? 'Add item manually' : 'Review Required') ||
+        !manual && element.props.children === 'Example item')).props.onClick();
+    try {
+      open();
+      let tree = renderTree();
+      field(tree, 'item-name').props.onChange({ target: { value: ' ' } });
+      tree = renderTree();
+      assert.equal(submit(tree).props.disabled, false);
+      assert.equal(dialog(tree).props.noValidate, true);
+      assert.equal(field(tree, 'item-quantity').props['aria-invalid'], false);
+      let prevented = false;
+      dialog(tree).props.onSubmit({ preventDefault() { prevented = true; } });
+      tree = renderTree();
+      assert.equal(prevented, true);
+      assert.equal(calls.length, 0);
+      for (const id of ['item-name', 'item-quantity', 'item-type']) {
+        assert.equal(field(tree, id).props['aria-invalid'], true);
+        assert.match(field(tree, id).props.className, /border-red-500/);
+        assert.ok(field(tree, id).props['aria-describedby']);
+      }
+      assert.match(renderToStaticMarkup(dialog(tree)), /Complete required fields: Item name, Quantity, Product type/);
+      field(tree, 'item-name').props.onChange({ target: { value: 'Example item' } });
+      for (const value of ['0', '-1', '1.5']) {
+        field(renderTree(), 'item-quantity').props.onChange({ target: { value } });
+        assert.equal(field(renderTree(), 'item-quantity').props['aria-invalid'], true);
+      }
+      field(renderTree(), 'item-quantity').props.onChange({ target: { value: '5' } });
+      tree = renderTree();
+      assert.equal(field(tree, 'item-name').props['aria-invalid'], false);
+      assert.equal(field(tree, 'item-quantity').props['aria-invalid'], false);
+      assert.equal(field(tree, 'item-type').props['aria-invalid'], true);
+      field(tree, 'item-type').props.onChange({ target: { value: 'equipment' } });
+      tree = renderTree();
+      assert.equal(findElement(dialog(tree), element => element.props?.id === 'item-validation-summary'), undefined);
+      dialog(tree).props.onSubmit({ preventDefault() {} });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].quantity, 5);
+      assert.equal(calls[0].domain, 'equipment');
+      assert.equal(submit(renderTree()).props.disabled, true);
+      finishSave({ ...item, ...calls[0], status: 'verified', manual });
+      await Promise.resolve();
+      assert.equal(dialog(renderTree()), undefined);
+      open();
+      tree = renderTree();
+      assert.equal(field(tree, 'item-name').props['aria-invalid'], false);
+      assert.equal(findElement(dialog(tree), element => element.props?.id === 'item-validation-summary'), undefined);
+    } finally {
+      globalThis.document = priorDocument;
+    }
+  });
+}
+
 test('inferred controls show their values, stop highlighting edited values, and the item dialog dismisses safely', () => {
   const item = {
     id: 1, name: 'Diagnostic scanner', quantity: 2, unit: 'pcs', domain: 'equipment', notes: '',

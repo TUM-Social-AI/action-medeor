@@ -27,6 +27,14 @@ item verification, or existing matching eligibility. Drafts survive view switchi
 saves. If saving succeeds but confirmation fails, retry only confirms the saved values.
 Errors appear inside the request-details step. Confirmed details can be reopened and edited.
 
+The shared item-detail form keeps its submit button enabled until a save is in flight. Clicking
+submit or pressing Enter validates the required name, positive whole-number quantity, and
+Medicine/Equipment type before making a request. Invalid fields receive red labels, borders,
+and inline messages; the footer names the missing fields, and focus/scroll moves to the first
+error. Errors clear as values are corrected and reset when the dialog reopens. Valid edits
+continue through the existing preview/apply flow. Optional item and request-metadata fields
+retain their existing rules.
+
 The final table uses backend readiness to distinguish items needing human review from items
 already checked by AI or reviewed by a person. Field and source-layout decisions say
 "Human reviewed"; only explicit whole-item verification says "Human verified". Historical
@@ -175,3 +183,8 @@ the screenshot's 12-item `49-86 RfQ.pdf` request placed the table at 318px from 
 failed-save and failed-confirmation retries, draft retention, reload, and matching eligibility.
 Additional browser checks retained grouped-task confirmation/undo and manual entry, including
 confirming empty metadata before adding the first item.
+
+The item-submit validation follow-up passed all 15 frontend test files, TypeScript checks,
+and the production build. Browser checks at 1440px and 1024px exercised existing and manual
+items, guided and table entry points, click/Enter submission, focus/scroll, zero/fractional
+quantities, valid preview/apply, cancellation, and optional metadata/unit behavior.
