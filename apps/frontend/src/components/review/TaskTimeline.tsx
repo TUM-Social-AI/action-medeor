@@ -111,9 +111,11 @@ export function TaskTimeline({
                         {task.suggestedValue ? ` · ${task.suggestedValue}` : ''}
                       </span>
                       <span className="block text-xs text-gray-500 mt-1">
-                        {task.itemIds.length
-                          ? `${task.itemIds.length} ${task.itemIds.length === 1 ? 'item' : 'items'}`
-                          : 'Document'}
+                        {task.code === 'request_details'
+                          ? 'Partner, region and contact'
+                          : task.itemIds.length
+                            ? `${task.itemIds.length} ${task.itemIds.length === 1 ? 'item' : 'items'}`
+                            : 'Document'}
                       </span>
                     </span>
                     <span

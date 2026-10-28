@@ -61,6 +61,7 @@
 }
 
 @layer components {
+  .review-items-table { max-height: max(18rem, calc(100dvh - 22rem)); }
   .review-task-in { animation: review-task-enter 230ms ease-out both; }
   .review-task-out { animation: review-task-leave 200ms ease-in both; }
   .review-toast { animation: review-task-enter 200ms ease-out both; }

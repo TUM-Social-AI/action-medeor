@@ -60,6 +60,26 @@ def payload(body, action, ids, **extra):
     )
 
 
+async def test_empty_request_details_can_be_saved_and_confirmed_without_verifying_items(saved_review):
+    client, body = saved_review
+    root = f"/api/requests/{body['requestId']}"
+    saved = await client.patch(root + "/partner", json={
+        "partner": "", "region": "", "contact": "", "requestId": "",
+    })
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["requestId"] == body["requestId"]
+    confirmed = await client.post(root + "/partner/confirm")
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["confirmed"] is True
+    reloaded = (await client.get(root + "/review")).json()
+    assert reloaded["partner"]["partner"] == ""
+    assert reloaded["partner"]["region"] == ""
+    assert reloaded["partner"]["contact"] == ""
+    assert reloaded["partner"]["confirmed"] is True
+    assert reloaded["items"] == body["items"]
+    assert reloaded["reviewCounts"] == body["reviewCounts"]
+
+
 async def test_preview_atomic_apply_retry_undo_and_conflict(saved_review):
     client, body = saved_review
     root = f"/api/requests/{body['requestId']}"

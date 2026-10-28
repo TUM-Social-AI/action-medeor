@@ -31,6 +31,7 @@ function loadTs(file) {
 }
 const reviewTools = loadTs(new URL('../src/components/review/ReviewTools.tsx', import.meta.url).pathname);
 const reviewModel = loadTs(new URL('../src/features/review/model.ts', import.meta.url).pathname);
+const reviewQueue = loadTs(new URL('../src/features/review/task-queue.ts', import.meta.url).pathname);
 const inactiveOperations = () => ({ busy: false, error: null, pending: null, toast: null });
 const source = await readFile(new URL('../src/components/review/ReviewWorkspace.tsx', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, {
@@ -46,6 +47,7 @@ new Function('require', 'exports', outputText)(name => {
   if (name.endsWith('/api/client')) return {};
   if (name === './ReviewTools') return reviewTools;
   if (name.endsWith('/features/review/model')) return reviewModel;
+  if (name.endsWith('/features/review/task-queue')) return reviewQueue;
   if (name.endsWith('/features/review/use-review-operations')) return { useReviewOperations: inactiveOperations };
   if (name.endsWith('/ScreenState') || name.endsWith('/WorkflowStepper')) {
     return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
@@ -108,6 +110,18 @@ test('the integrated table never asks ready rows to verify again', () => {
   assert.doesNotMatch(html, />Confidence</);
 });
 
+test('column extraction is inside the compact source disclosure and metadata lives in guided review', () => {
+  const tree = interactiveScreen({ ...data, reviewRevision: 0, tasks: [], issues: [] })();
+  const disclosure = findElement(tree, element => element.type === 'details' &&
+    renderToStaticMarkup(element).includes('Additional attribute'));
+  assert.ok(disclosure);
+  assert.ok(findElement(disclosure, element => element.props?.['aria-label'] === 'Additional attribute'));
+  const guided = findElement(tree, element => element.props?.requestDetails);
+  assert.ok(guided);
+  assert.match(renderToStaticMarkup(guided.props.requestDetails.content), /All fields are optional/);
+  assert.equal(findElement(guided.props.requestDetails.content, element => element.props?.required), undefined);
+});
+
 test('supplier column notes are informational and provider failures remain visible', () => {
   const html = render({ ...data, parserWarnings: ['Ignored supplier/admin columns: Price'],
     reviewSummary: { status: 'unavailable', checked: 0, message: 'Some rows could not be AI checked. Basic extraction has been retained; you can retry.' } });
@@ -154,6 +168,7 @@ function interactiveScreen(initialData = data, client = {}, summary = false) {
     if (name === 'react') return hooks;
     if (name === './ReviewTools') return reviewTools;
     if (name.endsWith('/features/review/model')) return reviewModel;
+    if (name.endsWith('/features/review/task-queue')) return reviewQueue;
     if (name.endsWith('/features/review/use-review-operations')) return { useReviewOperations: inactiveOperations };
     if (name === 'react-dom') return { createPortal: element => element };
     if (name.endsWith('/api/client')) return client;
@@ -191,6 +206,7 @@ for (const screen of ['review', 'summary']) {
     const edit = tree => findElement(tree, element => element.props?.['aria-label'] === 'Edit partner details');
     renderTree();
     await Promise.resolve();
+    if (screen === 'review') findElement(renderTree(), element => element.props?.['aria-label'] === 'Request details').props.onClick();
     let tree = renderTree();
     assert.ok(edit(tree));
     assert.match(renderToStaticMarkup(tree), /Details confirmed/);
@@ -215,10 +231,14 @@ for (const screen of ['review', 'summary']) {
     await Promise.resolve();
     tree = renderTree();
     assert.doesNotMatch(renderToStaticMarkup(tree), /Details confirmed/);
-    button(tree, 'Confirm Details').props.onClick();
+    if (screen === 'review') findElement(tree, element => element.type === 'form').props.onSubmit({ preventDefault() {} });
+    else button(tree, 'Confirm Details').props.onClick();
     tree = renderTree();
-    assert.equal(button(tree, 'Confirming…').props.disabled, true);
-    assert.equal(edit(tree).props.disabled, true);
+    if (screen === 'review') assert.equal(findElement(tree, element => element.type === 'input' && element.props.value === 'Edited Partner').props.disabled, true);
+    else {
+      assert.equal(button(tree, 'Confirming…').props.disabled, true);
+      assert.equal(edit(tree).props.disabled, true);
+    }
     resolveConfirm({ ...partner, partner: 'Edited Partner', confirmed: true });
     await Promise.resolve();
     tree = renderTree();
@@ -231,6 +251,8 @@ function findElement(tree, predicate) {
   if (!tree || typeof tree !== 'object') return undefined;
   if (Array.isArray(tree)) return tree.map(child => findElement(child, predicate)).find(Boolean);
   if (predicate(tree)) return tree;
+  const details = findElement(tree.props?.requestDetails?.content, predicate);
+  if (details) return details;
   return findElement(tree.props?.children, predicate);
 }
 

@@ -13,6 +13,20 @@ prototype's 200ms exit and 230ms entry. Skipping has no success state. Motion re
 reduced-motion preferences. Notifications dismiss after five seconds;
 the separate permanent Undo last action control remains available independently of the toast.
 
+The workspace uses a compact title/source header and navigation row. The table toolbar keeps
+search and readiness on one line; state, type, and issue filters open from Filters. Optional
+column extraction lives under Extraction details rather than in a permanent table toolbar.
+Additional attributes are still used: `to_inquiry_line` passes them to matching, the search
+representation includes their values, and recognized policy keys participate in compatibility
+checks. Existing attributes, column renaming, and custom extraction remain available.
+
+Request details is a separate guided step after item problems, reachable directly from the
+header. Partner, region, and contact are optional, including an all-empty confirmed submission;
+the system request ID remains immutable. This metadata step does not change item issue counts,
+item verification, or existing matching eligibility. Drafts survive view switching and failed
+saves. If saving succeeds but confirmation fails, retry only confirms the saved values.
+Errors appear inside the request-details step. Confirmed details can be reopened and edited.
+
 The final table uses backend readiness to distinguish items needing human review from items
 already checked by AI or reviewed by a person. Field and source-layout decisions say
 "Human reviewed"; only explicit whole-item verification says "Human verified". Historical
@@ -153,3 +167,11 @@ for every issue code, correct source evidence, overlapping resolutions, and seed
 resetting progress. Browser verification covers the top timeline at 1440px/1024px, the task
 picker's keyboard dismissal, failure/retry, success/exit/entry motion, all issue categories,
 manual reconciliation, restoration, review-state badges, matching readiness, and reduced motion.
+
+The compact-layout follow-up passed 48 relevant backend tests, all 15 frontend test files,
+TypeScript checks, and the production build. A browser walkthrough using an isolated copy of
+the screenshot's 12-item `49-86 RfQ.pdf` request placed the table at 318px from the top at both
+1440px and 1024px widths. It checked collapsed extraction/filters, empty metadata persistence,
+failed-save and failed-confirmation retries, draft retention, reload, and matching eligibility.
+Additional browser checks retained grouped-task confirmation/undo and manual entry, including
+confirming empty metadata before adding the first item.

@@ -2,6 +2,22 @@ import type { ReviewTask } from '../../api/types';
 
 export type TaskProgress = { current: string | null; deferred: string[]; history: ReviewTask[] };
 
+export const requestDetailsTask: ReviewTask = {
+  id: 'request-details',
+  category: 'details',
+  code: 'request_details',
+  title: 'Review request details',
+  itemIds: [],
+  issueIds: [],
+  suggestedValue: null,
+  canAccept: false,
+};
+
+/** Request metadata is a separate guided step, never an item issue or matching blocker. */
+export function reviewSteps(tasks: ReviewTask[], includeDetails: boolean) {
+  return includeDetails ? [...tasks, requestDetailsTask] : tasks;
+}
+
 export function nextTask(tasks: ReviewTask[], progress: TaskProgress): ReviewTask | undefined {
   return (
     tasks.find((task) => task.id === progress.current) ??

@@ -138,6 +138,18 @@ test('skipping the entire queue stops instead of wrapping to its first task', ()
   assert.equal(queue.nextTask(tasks, { ...progress, current: 'columns' }).id, 'columns');
 });
 
+test('request metadata is a separate guided step with no item issues', () => {
+  const tasks = [{ id: 'columns', itemIds: [1, 2] }];
+  const steps = queue.reviewSteps(tasks, true);
+  assert.equal(steps.at(-1).id, 'request-details');
+  assert.deepEqual(steps.at(-1).itemIds, []);
+  assert.deepEqual(steps.at(-1).issueIds, []);
+  assert.equal(queue.reviewSteps(tasks, false), tasks);
+  assert.equal(tasks.length, 1);
+  const progress = { current: null, deferred: ['columns'], history: steps };
+  assert.equal(queue.nextTask(steps, progress).id, 'request-details');
+});
+
 test('timeline retains completed tasks while refreshing the remaining tasks', () => {
   const history = [
     { id: 'columns', title: 'Confirm source columns', itemIds: [1, 2] },

@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, CheckCircle2, FileText, ListChecks, SkipForward, X } from 'lucide-react';
 import type { ExtractedItem, ItemUpdate, ReviewResponse } from '../../api/types';
-import { nextTask, deferTask, taskHistory, type TaskProgress } from '../../features/review/task-queue';
+import {
+  nextTask,
+  deferTask,
+  taskHistory,
+  reviewSteps,
+  requestDetailsTask,
+  type TaskProgress,
+} from '../../features/review/task-queue';
 import { TaskTimeline } from './TaskTimeline';
 import type { ReviewOperations } from '../../features/review/use-review-operations';
 
@@ -195,7 +202,11 @@ export function ReviewOverview({
               {task.suggestedValue ? ` · ${task.suggestedValue}` : ''}
             </span>
             <span className="text-gray-500">
-              {task.itemIds.length || 'Document'} {task.itemIds.length ? 'items' : ''}
+              {task.code === 'request_details'
+                ? 'Optional fields'
+                : task.itemIds.length
+                  ? `${task.itemIds.length} items`
+                  : 'Document'}
             </span>
           </div>
         ))}
@@ -237,12 +248,14 @@ export function GuidedReview({
   operations,
   onEdit,
   onAll,
+  requestDetails,
 }: {
   data: ReviewResponse;
   hidden: boolean;
   operations: ReviewOperations;
   onEdit: (item: ExtractedItem) => void;
   onAll: () => void;
+  requestDetails?: { content: ReactNode; confirmed: boolean; open: boolean; visit: number };
 }) {
   const [progress, setProgress] = useState(() => {
     const saved = readProgress(data.requestId);
@@ -251,9 +264,12 @@ export function GuidedReview({
   const [drafts, setDrafts] = useState<
     Record<string, { value: string; selected: number[]; inspected: number[]; groupInspected?: boolean }>
   >({});
-  const tasks = data.tasks ?? [];
+  const tasks = reviewSteps(
+    data.tasks ?? [],
+    !!requestDetails && (!requestDetails.confirmed || requestDetails.open),
+  );
   const target = nextTask(tasks, progress);
-  const history = taskHistory(progress.history, tasks);
+  const history = taskHistory(progress.history, requestDetails ? reviewSteps(data.tasks ?? [], true) : tasks);
   const [display, setDisplay] = useState<{ task: typeof target; data: ReviewResponse }>({
     task: target,
     data,
@@ -261,6 +277,9 @@ export function GuidedReview({
   const displayId = useRef(target?.id);
   const resolvedTransition = useRef(false);
   const [phase, setPhase] = useState<'hold' | 'in' | 'out' | 'idle'>('idle');
+  useEffect(() => {
+    if (requestDetails?.visit) setProgress((p) => ({ ...p, current: requestDetailsTask.id }));
+  }, [requestDetails?.visit]);
   useEffect(() => {
     try {
       sessionStorage.setItem(
@@ -306,7 +325,7 @@ export function GuidedReview({
   const timeline = (
     <TaskTimeline
       history={history}
-      tasks={tasks}
+      tasks={tasks.filter((task) => task.code !== 'request_details' || !requestDetails?.confirmed)}
       current={target?.id ?? null}
       deferred={progress.deferred}
       onSelect={(id) => setProgress((p) => ({ ...p, history, current: id }))}
@@ -408,297 +427,320 @@ export function GuidedReview({
             <span className="text-sm text-gray-500">Changes saved</span>
           </div>
         )}
-        <div className="p-5 border-b border-gray-200">
-          <h2 className="text-lg">
-            {task.title}
-            {task.suggestedValue ? ` · ${task.suggestedValue}` : ''}
-          </h2>
-          <p className="text-sm text-gray-500 mt-1">
-            {issues[0]?.message}
-            {issues[0]?.scope !== 'table' && task.code !== 'non_item_row'
-              ? ' Resolve this problem for selected items, or edit exceptions individually.'
-              : ''}
-          </p>
-        </div>
-        {issues[0]?.scope === 'table' ? (
-          <div className="p-5 space-y-4">
-            <p className="text-sm text-gray-600">
-              These columns apply to <strong>{task.itemIds.length} items</strong>
-              {issues[0].worksheet ? ` in ${issues[0].worksheet}` : ''}. Confirm this once; individual rows do
-              not need separate column checks.
-            </p>
-            <div className="grid sm:grid-cols-2 gap-2">
-              {issues[0].columns
-                ?.filter((column) => column.role !== 'attribute')
-                .map((column) => (
-                  <div key={column.key} className="rounded-lg border border-gray-200 px-3 py-2">
-                    <span className="block text-xs text-gray-500">
-                      Column {column.index} · {column.label}
-                    </span>
-                    <span className="block text-sm font-semibold mt-1">
-                      {fieldLabels[column.role] ?? column.role.replace(/_/g, ' ')}
-                    </span>
-                  </div>
-                ))}
-            </div>
-            <div className="border border-gray-200 rounded-lg overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-gray-500">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Source row</th>
-                    <th className="px-3 py-2 text-left">Copied product</th>
-                    <th className="px-3 py-2 text-right">Requested quantity</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {issues[0].sampleRows?.map((row) => (
-                    <tr key={row.itemId} className="border-t border-gray-100">
-                      <td className="px-3 py-2 text-gray-500">{row.row ?? '—'}</td>
-                      <td className="px-3 py-2">{row.name}</td>
-                      <td className="px-3 py-2 text-right">{row.quantity ?? 'Missing'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="text-xs text-gray-500">
-              Supplier quote columns are excluded. Confirming the layout preserves all item values and
-              individual corrections.
-            </p>
-            <button
-              type="button"
-              className={primary}
-              disabled={operations.busy}
-              onClick={() =>
-                void operations.preview({ action: 'accept', itemIds: [], issueIds: task.issueIds })
-              }
-            >
-              Confirm columns for {task.itemIds.length} items
-            </button>
-          </div>
+        {task.code === 'request_details' ? (
+          <>
+            {requestDetails?.content}
+            {!requestDetails?.confirmed && (
+              <div className="px-5 py-3 border-t border-gray-100 flex justify-end">
+                <button type="button" className={reviewButton} onClick={skip}>
+                  Review later
+                </button>
+              </div>
+            )}
+          </>
         ) : (
           <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-gray-500">
-                  <tr>
-                    <th className="p-3 w-10">
-                      <ReviewCheckbox
-                        label="Select all task items"
-                        checked={selected.length === members.length && !!members.length}
-                        mixed={!!selected.length && selected.length < members.length}
-                        onChange={(checked) => update({ selected: checked ? task.itemIds : [] })}
-                      />
-                    </th>
-                    <th className="p-3 text-left">Item</th>
-                    <th className="p-3 text-left">Current value</th>
-                    <th className="p-3 text-left">Source evidence</th>
-                    <th className="p-3" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {members.map((item) => {
-                    const issue = issues.find((i) => i.itemId === item.id);
-                    const reference = taskData.sourceReferences.find((r) => r.itemId === item.id);
-                    return (
-                      <tr key={item.id} className="border-t border-gray-100">
-                        <td className="p-3">
-                          <ReviewCheckbox
-                            label={`Select ${item.name}`}
-                            checked={selected.includes(item.id)}
-                            onChange={(checked) =>
-                              update({
-                                selected: checked
-                                  ? [...selected, item.id]
-                                  : selected.filter((id) => id !== item.id),
-                              })
-                            }
-                          />
-                        </td>
-                        <td className="p-3 min-w-44 font-medium">{item.name || 'Unnamed item'}</td>
-                        <td className="p-3">
-                          {task.category === 'type'
-                            ? (item.domain ?? 'Not chosen')
-                            : task.category === 'unit'
-                              ? item.unit || '—'
-                              : task.category === 'description'
-                                ? item.name || 'Missing name'
-                                : task.code === 'non_item_row'
-                                  ? 'Repeated column labels'
-                                  : task.category === 'source'
-                                    ? 'Source reconciliation required'
-                                    : task.category === 'other'
-                                      ? issue?.fields.includes('notes')
-                                        ? item.notes || 'Empty note'
-                                        : `${item.quantity ?? 'Missing'} ${item.unit} · source check needed`
-                                      : (item.quantity ?? 'Missing')}
-                          {task.category === 'totals' && (
-                            <div className="text-xs text-gray-500 mt-1">
-                              Requested: {issue?.requestedTotal ?? '—'}
-                              <br />
-                              {issue?.packs ?? '—'} × {issue?.unitsPerPack ?? '—'} ={' '}
-                              {issue?.calculatedTotal ?? '—'}
-                            </div>
-                          )}
-                        </td>
-                        <td className="p-3 min-w-48 max-w-sm">
-                          <details
-                            onToggle={(e) => {
-                              if (e.currentTarget.open && !draft.inspected.includes(item.id))
-                                update({ inspected: [...draft.inspected, item.id] });
-                            }}
-                          >
-                            <summary className="cursor-pointer text-[#1B4E8A]">
-                              Inspect source · row {reference?.row ?? '—'}
-                            </summary>
-                            <p className="mt-2 p-3 rounded-lg bg-amber-50 text-xs text-amber-900 whitespace-pre-wrap">
-                              {reference?.excerpt ??
-                                issue?.evidence ??
-                                'No source reference available. Check the original document.'}
-                            </p>
-                          </details>
-                        </td>
-                        <td className="p-3">
-                          <button
-                            type="button"
-                            className={reviewButton}
-                            disabled={operations.busy}
-                            onClick={() => onEdit(item)}
-                          >
-                            Edit individually
-                          </button>
-                        </td>
+            <div className="p-5 border-b border-gray-200">
+              <h2 className="text-lg">
+                {task.title}
+                {task.suggestedValue ? ` · ${task.suggestedValue}` : ''}
+              </h2>
+              <p className="text-sm text-gray-500 mt-1">
+                {issues[0]?.message}
+                {issues[0]?.scope !== 'table' && task.code !== 'non_item_row'
+                  ? ' Resolve this problem for selected items, or edit exceptions individually.'
+                  : ''}
+              </p>
+            </div>
+            {issues[0]?.scope === 'table' ? (
+              <div className="p-5 space-y-4">
+                <p className="text-sm text-gray-600">
+                  These columns apply to <strong>{task.itemIds.length} items</strong>
+                  {issues[0].worksheet ? ` in ${issues[0].worksheet}` : ''}. Confirm this once; individual
+                  rows do not need separate column checks.
+                </p>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {issues[0].columns
+                    ?.filter((column) => column.role !== 'attribute')
+                    .map((column) => (
+                      <div key={column.key} className="rounded-lg border border-gray-200 px-3 py-2">
+                        <span className="block text-xs text-gray-500">
+                          Column {column.index} · {column.label}
+                        </span>
+                        <span className="block text-sm font-semibold mt-1">
+                          {fieldLabels[column.role] ?? column.role.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+                <div className="border border-gray-200 rounded-lg overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 text-gray-500">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Source row</th>
+                        <th className="px-3 py-2 text-left">Copied product</th>
+                        <th className="px-3 py-2 text-right">Requested quantity</th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                    </thead>
+                    <tbody>
+                      {issues[0].sampleRows?.map((row) => (
+                        <tr key={row.itemId} className="border-t border-gray-100">
+                          <td className="px-3 py-2 text-gray-500">{row.row ?? '—'}</td>
+                          <td className="px-3 py-2">{row.name}</td>
+                          <td className="px-3 py-2 text-right">{row.quantity ?? 'Missing'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Supplier quote columns are excluded. Confirming the layout preserves all item values and
+                  individual corrections.
+                </p>
+                <button
+                  type="button"
+                  className={primary}
+                  disabled={operations.busy}
+                  onClick={() =>
+                    void operations.preview({ action: 'accept', itemIds: [], issueIds: task.issueIds })
+                  }
+                >
+                  Confirm columns for {task.itemIds.length} items
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 text-gray-500">
+                      <tr>
+                        <th className="p-3 w-10">
+                          <ReviewCheckbox
+                            label="Select all task items"
+                            checked={selected.length === members.length && !!members.length}
+                            mixed={!!selected.length && selected.length < members.length}
+                            onChange={(checked) => update({ selected: checked ? task.itemIds : [] })}
+                          />
+                        </th>
+                        <th className="p-3 text-left">Item</th>
+                        <th className="p-3 text-left">Current value</th>
+                        <th className="p-3 text-left">Source evidence</th>
+                        <th className="p-3" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {members.map((item) => {
+                        const issue = issues.find((i) => i.itemId === item.id);
+                        const reference = taskData.sourceReferences.find((r) => r.itemId === item.id);
+                        return (
+                          <tr key={item.id} className="border-t border-gray-100">
+                            <td className="p-3">
+                              <ReviewCheckbox
+                                label={`Select ${item.name}`}
+                                checked={selected.includes(item.id)}
+                                onChange={(checked) =>
+                                  update({
+                                    selected: checked
+                                      ? [...selected, item.id]
+                                      : selected.filter((id) => id !== item.id),
+                                  })
+                                }
+                              />
+                            </td>
+                            <td className="p-3 min-w-44 font-medium">{item.name || 'Unnamed item'}</td>
+                            <td className="p-3">
+                              {task.category === 'type'
+                                ? (item.domain ?? 'Not chosen')
+                                : task.category === 'unit'
+                                  ? item.unit || '—'
+                                  : task.category === 'description'
+                                    ? item.name || 'Missing name'
+                                    : task.code === 'non_item_row'
+                                      ? 'Repeated column labels'
+                                      : task.category === 'source'
+                                        ? 'Source reconciliation required'
+                                        : task.category === 'other'
+                                          ? issue?.fields.includes('notes')
+                                            ? item.notes || 'Empty note'
+                                            : `${item.quantity ?? 'Missing'} ${item.unit} · source check needed`
+                                          : (item.quantity ?? 'Missing')}
+                              {task.category === 'totals' && (
+                                <div className="text-xs text-gray-500 mt-1">
+                                  Requested: {issue?.requestedTotal ?? '—'}
+                                  <br />
+                                  {issue?.packs ?? '—'} × {issue?.unitsPerPack ?? '—'} ={' '}
+                                  {issue?.calculatedTotal ?? '—'}
+                                </div>
+                              )}
+                            </td>
+                            <td className="p-3 min-w-48 max-w-sm">
+                              <details
+                                onToggle={(e) => {
+                                  if (e.currentTarget.open && !draft.inspected.includes(item.id))
+                                    update({ inspected: [...draft.inspected, item.id] });
+                                }}
+                              >
+                                <summary className="cursor-pointer text-[#1B4E8A]">
+                                  Inspect source · row {reference?.row ?? '—'}
+                                </summary>
+                                <p className="mt-2 p-3 rounded-lg bg-amber-50 text-xs text-amber-900 whitespace-pre-wrap">
+                                  {reference?.excerpt ??
+                                    issue?.evidence ??
+                                    'No source reference available. Check the original document.'}
+                                </p>
+                              </details>
+                            </td>
+                            <td className="p-3">
+                              <button
+                                type="button"
+                                className={reviewButton}
+                                disabled={operations.busy}
+                                onClick={() => onEdit(item)}
+                              >
+                                Edit individually
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            {!members.length && (
+              <p className="p-5 text-sm text-gray-600">
+                {issues[0]?.evidence} Inspect the original document and add missed items from the full table.
+              </p>
+            )}
+            <div className="p-5 border-t border-gray-200 space-y-3">
+              {field && issues[0]?.scope !== 'table' && (
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="text-sm text-gray-600" htmlFor={`task-value-${task.id}`}>
+                    {task.category === 'totals' ? 'Or set an explicit quantity' : 'Set for selected items'}
+                  </label>
+                  {field === 'domain' ? (
+                    <select
+                      id={`task-value-${task.id}`}
+                      className={reviewInput}
+                      value={draft.value}
+                      onChange={(e) => update({ value: e.target.value })}
+                    >
+                      <option value="">Choose type</option>
+                      <option value="medicine">Medicine</option>
+                      <option value="equipment">Equipment</option>
+                    </select>
+                  ) : (
+                    <input
+                      id={`task-value-${task.id}`}
+                      className={reviewInput}
+                      type={field === 'quantity' ? 'number' : 'text'}
+                      min={1}
+                      step={1}
+                      value={draft.value}
+                      onChange={(e) => update({ value: e.target.value })}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    className={primary}
+                    disabled={
+                      operations.busy ||
+                      !selected.length ||
+                      !draft.value ||
+                      (field === 'quantity' &&
+                        (!Number.isInteger(Number(draft.value)) || Number(draft.value) <= 0))
+                    }
+                    onClick={makeChange}
+                  >
+                    Preview for {selected.length} items
+                  </button>
+                  {field === 'unit' && (
+                    <span className="text-xs text-gray-500">Quantities stay unchanged.</span>
+                  )}
+                </div>
+              )}
+              {task.category === 'totals' && (
+                <div className="flex gap-2 flex-wrap">
+                  {(['requested_total', 'pack_calculation'] as const).map((rule) => (
+                    <button
+                      key={rule}
+                      type="button"
+                      className={reviewButton}
+                      disabled={
+                        operations.busy ||
+                        !selected.length ||
+                        !selectedIssues.every(
+                          (i) =>
+                            (rule === 'requested_total'
+                              ? (i.requestedTotal ?? 0)
+                              : (i.calculatedTotal ?? 0)) > 0,
+                        )
+                      }
+                      onClick={() =>
+                        void operations.preview({ action: 'quantity_rule', itemIds: selected, rule })
+                      }
+                    >
+                      {rule === 'requested_total'
+                        ? 'Use each row’s requested total'
+                        : 'Use each row’s pack calculation'}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {task.canAccept && issues[0]?.scope !== 'table' && (
+                <label className="flex items-center gap-2 text-sm text-gray-600">
+                  <ReviewCheckbox
+                    label="I reviewed these items against the source"
+                    checked={!!draft.groupInspected}
+                    onChange={(checked) => update({ groupInspected: checked })}
+                  />
+                  I reviewed the selected items against the source
+                </label>
+              )}
+              <div className="flex justify-between items-center gap-3 flex-wrap">
+                {issues[0]?.scope === 'table' ? (
+                  <span className="text-xs text-gray-500">One decision for this source table</span>
+                ) : task.code === 'non_item_row' ? (
+                  <button
+                    type="button"
+                    className={primary}
+                    disabled={operations.busy}
+                    onClick={() => void operations.preview({ action: 'remove', itemIds: task.itemIds })}
+                  >
+                    Remove {task.itemIds.length} repeated header {task.itemIds.length === 1 ? 'row' : 'rows'}
+                  </button>
+                ) : task.canAccept ? (
+                  <button
+                    type="button"
+                    className={reviewButton}
+                    disabled={operations.busy || !canAccept || !selectedIssues.length}
+                    onClick={() =>
+                      void operations.preview({
+                        action: 'accept',
+                        itemIds: selected,
+                        issueIds: selectedIssues.map((i) => i.id),
+                      })
+                    }
+                  >
+                    {canAccept
+                      ? 'Accept current values after inspection'
+                      : 'Inspect each selected source to accept values'}
+                  </button>
+                ) : (
+                  <span className="text-xs text-gray-500">Missing required values must be corrected.</span>
+                )}
+                <button
+                  type="button"
+                  className={`${reviewButton} inline-flex items-center gap-2`}
+                  onClick={skip}
+                >
+                  <SkipForward size={14} /> Review later
+                </button>
+              </div>
             </div>
           </>
         )}
-        {!members.length && (
-          <p className="p-5 text-sm text-gray-600">
-            {issues[0]?.evidence} Inspect the original document and add missed items from the full table.
-          </p>
-        )}
-        <div className="p-5 border-t border-gray-200 space-y-3">
-          {field && issues[0]?.scope !== 'table' && (
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="text-sm text-gray-600" htmlFor={`task-value-${task.id}`}>
-                {task.category === 'totals' ? 'Or set an explicit quantity' : 'Set for selected items'}
-              </label>
-              {field === 'domain' ? (
-                <select
-                  id={`task-value-${task.id}`}
-                  className={reviewInput}
-                  value={draft.value}
-                  onChange={(e) => update({ value: e.target.value })}
-                >
-                  <option value="">Choose type</option>
-                  <option value="medicine">Medicine</option>
-                  <option value="equipment">Equipment</option>
-                </select>
-              ) : (
-                <input
-                  id={`task-value-${task.id}`}
-                  className={reviewInput}
-                  type={field === 'quantity' ? 'number' : 'text'}
-                  min={1}
-                  step={1}
-                  value={draft.value}
-                  onChange={(e) => update({ value: e.target.value })}
-                />
-              )}
-              <button
-                type="button"
-                className={primary}
-                disabled={
-                  operations.busy ||
-                  !selected.length ||
-                  !draft.value ||
-                  (field === 'quantity' &&
-                    (!Number.isInteger(Number(draft.value)) || Number(draft.value) <= 0))
-                }
-                onClick={makeChange}
-              >
-                Preview for {selected.length} items
-              </button>
-              {field === 'unit' && <span className="text-xs text-gray-500">Quantities stay unchanged.</span>}
-            </div>
-          )}
-          {task.category === 'totals' && (
-            <div className="flex gap-2 flex-wrap">
-              {(['requested_total', 'pack_calculation'] as const).map((rule) => (
-                <button
-                  key={rule}
-                  type="button"
-                  className={reviewButton}
-                  disabled={
-                    operations.busy ||
-                    !selected.length ||
-                    !selectedIssues.every(
-                      (i) =>
-                        (rule === 'requested_total' ? (i.requestedTotal ?? 0) : (i.calculatedTotal ?? 0)) > 0,
-                    )
-                  }
-                  onClick={() =>
-                    void operations.preview({ action: 'quantity_rule', itemIds: selected, rule })
-                  }
-                >
-                  {rule === 'requested_total'
-                    ? 'Use each row’s requested total'
-                    : 'Use each row’s pack calculation'}
-                </button>
-              ))}
-            </div>
-          )}
-          {task.canAccept && issues[0]?.scope !== 'table' && (
-            <label className="flex items-center gap-2 text-sm text-gray-600">
-              <ReviewCheckbox
-                label="I reviewed these items against the source"
-                checked={!!draft.groupInspected}
-                onChange={(checked) => update({ groupInspected: checked })}
-              />
-              I reviewed the selected items against the source
-            </label>
-          )}
-          <div className="flex justify-between items-center gap-3 flex-wrap">
-            {issues[0]?.scope === 'table' ? (
-              <span className="text-xs text-gray-500">One decision for this source table</span>
-            ) : task.code === 'non_item_row' ? (
-              <button
-                type="button"
-                className={primary}
-                disabled={operations.busy}
-                onClick={() => void operations.preview({ action: 'remove', itemIds: task.itemIds })}
-              >
-                Remove {task.itemIds.length} repeated header {task.itemIds.length === 1 ? 'row' : 'rows'}
-              </button>
-            ) : task.canAccept ? (
-              <button
-                type="button"
-                className={reviewButton}
-                disabled={operations.busy || !canAccept || !selectedIssues.length}
-                onClick={() =>
-                  void operations.preview({
-                    action: 'accept',
-                    itemIds: selected,
-                    issueIds: selectedIssues.map((i) => i.id),
-                  })
-                }
-              >
-                {canAccept
-                  ? 'Accept current values after inspection'
-                  : 'Inspect each selected source to accept values'}
-              </button>
-            ) : (
-              <span className="text-xs text-gray-500">Missing required values must be corrected.</span>
-            )}
-            <button type="button" className={`${reviewButton} inline-flex items-center gap-2`} onClick={skip}>
-              <SkipForward size={14} /> Review later
-            </button>
-          </div>
-        </div>
       </div>
     </section>
   );
@@ -948,7 +990,7 @@ export function ReviewToast({ operations }: { operations: ReviewOperations }) {
 
 export function ViewNavigation({ view, setView }: { view: ReviewView; setView: (view: ReviewView) => void }) {
   return (
-    <nav aria-label="Review views" className="flex gap-2 mb-4 flex-wrap">
+    <nav aria-label="Review views" className="inline-flex gap-1 rounded-lg bg-gray-100 p-0.5">
       {(
         [
           ['overview', 'Overview', FileText],
@@ -960,7 +1002,7 @@ export function ViewNavigation({ view, setView }: { view: ReviewView; setView: (
           key={key}
           type="button"
           aria-current={view === key ? 'page' : undefined}
-          className={`${reviewButton} inline-flex items-center gap-2 ${view === key ? 'bg-slate-100 text-gray-900 font-semibold' : 'bg-white text-gray-500'}`}
+          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-colors ${view === key ? 'bg-white text-[#1B4E8A] font-semibold shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
           onClick={() => setView(key)}
         >
           <Icon size={14} />

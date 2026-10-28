@@ -14,6 +14,8 @@ import {
   ChevronDown,
   ChevronRight,
   ListPlus,
+  RotateCcw,
+  SlidersHorizontal,
   Pencil,
   PenLine,
   Plus,
@@ -56,6 +58,7 @@ import {
   type ReviewView,
 } from './ReviewTools';
 import { useReviewOperations } from '../../features/review/use-review-operations';
+import { reviewSteps } from '../../features/review/task-queue';
 import { filterItems, isReady, reviewPresentation, toggleSelection } from '../../features/review/model';
 
 type ReviewWorkspaceProps = {
@@ -236,6 +239,7 @@ export function ReviewWorkspace({
   const [editingPartner, setEditingPartner] = useState(false);
   const [isSavingPartner, setIsSavingPartner] = useState(false);
   const [partnerDraft, setPartnerDraft] = useState<PartnerDetails | null>(null);
+  const [partnerError, setPartnerError] = useState<string | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(!initialData);
@@ -258,9 +262,7 @@ export function ReviewWorkspace({
   const [showRemoved, setShowRemoved] = useState(false);
   const [showBulkEdit, setShowBulkEdit] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  useEffect(() => {
-    if (editingPartner) setDetailsOpen(true);
-  }, [editingPartner]);
+  const [detailsVisit, setDetailsVisit] = useState(0);
   const refreshReview = (review: ReviewResponse) => {
     setData(review);
     setItems(review.items);
@@ -644,58 +646,51 @@ export function ReviewWorkspace({
     if (partnerDetails && !isSavingPartner) {
       setPartnerDraft({ ...partnerDetails });
       setEditingPartner(true);
+      setPartnerError(null);
     }
   };
 
-  const savePartner = async () => {
-    if (!partnerDraft || isSavingPartner) {
-      return;
-    }
-
+  const savePartner = async (confirmAfter = false) => {
+    const draft = partnerDraft ?? partnerDetails;
+    if (!draft || !partnerDetails || isSavingPartner) return;
     setIsSavingPartner(true);
+    setPartnerError(null);
     try {
-      const updated = requestId
-        ? await updatePartner(requestId, {
-            partner: partnerDraft.partner,
-            region: partnerDraft.region,
-            requestId: partnerDraft.requestId,
-            contact: partnerDraft.contact,
-          })
-        : {
-            ...partnerDraft,
-            confirmed: (['partner', 'region', 'contact'] as const).some(
-              (key) => partnerDraft[key] !== partnerDetails?.[key],
-            )
-              ? false
-              : (partnerDetails?.confirmed ?? false),
-          };
-      setPartnerDetails({
-        ...partnerDraft,
-        ...updated,
-        requestDate: partnerDetails?.requestDate,
-        sourceFile: partnerDetails?.sourceFile,
-      });
+      let updated = partnerDetails;
+      const changed = (['partner', 'region', 'contact'] as const).some(
+        (key) => draft[key] !== partnerDetails[key],
+      );
+      if (changed) {
+        updated = requestId
+          ? await updatePartner(requestId, {
+              partner: draft.partner,
+              region: draft.region,
+              requestId: draft.requestId,
+              contact: draft.contact,
+            })
+          : { ...draft, confirmed: false };
+        // Preserve a successful save even if the subsequent confirmation needs a retry.
+        setPartnerDetails({ ...partnerDetails, ...updated });
+      }
+      if (confirmAfter) {
+        const confirmed = requestId ? await confirmPartner(requestId) : { confirmed: true };
+        updated = { ...updated, ...confirmed };
+        setDetailsOpen(false);
+      }
+      setPartnerDetails({ ...partnerDetails, ...updated });
+      setPartnerDraft(null);
       setEditingPartner(false);
-      setError(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to save partner details');
+      setPartnerError(caught instanceof Error ? caught.message : 'Unable to save request details');
     } finally {
       setIsSavingPartner(false);
     }
   };
 
-  const confirmPartnerDetails = async () => {
-    if (isSavingPartner) return;
-    setIsSavingPartner(true);
-    try {
-      const updated = requestId ? await confirmPartner(requestId) : { confirmed: true };
-      setPartnerDetails((details) => details && { ...details, ...updated });
-      setError(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to confirm partner details');
-    } finally {
-      setIsSavingPartner(false);
-    }
+  const openRequestDetails = () => {
+    setView('guided');
+    setDetailsOpen(true);
+    setDetailsVisit((visit) => visit + 1);
   };
 
   if (isLoading) {
@@ -714,8 +709,128 @@ export function ReviewWorkspace({
     );
   }
 
+  const requestDetailsCard = (
+    <section aria-label="Request details step" className="p-5">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <h2 className="text-lg font-semibold">Review request details</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            All fields are optional. Leave unavailable details empty.
+          </p>
+        </div>
+        {partnerDetails.confirmed && !editingPartner && (
+          <button
+            type="button"
+            disabled={isSavingPartner}
+            aria-label="Edit partner details"
+            onClick={startEditPartner}
+            className={reviewButton}
+          >
+            <Pencil size={12} className="inline mr-1.5" /> Edit
+          </button>
+        )}
+      </div>
+      {partnerError && (
+        <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          {partnerError}
+        </p>
+      )}
+      {editingPartner || !partnerDetails.confirmed ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void savePartner(true);
+          }}
+        >
+          <div className="grid gap-4 sm:grid-cols-3">
+            {(['partner', 'region', 'contact'] as const).map((key) => (
+              <label key={key} className="block text-xs text-gray-500">
+                {partnerLabel(key)} <span className="text-gray-400">(optional)</span>
+                <input
+                  className={`${reviewInput} block w-full mt-1`}
+                  value={(partnerDraft ?? partnerDetails)[key]}
+                  disabled={isSavingPartner}
+                  onChange={(event) => {
+                    setPartnerDraft((draft) => ({
+                      ...(draft ?? partnerDetails),
+                      [key]: event.target.value,
+                      confirmed: false,
+                    }));
+                    setEditingPartner(true);
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-gray-400 mt-4">
+            System request ID: {partnerDetails.requestId || 'Assigned when the first item is added'}
+          </p>
+          <div className="flex flex-wrap justify-end gap-2 mt-5">
+            {editingPartner && (
+              <>
+                <button
+                  type="button"
+                  className={reviewButton}
+                  disabled={isSavingPartner}
+                  onClick={() => {
+                    setEditingPartner(false);
+                    setPartnerDraft(null);
+                    setPartnerError(null);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={reviewButton}
+                  disabled={isSavingPartner}
+                  onClick={() => void savePartner()}
+                >
+                  {isSavingPartner ? 'Saving…' : 'Save'}
+                </button>
+              </>
+            )}
+            <button
+              type="submit"
+              disabled={isSavingPartner}
+              className="px-4 py-2 rounded-lg text-sm bg-[#1B4E8A] text-white disabled:opacity-50"
+            >
+              {isSavingPartner ? 'Saving…' : 'Save & confirm details'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <dl className="grid gap-4 sm:grid-cols-3">
+            {(['partner', 'region', 'contact'] as const).map((key) => (
+              <div key={key}>
+                <dt className="text-xs text-gray-500">{partnerLabel(key)}</dt>
+                <dd className="mt-1 text-sm">{partnerDetails[key] || 'Not specified'}</dd>
+              </div>
+            ))}
+          </dl>
+          <div className="flex items-center justify-between mt-5">
+            <span className="text-xs text-teal-700 flex items-center gap-1.5">
+              <CheckCircle2 size={14} /> Details confirmed
+            </span>
+            <button
+              type="button"
+              className={reviewButton}
+              onClick={() => {
+                setDetailsOpen(false);
+                setView('all');
+              }}
+            >
+              Back to items
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+
   return (
-    <div className="p-6" aria-busy={isReviewingAi}>
+    <div className="p-4 lg:p-5" aria-busy={isReviewingAi}>
       {isReviewingAi &&
         createPortal(
           <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-6">
@@ -741,7 +856,7 @@ export function ReviewWorkspace({
           </div>,
           document.body,
         )}
-      <div className="bg-white rounded-xl border border-gray-200 px-6 py-4 mb-6">
+      <div className="bg-white rounded-xl border border-gray-200 px-3 py-2 mb-3">
         <WorkflowStepper currentStep="review" />
       </div>
 
@@ -757,237 +872,191 @@ export function ReviewWorkspace({
       )}
       <OperationPreview operations={operations} />
       <ReviewToast operations={operations} />
-      {!isManualRequest && (
-        <details className="mb-4 text-xs text-gray-500">
-          <summary className="cursor-pointer">
-            Extraction details
-            {data.parserWarnings?.length ? ` · ${data.parserWarnings.length} notes` : ''}
-          </summary>
-          <div role="status" className="mt-2 space-y-1 rounded-lg border border-gray-200 bg-white p-4">
-            {data.parserWarnings?.some((warning) => !warning.includes('Ignored supplier/admin columns:')) && (
-              <p className="font-medium">Import notes</p>
-            )}
-            {data.parserWarnings?.some((warning) => warning.includes('Ignored supplier/admin columns:')) && (
-              <p className="font-medium">Source column notes</p>
-            )}
-            {(data.parserWarnings ?? []).map((warning, index) => (
-              <p key={index}>{warning}</p>
-            ))}
-            {data.reviewSummary?.status && (
-              <p>
-                {data.reviewSummary.checked ?? 0} rows AI checked · {data.reviewSummary.corrected ?? 0}{' '}
-                corrected · {items.filter((item) => item.status !== 'verified').length} unresolved
-              </p>
-            )}
-            {data.reviewSummary?.message && <p>{data.reviewSummary.message}</p>}
-            {data.reviewSummary?.status !== 'completed' && (
+      <div className="space-y-3">
+        <div className="w-full min-w-0">
+          <header className="mb-3" aria-label="Review header">
+            <div className="flex items-center justify-between gap-3">
+              <h1 className="text-lg font-semibold text-gray-900">
+                {isManualRequest ? 'Build manual request' : 'Review extracted items'}
+              </h1>
+              {!isManualRequest && (
+                <details
+                  className="relative text-xs text-gray-500 shrink-0"
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.currentTarget.open = false;
+                      event.currentTarget.querySelector('summary')?.focus();
+                    }
+                  }}
+                  onBlur={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+                  }}
+                >
+                  <summary className="cursor-pointer py-1">
+                    Extraction details
+                    {data.parserWarnings?.length ? ` · ${data.parserWarnings.length} notes` : ''}
+                  </summary>
+                  <div
+                    role="status"
+                    className="review-fade absolute right-0 top-full mt-2 z-30 w-[min(32rem,85vw)] max-h-[70vh] overflow-auto space-y-1 rounded-xl border border-gray-200 bg-white shadow-lg p-4"
+                  >
+                    {data.parserWarnings?.some(
+                      (warning) => !warning.includes('Ignored supplier/admin columns:'),
+                    ) && <p className="font-medium">Import notes</p>}
+                    {data.parserWarnings?.some((warning) =>
+                      warning.includes('Ignored supplier/admin columns:'),
+                    ) && <p className="font-medium">Source column notes</p>}
+                    {(data.parserWarnings ?? []).map((warning, index) => (
+                      <p key={index}>{warning}</p>
+                    ))}
+                    {data.reviewSummary?.status && (
+                      <p>
+                        {data.reviewSummary.checked ?? 0} rows AI checked ·{' '}
+                        {data.reviewSummary.corrected ?? 0} corrected ·{' '}
+                        {items.filter((item) => item.status !== 'verified').length} unresolved
+                      </p>
+                    )}
+                    {data.reviewSummary?.message && <p>{data.reviewSummary.message}</p>}
+                    {data.reviewSummary?.status !== 'completed' && (
+                      <button
+                        type="button"
+                        className={reviewButton}
+                        disabled={itemMutationPending || !!editingItem}
+                        onClick={() => void runAiReview()}
+                      >
+                        Review with AI
+                      </button>
+                    )}
+                    {sheets.length > 1 && (
+                      <p>
+                        Worksheets:{' '}
+                        {(data.selectedSheets?.length
+                          ? data.selectedSheets
+                          : [data.selectedSheet ?? sheets[0].name]
+                        ).join(', ')}
+                      </p>
+                    )}
+                    <p className="pt-3 text-gray-500">
+                      Additional source attributes can influence matching. Extract another only when needed.
+                    </p>
+                    <div className="border-t border-gray-100 pt-3 mt-3 flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5 text-gray-500 flex-shrink-0">
+                        <ListPlus size={14} />
+                        <span className="text-xs" style={{ fontWeight: 600 }}>
+                          Add column
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        aria-label="Additional attribute"
+                        list="available-columns-suggestions"
+                        placeholder={
+                          availableColumns.length > 0
+                            ? 'Pick a detected column or type your own...'
+                            : 'Type a column name (e.g. Batch Number)...'
+                        }
+                        value={newColumnName}
+                        onChange={(event) => setNewColumnName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            void submitNewColumn();
+                          }
+                        }}
+                        disabled={isAddingColumn || isReviewingAi || itemMutationPending}
+                        className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] disabled:bg-gray-50"
+                      />
+                      <datalist id="available-columns-suggestions">
+                        {availableColumns.map((column) => (
+                          <option key={column} value={column} />
+                        ))}
+                      </datalist>
+                      <button
+                        onClick={() => void submitNewColumn()}
+                        disabled={
+                          !newColumnName.trim() || isAddingColumn || isReviewingAi || itemMutationPending
+                        }
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs flex-shrink-0 transition-colors ${
+                          newColumnName.trim() && !isAddingColumn
+                            ? 'bg-[#1B4E8A] text-white hover:bg-[#163d6d]'
+                            : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                        }`}
+                        style={{ fontWeight: 600 }}
+                      >
+                        <Plus size={12} /> {isAddingColumn ? 'Adding...' : 'Add'}
+                      </button>
+                    </div>
+                  </div>
+                </details>
+              )}
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-xs text-gray-500 min-w-0">
+              {isManualRequest ? (
+                <PenLine size={13} className="shrink-0" />
+              ) : (
+                <FileText size={13} className="shrink-0" />
+              )}
+              <span className="truncate font-medium max-w-[45%]" title={data.source.fileName}>
+                {isManualRequest ? 'Manual request' : data.source.fileName}
+              </span>
+              <span className="shrink-0">
+                · {isManualRequest ? `${items.length} items` : `${data.source.rowsDetected} rows`}
+              </span>
+              <span className="truncate">· {partnerDetails.partner || 'Partner not specified'}</span>
+              {manualCount > 0 && !isManualRequest && (
+                <span className="shrink-0 hidden lg:inline">· {manualCount} added manually</span>
+              )}
+            </div>
+          </header>
+          <div className="flex justify-between items-center gap-2 mb-3" aria-label="Review navigation">
+            <ViewNavigation view={view} setView={setView} />
+            <div className="flex gap-2 shrink-0">
               <button
                 type="button"
-                className={reviewButton}
-                disabled={itemMutationPending || !!editingItem}
-                onClick={() => void runAiReview()}
+                aria-label="Request details"
+                title={partnerDetails.confirmed ? 'Details confirmed' : 'Request details not confirmed'}
+                className="px-2.5 py-1.5 rounded-md border border-gray-200 text-xs hover:bg-gray-50 flex items-center gap-1.5"
+                disabled={isSavingPartner || isReviewingAi}
+                onClick={openRequestDetails}
               >
-                Review with AI
+                {partnerDetails.confirmed ? (
+                  <CheckCircle2 size={13} className="text-teal-600" />
+                ) : (
+                  <Info size={13} className="text-amber-600" />
+                )}{' '}
+                Request details
               </button>
-            )}
-          </div>
-        </details>
-      )}
-
-      <div className="space-y-4">
-        <div className="w-full flex-1 min-w-0">
-          <div className="mb-4">
-            <h1 className="text-gray-900">
-              {isManualRequest ? 'Build Manual Request' : 'Review Extracted Items'}
-            </h1>
-            <p className="text-gray-500 text-sm mt-0.5">
-              {isManualRequest
-                ? 'Add each requested item with a quantity and product type. Manually entered items are treated as verified.'
-                : 'Confirm shared extraction decisions once, then review the remaining exceptions.'}
-            </p>
-          </div>
-
-          {isManualRequest ? (
-            <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 flex items-center gap-2 mb-3">
-              <PenLine size={14} className="text-slate-500 flex-shrink-0" />
-              <span className="text-sm text-slate-700">
-                Source: <span className="font-medium">Manual entry</span>
-              </span>
-              <span className="text-slate-300 mx-1">·</span>
-              <span className="text-sm text-slate-600">{items.length} item(s) added</span>
+              <button
+                type="button"
+                aria-label="Undo last action"
+                className="px-2.5 py-1.5 rounded-md border border-gray-200 text-xs hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1.5"
+                disabled={!operations.lastUndoId || itemMutationPending}
+                onClick={() => void operations.undo()}
+              >
+                <RotateCcw size={13} /> Undo
+              </button>
             </div>
-          ) : (
-            <div className="bg-white border border-gray-200 rounded-lg px-4 py-2.5 flex items-center gap-2 mb-3">
-              <FileText size={14} className="text-gray-400 flex-shrink-0" />
-              <span className="text-sm text-gray-600">
-                Source: <span style={{ fontWeight: 500 }}>{data.source.fileName}</span>
-              </span>
-              <span className="text-gray-300 mx-1">-</span>
-              <span className="text-sm text-gray-500">
-                {data.source.rowsDetected} rows detected
-                {manualCount > 0 && ` · ${manualCount} added manually`} · Partner:{' '}
-                {partnerDetails.partner || '—'}
-              </span>
-              {sheets.length > 1 && (
-                <span className="ml-auto text-sm text-gray-600">
-                  Worksheets:{' '}
-                  {(data.selectedSheets?.length
-                    ? data.selectedSheets
-                    : [data.selectedSheet ?? sheets[0].name]
-                  ).join(', ')}
-                </span>
-              )}
-            </div>
+          </div>
+          {view === 'overview' && (
+            <ReviewOverview
+              data={{ ...data, tasks: reviewSteps(data.tasks ?? [], !partnerDetails.confirmed) }}
+              onStart={() => setView('guided')}
+              onAll={() => setView('all')}
+            />
           )}
-
-          <div hidden={!detailsOpen} className="max-w-lg space-y-4">
-            <div
-              className={`bg-white rounded-xl border p-5 ${partnerDetails.confirmed ? 'border-green-200' : 'border-gray-200'}`}
-            >
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-gray-900 text-sm" style={{ fontWeight: 600 }}>
-                  Request Details
-                </h3>
-                <div className="flex items-center gap-1.5">
-                  {partnerDetails.confirmed && !editingPartner && (
-                    <CheckCircle2 size={14} className="text-green-500" />
-                  )}
-                  {!editingPartner && (
-                    <button
-                      disabled={isSavingPartner}
-                      aria-label="Edit partner details"
-                      onClick={startEditPartner}
-                      className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
-                      title="Edit partner details"
-                    >
-                      <Pencil size={12} />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {editingPartner && partnerDraft ? (
-                <div className="space-y-2.5">
-                  {(['partner', 'region', 'contact'] as const).map((key) => (
-                    <div key={key}>
-                      <div className="text-xs text-gray-400 mb-0.5">{partnerLabel(key)}</div>
-                      <input
-                        className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A]"
-                        value={partnerDraft[key]}
-                        disabled={isSavingPartner}
-                        onChange={(event) =>
-                          setPartnerDraft((draft) => draft && { ...draft, [key]: event.target.value })
-                        }
-                      />
-                    </div>
-                  ))}
-                  <div className="text-xs text-gray-500">
-                    {requestId ? (
-                      <>
-                        System request ID:{' '}
-                        <span className="font-mono text-gray-700">{partnerDetails.requestId}</span>
-                      </>
-                    ) : (
-                      'Request saved when you add the first item.'
-                    )}
-                  </div>
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      disabled={isSavingPartner}
-                      onClick={() => setEditingPartner(false)}
-                      className="flex-1 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-500 hover:bg-gray-50 transition-colors"
-                      style={{ fontWeight: 500 }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      disabled={isSavingPartner}
-                      onClick={() => void savePartner()}
-                      className="flex-1 py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
-                      style={{ fontWeight: 600 }}
-                    >
-                      {isSavingPartner ? 'Saving…' : 'Save'}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="space-y-2.5 mb-4">
-                    {[
-                      { label: 'Partner', value: partnerDetails.partner },
-                      { label: 'Region', value: partnerDetails.region },
-                      {
-                        label: 'Request ID',
-                        value: partnerDetails.requestId || 'Assigned when the first item is added',
-                      },
-                      { label: 'Contact', value: partnerDetails.contact },
-                    ].map((row) => (
-                      <div key={row.label}>
-                        <div className="text-xs text-gray-400">{row.label}</div>
-                        <div className="text-xs text-gray-800" style={{ fontWeight: 500 }}>
-                          {row.value || 'Not specified'}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  {!partnerDetails.confirmed ? (
-                    <button
-                      disabled={isSavingPartner}
-                      onClick={() => void confirmPartnerDetails()}
-                      className="w-full py-1.5 bg-[#1B4E8A] text-white rounded-lg text-xs hover:bg-[#163d6d] transition-colors"
-                      style={{ fontWeight: 600 }}
-                    >
-                      {isSavingPartner ? 'Confirming…' : 'Confirm Details'}
-                    </button>
-                  ) : (
-                    <div
-                      className="flex items-center gap-1.5 text-xs text-green-700"
-                      style={{ fontWeight: 500 }}
-                    >
-                      <CheckCircle2 size={12} /> Details confirmed
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-          {structuredReview && (
-            <>
-              <div className="flex justify-between gap-3 items-start flex-wrap mb-4">
-                {!isManualRequest ? <ViewNavigation view={view} setView={setView} /> : <span />}
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className={reviewButton}
-                    aria-expanded={detailsOpen}
-                    onClick={() => setDetailsOpen(!detailsOpen)}
-                  >
-                    Request details
-                    {partnerDetails.confirmed ? ' · Confirmed' : ''}
-                  </button>
-                  <button
-                    type="button"
-                    className={reviewButton}
-                    disabled={!operations.lastUndoId || itemMutationPending}
-                    onClick={() => void operations.undo()}
-                  >
-                    Undo last action
-                  </button>
-                </div>
-              </div>
-              {view === 'overview' && (
-                <ReviewOverview data={data} onStart={() => setView('guided')} onAll={() => setView('all')} />
-              )}
-              <GuidedReview
-                key={data.requestId}
-                data={data}
-                hidden={view !== 'guided'}
-                operations={operations}
-                onEdit={openEdit}
-                onAll={() => setView('all')}
-              />
-            </>
-          )}
+          <GuidedReview
+            key={data.requestId}
+            data={data}
+            hidden={view !== 'guided'}
+            operations={operations}
+            onEdit={openEdit}
+            onAll={() => setView('all')}
+            requestDetails={{
+              content: requestDetailsCard,
+              confirmed: partnerDetails.confirmed,
+              open: detailsOpen,
+              visit: detailsVisit,
+            }}
+          />
           <div hidden={view !== 'all'}>
             {structuredReview &&
               (data.issues ?? []).some((issue) => issue.scope === 'table' && issue.state === 'open') && (
@@ -1001,79 +1070,107 @@ export function ReviewWorkspace({
                 </div>
               )}
             {structuredReview && (
-              <div className="bg-white border border-gray-200 rounded-xl p-4 mb-3 space-y-3">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h2 className="text-base font-semibold">{showRemoved ? 'Removed items' : 'All items'}</h2>
-                    <p className="text-sm text-gray-500 mt-1">
-                      {showRemoved
-                        ? 'Restore an item to bring it back into review.'
-                        : `${data.reviewCounts?.ready ?? 0} of ${items.length} items ready. AI-checked and human-reviewed items need no further verification.`}
-                    </p>
-                  </div>
-                  {!showRemoved && !!data.tasks?.length && (
-                    <button type="button" className={reviewButton} onClick={() => setView('guided')}>
-                      Resolve {data.tasks.length} {data.tasks.length === 1 ? 'task' : 'tasks'}
-                    </button>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
+              <div className="bg-white border border-gray-200 rounded-xl p-2 mb-2 space-y-2">
+                <div role="search" className="flex items-center gap-2">
                   <input
                     aria-label="Search items"
                     placeholder="Search items…"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className={`${reviewInput} flex-1 min-w-40`}
+                    className={`${reviewInput} py-1.5 flex-1 min-w-0`}
                   />
-                  <select
-                    aria-label="Review state filter"
-                    value={stateFilter}
-                    onChange={(e) => setStateFilter(e.target.value)}
-                    className={reviewInput}
+                  <span
+                    className={`text-xs whitespace-nowrap hidden sm:inline ${data.reviewCounts?.affected ? 'text-amber-700' : 'text-teal-700'}`}
+                    title={`${displayItems.length} ${showRemoved ? 'removed' : 'active'} items shown. Selection applies to filtered rows.`}
                   >
-                    <option value="all">All states</option>
-                    <option value="ready">Ready</option>
-                    <option value="needs">Needs review</option>
-                  </select>
-                  <select
-                    aria-label="Product type filter"
-                    value={typeFilter}
-                    onChange={(e) => setTypeFilter(e.target.value)}
-                    className={reviewInput}
+                    {showRemoved
+                      ? `${displayItems.length} removed`
+                      : `${data.reviewCounts?.ready ?? 0}/${items.length} ready`}
+                  </span>
+                  <details
+                    className="relative shrink-0"
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.currentTarget.open = false;
+                        event.currentTarget.querySelector('summary')?.focus();
+                      }
+                    }}
+                    onBlur={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget))
+                        event.currentTarget.open = false;
+                    }}
                   >
-                    <option value="all">All types</option>
-                    <option value="medicine">Medicine</option>
-                    <option value="equipment">Equipment</option>
-                  </select>
-                  <select
-                    aria-label="Problem category filter"
-                    value={categoryFilter}
-                    onChange={(e) => setCategoryFilter(e.target.value)}
-                    className={reviewInput}
-                  >
-                    <option value="all">All problems</option>
-                    {[
-                      ...new Set(
-                        (data.issues ?? []).filter((i) => i.state === 'open').map((i) => i.category),
-                      ),
-                    ].map((category) => (
-                      <option key={category} value={category}>
-                        {problemLabels[category] ?? category}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    className={reviewButton}
-                    aria-pressed={showRemoved}
-                    onClick={() => setShowRemoved(!showRemoved)}
-                  >
-                    {showRemoved ? 'Active items' : `Removed items (${data.reviewCounts?.removed ?? 0})`}
-                  </button>
-                </div>
-                <div className="text-xs text-gray-500">
-                  {displayItems.length} {showRemoved ? 'removed' : 'active'} items shown · Selection applies
-                  to these filtered rows.
+                    <summary className="list-none cursor-pointer px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs flex items-center gap-1.5 hover:bg-gray-50">
+                      <SlidersHorizontal size={13} /> Filters
+                      {[stateFilter, typeFilter, categoryFilter].some((filter) => filter !== 'all') &&
+                        ` (${[stateFilter, typeFilter, categoryFilter].filter((filter) => filter !== 'all').length})`}
+                    </summary>
+                    <div
+                      className="review-fade absolute right-0 top-full mt-2 z-20 w-64 bg-white border border-gray-200 rounded-xl shadow-lg p-3 space-y-2"
+                      aria-label="Item filters"
+                    >
+                      <select
+                        aria-label="Review state filter"
+                        value={stateFilter}
+                        onChange={(e) => setStateFilter(e.target.value)}
+                        className={`${reviewInput} w-full`}
+                      >
+                        <option value="all">All states</option>
+                        <option value="ready">Ready</option>
+                        <option value="needs">Needs review</option>
+                      </select>
+                      <select
+                        aria-label="Product type filter"
+                        value={typeFilter}
+                        onChange={(e) => setTypeFilter(e.target.value)}
+                        className={`${reviewInput} w-full`}
+                      >
+                        <option value="all">All types</option>
+                        <option value="medicine">Medicine</option>
+                        <option value="equipment">Equipment</option>
+                      </select>
+                      <select
+                        aria-label="Problem category filter"
+                        value={categoryFilter}
+                        onChange={(e) => setCategoryFilter(e.target.value)}
+                        className={`${reviewInput} w-full`}
+                      >
+                        <option value="all">All problems</option>
+                        {[
+                          ...new Set(
+                            (data.issues ?? []).filter((i) => i.state === 'open').map((i) => i.category),
+                          ),
+                        ].map((category) => (
+                          <option key={category} value={category}>
+                            {problemLabels[category] ?? category}
+                          </option>
+                        ))}
+                      </select>
+                      {[stateFilter, typeFilter, categoryFilter].some((filter) => filter !== 'all') && (
+                        <button
+                          type="button"
+                          className="text-xs text-[#1B4E8A]"
+                          onClick={() => {
+                            setStateFilter('all');
+                            setTypeFilter('all');
+                            setCategoryFilter('all');
+                          }}
+                        >
+                          Clear filters
+                        </button>
+                      )}
+                    </div>
+                  </details>
+                  {(showRemoved || (data.reviewCounts?.removed ?? 0) > 0) && (
+                    <button
+                      type="button"
+                      className="shrink-0 px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs hover:bg-gray-50"
+                      aria-pressed={showRemoved}
+                      onClick={() => setShowRemoved(!showRemoved)}
+                    >
+                      {showRemoved ? 'Active items' : `Removed items (${data.reviewCounts?.removed ?? 0})`}
+                    </button>
+                  )}
                 </div>
                 {selectedItems.length > 0 && (
                   <div
@@ -1162,57 +1259,12 @@ export function ReviewWorkspace({
                 />
               </div>
             )}
-            {!isManualRequest && (
-              <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-3 flex items-center gap-3 flex-wrap">
-                <div className="flex items-center gap-1.5 text-gray-500 flex-shrink-0">
-                  <ListPlus size={14} />
-                  <span className="text-xs" style={{ fontWeight: 600 }}>
-                    Add column
-                  </span>
-                </div>
-                <input
-                  type="text"
-                  list="available-columns-suggestions"
-                  placeholder={
-                    availableColumns.length > 0
-                      ? 'Pick a detected column or type your own...'
-                      : 'Type a column name (e.g. Batch Number)...'
-                  }
-                  value={newColumnName}
-                  onChange={(event) => setNewColumnName(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      void submitNewColumn();
-                    }
-                  }}
-                  disabled={isAddingColumn || isReviewingAi || itemMutationPending}
-                  className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#1B4E8A]/20 focus:border-[#1B4E8A] disabled:bg-gray-50"
-                />
-                <datalist id="available-columns-suggestions">
-                  {availableColumns.map((column) => (
-                    <option key={column} value={column} />
-                  ))}
-                </datalist>
-                <button
-                  onClick={() => void submitNewColumn()}
-                  disabled={!newColumnName.trim() || isAddingColumn || isReviewingAi || itemMutationPending}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs flex-shrink-0 transition-colors ${
-                    newColumnName.trim() && !isAddingColumn
-                      ? 'bg-[#1B4E8A] text-white hover:bg-[#163d6d]'
-                      : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                  }`}
-                  style={{ fontWeight: 600 }}
-                >
-                  <Plus size={12} /> {isAddingColumn ? 'Adding...' : 'Add'}
-                </button>
-              </div>
-            )}
 
             <div
               role="region"
               aria-label="Request items table"
               tabIndex={0}
-              className="bg-white rounded-xl border border-gray-200 max-w-full max-h-[min(65vh,42rem)] overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"
+              className="review-items-table bg-white rounded-xl border border-gray-200 max-w-full overflow-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-[#1B4E8A]"
             >
               <table className="w-full">
                 <thead>
