@@ -245,6 +245,9 @@ def match_column_role(header_text: str) -> str | None:
         return "item_number"
     if normalized in {"original request text", "request text", "requested product", "requested item"}:
         return "name"
+    # Translation labels take precedence over generic description keywords.
+    if any(normalize(keyword) in normalized for keyword in TRANSLATION_KEYWORDS):
+        return "translation"
     # Description headers often include "technical specifications" as a qualifier.
     if any(token in normalized for token in ("item description", "product description")):
         return "name"
