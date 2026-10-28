@@ -90,6 +90,9 @@ export type ExtractedItem = {
 };
 
 export type ReviewIssue = {
+  scope?: 'table'; itemIds?: number[]; worksheet?: string;
+  columns?: { index: number; key: string; label: string; role: string }[];
+  sampleRows?: { itemId: number; name: string; quantity: number | null; row: number | null; cells: Record<string, string> }[];
   id: string; itemId: number | null; code: string; category: string; fields: string[];
   message: string; state: 'open' | 'accepted'; canAccept: boolean; evidence?: string;
   requestedTotal?: number | null; packs?: number | null; unitsPerPack?: number | null;
@@ -110,6 +113,7 @@ export type ReviewOperation = {
 };
 
 export type ReviewPreview = {
+  tableDecision?: { worksheet: string | null; affectedItems: number; columns: { label: string; role: string }[] } | null;
   eligibleItemIds: number[]; blockers: { itemId: number; message: string }[];
   changes: { itemId: number; name: string; fields: Record<string, { before: unknown; after: unknown }> }[];
 };
@@ -133,6 +137,7 @@ export type ImportProgress = {
 };
 
 export type ReviewResponse = {
+  lastUndoOperationId?: string | null;
   reviewRevision?: number | null;
   issues?: ReviewIssue[];
   tasks?: ReviewTask[];

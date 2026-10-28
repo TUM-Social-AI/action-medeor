@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -39,7 +39,7 @@ from app.api.schemas import (
     WorksheetSelection,
 )
 from app.db import repository
-from app.db.models import ImportProgressRow
+from app.db.models import ImportProgressRow, ImportRequestRow, RequestReviewOperationRow
 from app.db.repository import RawFileUnavailable
 from app.db.session import get_session
 from app.matching.api import get_matching_service
@@ -279,10 +279,27 @@ async def review(request_id: str, session: AsyncSession = Depends(get_session)) 
     request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         await repository.suggest_missing_item_domains(session, request)
-        return repository.to_review_response(request)
+        return await review_response_with_history(session, request)
 
     require_mock_request(request_id)
     return fixtures.review_response()
+
+
+async def review_response_with_history(
+    session: AsyncSession, request: ImportRequestRow
+) -> ReviewResponse:
+    result = await session.execute(
+        select(RequestReviewOperationRow)
+        .where(RequestReviewOperationRow.request_id == request.request_id)
+        .order_by(RequestReviewOperationRow.created_at.desc(), RequestReviewOperationRow.id.desc())
+        .limit(1)
+    )
+    latest = result.scalar_one_or_none()
+    response = repository.to_review_response(request)
+    response.lastUndoOperationId = (
+        latest.id if latest and review_service.undo_available(request, latest) else None
+    )
+    return response
 
 
 @router.post("/requests/{request_id}/items", status_code=201)
@@ -342,7 +359,7 @@ async def apply_review_operation(
         raise HTTPException(404, "Request not found")
     actor = http_request.headers.get("x-ms-client-principal-id") or "local"
     record = await review_service.apply(session, request, payload, actor)
-    return {"review": repository.to_review_response(request), "operationId": record.id}
+    return {"review": await review_response_with_history(session, request), "operationId": record.id}
 
 
 @router.post("/requests/{request_id}/review/operations/{operation_id}/undo")
@@ -355,7 +372,7 @@ async def undo_review_operation(
         raise HTTPException(404, "Request not found")
     actor = http_request.headers.get("x-ms-client-principal-id") or "local"
     record = await review_service.undo(session, request, operation_id, payload, actor)
-    return {"review": repository.to_review_response(request), "operationId": record.id}
+    return {"review": await review_response_with_history(session, request), "operationId": record.id}
 
 
 @router.patch("/requests/{request_id}/items/{item_id}")

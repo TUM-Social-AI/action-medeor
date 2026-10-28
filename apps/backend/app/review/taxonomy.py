@@ -13,6 +13,7 @@ CATEGORIES = {
     "name_required": "description",
     "name_unclear": "description",
     "mapping_uncertain": "source",
+    "non_item_row": "source",
     "coverage_uncertain": "source",
     "low_confidence": "other",
     "confirmation_required": "other",

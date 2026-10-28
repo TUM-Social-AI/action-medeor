@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, CheckCircle2, FileText, ListChecks, SkipForward, X } from 'lucide-react';
 import type { ExtractedItem, ItemUpdate, ReviewResponse } from '../../api/types';
+import { nextTask, deferTask, taskHistory, type TaskProgress } from '../../features/review/task-queue';
+import { TaskTimeline } from './TaskTimeline';
 import type { ReviewOperations } from '../../features/review/use-review-operations';
 
 export const reviewInput =
@@ -215,16 +217,17 @@ export function ReviewOverview({
   );
 }
 
-function readProgress(requestId: string): { current: string | null; deferred: string[] } {
+function readProgress(requestId: string): TaskProgress {
   try {
     return (
-      JSON.parse(sessionStorage.getItem(`review-progress:${requestId}`) ?? 'null') ?? {
+      JSON.parse(sessionStorage.getItem(`review-progress:v2:${requestId}`) ?? 'null') ?? {
         current: null,
         deferred: [],
+        history: [],
       }
     );
   } catch {
-    return { current: null, deferred: [] };
+    return { current: null, deferred: [], history: [] };
   }
 }
 
@@ -241,31 +244,108 @@ export function GuidedReview({
   onEdit: (item: ExtractedItem) => void;
   onAll: () => void;
 }) {
-  const [progress, setProgress] = useState(() => readProgress(data.requestId));
+  const [progress, setProgress] = useState(() => {
+    const saved = readProgress(data.requestId);
+    return { ...saved, history: taskHistory(saved.history, data.tasks ?? []) };
+  });
   const [drafts, setDrafts] = useState<
-    Record<string, { value: string; selected: number[]; inspected: number[] }>
+    Record<string, { value: string; selected: number[]; inspected: number[]; groupInspected?: boolean }>
   >({});
   const tasks = data.tasks ?? [];
-  const task =
-    tasks.find((t) => t.id === progress.current) ??
-    tasks.find((t) => !progress.deferred.includes(t.id)) ??
-    tasks[0];
+  const target = nextTask(tasks, progress);
+  const history = taskHistory(progress.history, tasks);
+  const [display, setDisplay] = useState<{ task: typeof target; data: ReviewResponse }>({
+    task: target,
+    data,
+  });
+  const displayId = useRef(target?.id);
+  const [phase, setPhase] = useState<'in' | 'out' | 'idle'>('in');
   useEffect(() => {
     try {
-      sessionStorage.setItem(`review-progress:${data.requestId}`, JSON.stringify(progress));
+      sessionStorage.setItem(
+        `review-progress:v2:${data.requestId}`,
+        JSON.stringify({ ...progress, history }),
+      );
     } catch {
       /* private browsing */
     }
-  }, [progress, data.requestId]);
+  }, [progress, data]);
+  useEffect(() => {
+    const reduced =
+      typeof window === 'undefined' ||
+      !window.matchMedia ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (displayId.current === target?.id || hidden || reduced) {
+      displayId.current = target?.id;
+      setDisplay({ task: target, data });
+      setPhase('idle');
+      return;
+    }
+    setPhase('out');
+    const leave = setTimeout(() => {
+      displayId.current = target?.id;
+      setDisplay({ task: target, data });
+      setPhase('in');
+    }, 200);
+    const enter = setTimeout(() => setPhase('idle'), 440);
+    return () => {
+      clearTimeout(leave);
+      clearTimeout(enter);
+    };
+  }, [target?.id, data, hidden]);
+  const task = display.task;
+  const taskData = display.data;
+  const timeline = (
+    <TaskTimeline
+      history={history}
+      tasks={tasks}
+      current={target?.id ?? null}
+      deferred={progress.deferred}
+      onSelect={(id) => setProgress((p) => ({ ...p, history, current: id }))}
+    />
+  );
+  const skip = () => {
+    if (task) setProgress((p) => deferTask(tasks, { ...p, history }, task.id));
+  };
   if (!task)
     return (
-      <section hidden={hidden} className="rounded-xl border border-gray-200 bg-white p-8 mb-4 text-center">
-        <CheckCircle2 className="mx-auto text-[#0E9E8F] mb-3" size={28} />
-        <h2>All review tasks resolved</h2>
-        <p className="text-sm text-gray-500 mt-2 mb-5">Check the complete list before starting matching.</p>
-        <button type="button" onClick={onAll} className={primary}>
-          Review all items
-        </button>
+      <section
+        hidden={hidden}
+        className="grid grid-cols-1 lg:grid-cols-[15rem_minmax(0,1fr)] gap-5 mb-4"
+        aria-label="Guided review"
+      >
+        {timeline}
+        <div className="bg-white border border-gray-200 rounded-xl p-8 text-center review-task-in">
+          {tasks.length ? (
+            <>
+              <SkipForward size={28} className="mx-auto text-amber-500 mb-3" />
+              <h2>Remaining tasks are set aside</h2>
+              <p className="text-sm text-gray-500 mt-2 mb-5">
+                {tasks.length} skipped tasks are still open. Nothing has been marked as resolved.
+              </p>
+              <button
+                type="button"
+                className={primary}
+                onClick={() =>
+                  setProgress((p) => ({ ...p, history, current: tasks[0]?.id ?? null, deferred: [] }))
+                }
+              >
+                Review skipped tasks
+              </button>
+            </>
+          ) : (
+            <>
+              <CheckCircle2 size={28} className="mx-auto text-[#0E9E8F] mb-3" />
+              <h2>All review tasks resolved</h2>
+              <p className="text-sm text-gray-500 mt-2 mb-5">
+                Check the complete list before starting matching.
+              </p>
+            </>
+          )}
+          <button type="button" className={`${reviewButton} ml-3`} onClick={onAll}>
+            Review all items
+          </button>
+        </div>
       </section>
     );
   const draft = drafts[task.id] ?? {
@@ -276,11 +356,13 @@ export function GuidedReview({
   const update = (patch: Partial<typeof draft>) =>
     setDrafts((previous) => ({ ...previous, [task.id]: { ...draft, ...patch } }));
   const selected = draft.selected.filter((id) => task.itemIds.includes(id));
-  const members = data.items.filter((item) => task.itemIds.includes(item.id));
-  const issues = (data.issues ?? []).filter((issue) => task.issueIds.includes(issue.id));
+  const members = taskData.items.filter((item) => task.itemIds.includes(item.id));
+  const issues = (taskData.issues ?? []).filter((issue) => task.issueIds.includes(issue.id));
   const selectedIssues = issues.filter((i) => i.itemId === null || selected.includes(i.itemId));
   const canAccept =
-    task.canAccept && selectedIssues.every((i) => i.itemId === null || draft.inspected.includes(i.itemId));
+    task.canAccept &&
+    (!!draft.groupInspected ||
+      selectedIssues.every((i) => i.itemId === null || draft.inspected.includes(i.itemId)));
   const field =
     task.category === 'type'
       ? 'domain'
@@ -298,29 +380,16 @@ export function GuidedReview({
     });
   };
   return (
-    <section hidden={hidden} aria-label="Guided review" className="mb-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <span className="text-sm text-gray-500">
-          {tasks.length} tasks remaining · {data.reviewCounts?.affected ?? 0} items need attention
-        </span>
-        <select
-          aria-label="Review task"
-          className={reviewInput}
-          value={task.id}
-          onChange={(e) => setProgress((p) => ({ ...p, current: e.target.value }))}
-        >
-          {tasks.map((t) => (
-            <option key={t.id} value={t.id}>
-              {progress.deferred.includes(t.id) ? 'Later · ' : ''}
-              {t.title}
-              {t.suggestedValue ? ` · ${t.suggestedValue}` : ''} ({t.itemIds.length || 'document'})
-            </option>
-          ))}
-        </select>
-      </div>
+    <section
+      hidden={hidden}
+      aria-label="Guided review"
+      className="grid grid-cols-1 lg:grid-cols-[15rem_minmax(0,1fr)] gap-5 mb-4"
+    >
+      {timeline}
       <div
         key={task.id}
-        className="review-task-in bg-white border border-gray-200 rounded-xl overflow-hidden"
+        className={`${phase === 'out' ? 'review-task-out' : phase === 'in' ? 'review-task-in' : ''} bg-white border border-gray-200 rounded-xl overflow-hidden`}
+        style={{ pointerEvents: phase === 'out' ? 'none' : undefined }}
       >
         <div className="p-5 border-b border-gray-200">
           <h2 className="text-lg">
@@ -328,102 +397,165 @@ export function GuidedReview({
             {task.suggestedValue ? ` · ${task.suggestedValue}` : ''}
           </h2>
           <p className="text-sm text-gray-500 mt-1">
-            {issues[0]?.message} Resolve this problem for selected items, or edit exceptions individually.
+            {issues[0]?.message}
+            {issues[0]?.scope !== 'table' && task.code !== 'non_item_row'
+              ? ' Resolve this problem for selected items, or edit exceptions individually.'
+              : ''}
           </p>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-gray-500">
-              <tr>
-                <th className="p-3 w-10">
-                  <ReviewCheckbox
-                    label="Select all task items"
-                    checked={selected.length === members.length && !!members.length}
-                    mixed={!!selected.length && selected.length < members.length}
-                    onChange={(checked) => update({ selected: checked ? task.itemIds : [] })}
-                  />
-                </th>
-                <th className="p-3 text-left">Item</th>
-                <th className="p-3 text-left">Current value</th>
-                <th className="p-3 text-left">Source evidence</th>
-                <th className="p-3" />
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((item) => {
-                const issue = issues.find((i) => i.itemId === item.id);
-                const reference = data.sourceReferences.find((r) => r.itemId === item.id);
-                return (
-                  <tr key={item.id} className="border-t border-gray-100">
-                    <td className="p-3">
-                      <ReviewCheckbox
-                        label={`Select ${item.name}`}
-                        checked={selected.includes(item.id)}
-                        onChange={(checked) =>
-                          update({
-                            selected: checked
-                              ? [...selected, item.id]
-                              : selected.filter((id) => id !== item.id),
-                          })
-                        }
-                      />
-                    </td>
-                    <td className="p-3 min-w-44 font-medium">{item.name}</td>
-                    <td className="p-3">
-                      {task.category === 'type'
-                        ? (item.domain ?? 'Not chosen')
-                        : task.category === 'unit'
-                          ? item.unit || '—'
-                          : (item.quantity ?? 'Missing')}
-                      {task.category === 'totals' && (
-                        <div className="text-xs text-gray-500 mt-1">
-                          Requested: {issue?.requestedTotal ?? '—'}
-                          <br />
-                          {issue?.packs ?? '—'} × {issue?.unitsPerPack ?? '—'} ={' '}
-                          {issue?.calculatedTotal ?? '—'}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-3 min-w-48 max-w-sm">
-                      <details
-                        onToggle={(e) => {
-                          if (e.currentTarget.open && !draft.inspected.includes(item.id))
-                            update({ inspected: [...draft.inspected, item.id] });
-                        }}
-                      >
-                        <summary className="cursor-pointer text-[#1B4E8A]">
-                          Inspect source · row {reference?.row ?? '—'}
-                        </summary>
-                        <p className="mt-2 p-3 rounded-lg bg-amber-50 text-xs text-amber-900 whitespace-pre-wrap">
-                          {reference?.excerpt ??
-                            issue?.evidence ??
-                            'No source reference available. Check the original document.'}
-                        </p>
-                      </details>
-                    </td>
-                    <td className="p-3">
-                      <button
-                        type="button"
-                        className={reviewButton}
-                        disabled={operations.busy}
-                        onClick={() => onEdit(item)}
-                      >
-                        Edit individually
-                      </button>
-                    </td>
+        {issues[0]?.scope === 'table' ? (
+          <div className="p-5 space-y-4">
+            <p className="text-sm text-gray-600">
+              These columns apply to <strong>{task.itemIds.length} items</strong>
+              {issues[0].worksheet ? ` in ${issues[0].worksheet}` : ''}. Confirm this once; individual rows do
+              not need separate column checks.
+            </p>
+            <div className="grid sm:grid-cols-2 gap-2">
+              {issues[0].columns
+                ?.filter((column) => column.role !== 'attribute')
+                .map((column) => (
+                  <div key={column.key} className="rounded-lg border border-gray-200 px-3 py-2">
+                    <span className="block text-xs text-gray-500">
+                      Column {column.index} · {column.label}
+                    </span>
+                    <span className="block text-sm font-semibold mt-1">
+                      {fieldLabels[column.role] ?? column.role.replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                ))}
+            </div>
+            <div className="border border-gray-200 rounded-lg overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-gray-500">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Source row</th>
+                    <th className="px-3 py-2 text-left">Copied product</th>
+                    <th className="px-3 py-2 text-right">Requested quantity</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {issues[0].sampleRows?.map((row) => (
+                    <tr key={row.itemId} className="border-t border-gray-100">
+                      <td className="px-3 py-2 text-gray-500">{row.row ?? '—'}</td>
+                      <td className="px-3 py-2">{row.name}</td>
+                      <td className="px-3 py-2 text-right">{row.quantity ?? 'Missing'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-gray-500">
+              Supplier quote columns are excluded. Confirming the layout preserves all item values and
+              individual corrections.
+            </p>
+            <button
+              type="button"
+              className={primary}
+              disabled={operations.busy}
+              onClick={() =>
+                void operations.preview({ action: 'accept', itemIds: [], issueIds: task.issueIds })
+              }
+            >
+              Confirm columns for {task.itemIds.length} items
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-gray-500">
+                  <tr>
+                    <th className="p-3 w-10">
+                      <ReviewCheckbox
+                        label="Select all task items"
+                        checked={selected.length === members.length && !!members.length}
+                        mixed={!!selected.length && selected.length < members.length}
+                        onChange={(checked) => update({ selected: checked ? task.itemIds : [] })}
+                      />
+                    </th>
+                    <th className="p-3 text-left">Item</th>
+                    <th className="p-3 text-left">Current value</th>
+                    <th className="p-3 text-left">Source evidence</th>
+                    <th className="p-3" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {members.map((item) => {
+                    const issue = issues.find((i) => i.itemId === item.id);
+                    const reference = taskData.sourceReferences.find((r) => r.itemId === item.id);
+                    return (
+                      <tr key={item.id} className="border-t border-gray-100">
+                        <td className="p-3">
+                          <ReviewCheckbox
+                            label={`Select ${item.name}`}
+                            checked={selected.includes(item.id)}
+                            onChange={(checked) =>
+                              update({
+                                selected: checked
+                                  ? [...selected, item.id]
+                                  : selected.filter((id) => id !== item.id),
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="p-3 min-w-44 font-medium">{item.name}</td>
+                        <td className="p-3">
+                          {task.category === 'type'
+                            ? (item.domain ?? 'Not chosen')
+                            : task.category === 'unit'
+                              ? item.unit || '—'
+                              : (item.quantity ?? 'Missing')}
+                          {task.category === 'totals' && (
+                            <div className="text-xs text-gray-500 mt-1">
+                              Requested: {issue?.requestedTotal ?? '—'}
+                              <br />
+                              {issue?.packs ?? '—'} × {issue?.unitsPerPack ?? '—'} ={' '}
+                              {issue?.calculatedTotal ?? '—'}
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-3 min-w-48 max-w-sm">
+                          <details
+                            onToggle={(e) => {
+                              if (e.currentTarget.open && !draft.inspected.includes(item.id))
+                                update({ inspected: [...draft.inspected, item.id] });
+                            }}
+                          >
+                            <summary className="cursor-pointer text-[#1B4E8A]">
+                              Inspect source · row {reference?.row ?? '—'}
+                            </summary>
+                            <p className="mt-2 p-3 rounded-lg bg-amber-50 text-xs text-amber-900 whitespace-pre-wrap">
+                              {reference?.excerpt ??
+                                issue?.evidence ??
+                                'No source reference available. Check the original document.'}
+                            </p>
+                          </details>
+                        </td>
+                        <td className="p-3">
+                          <button
+                            type="button"
+                            className={reviewButton}
+                            disabled={operations.busy}
+                            onClick={() => onEdit(item)}
+                          >
+                            Edit individually
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
         {!members.length && (
           <p className="p-5 text-sm text-gray-600">
             {issues[0]?.evidence} Inspect the original document and add missed items from the full table.
           </p>
         )}
         <div className="p-5 border-t border-gray-200 space-y-3">
-          {field && (
+          {field && issues[0]?.scope !== 'table' && (
             <div className="flex flex-wrap items-center gap-3">
               <label className="text-sm text-gray-600" htmlFor={`task-value-${task.id}`}>
                 {task.category === 'totals' ? 'Or set an explicit quantity' : 'Set for selected items'}
@@ -492,8 +624,29 @@ export function GuidedReview({
               ))}
             </div>
           )}
+          {task.canAccept && issues[0]?.scope !== 'table' && (
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <ReviewCheckbox
+                label="I reviewed these items against the source"
+                checked={!!draft.groupInspected}
+                onChange={(checked) => update({ groupInspected: checked })}
+              />
+              I reviewed the selected items against the source
+            </label>
+          )}
           <div className="flex justify-between items-center gap-3 flex-wrap">
-            {task.canAccept ? (
+            {issues[0]?.scope === 'table' ? (
+              <span className="text-xs text-gray-500">One decision for this source table</span>
+            ) : task.code === 'non_item_row' ? (
+              <button
+                type="button"
+                className={primary}
+                disabled={operations.busy}
+                onClick={() => void operations.preview({ action: 'remove', itemIds: task.itemIds })}
+              >
+                Remove {task.itemIds.length} repeated header {task.itemIds.length === 1 ? 'row' : 'rows'}
+              </button>
+            ) : task.canAccept ? (
               <button
                 type="button"
                 className={reviewButton}
@@ -513,19 +666,7 @@ export function GuidedReview({
             ) : (
               <span className="text-xs text-gray-500">Missing required values must be corrected.</span>
             )}
-            <button
-              type="button"
-              className={`${reviewButton} inline-flex items-center gap-2`}
-              onClick={() =>
-                setProgress((p) => ({
-                  current:
-                    tasks.find((t) => t.id !== task.id && !p.deferred.includes(t.id))?.id ??
-                    tasks.find((t) => t.id !== task.id)?.id ??
-                    task.id,
-                  deferred: [...new Set([...p.deferred, task.id])],
-                }))
-              }
-            >
+            <button type="button" className={`${reviewButton} inline-flex items-center gap-2`} onClick={skip}>
               <SkipForward size={14} /> Review later
             </button>
           </div>
@@ -541,7 +682,13 @@ export function OperationPreview({ operations }: { operations: ReviewOperations 
   const { preview, operation } = pending;
   return (
     <ReviewDialog
-      title={operation.action === 'remove' ? `Remove ${operation.itemIds.length} items?` : 'Review changes'}
+      title={
+        preview.tableDecision
+          ? 'Confirm source columns'
+          : operation.action === 'remove'
+            ? `Remove ${operation.itemIds.length} items?`
+            : 'Review changes'
+      }
       busy={operations.busy}
       onClose={() => operations.setPending(null)}
     >
@@ -555,7 +702,26 @@ export function OperationPreview({ operations }: { operations: ReviewOperations 
           These items will be removed from this request. You can restore them from Removed items.
         </p>
       )}
-      {operation.action === 'accept' && (
+      {preview.tableDecision && (
+        <div className="mb-4">
+          <p className="text-sm text-gray-600 mb-3">
+            Confirm these source columns for {preview.tableDecision.affectedItems} items
+            {preview.tableDecision.worksheet ? ` in ${preview.tableDecision.worksheet}` : ''}. Existing item
+            values stay unchanged.
+          </p>
+          <ul className="space-y-2 text-sm">
+            {preview.tableDecision.columns
+              .filter((column) => column.role !== 'attribute')
+              .map((column) => (
+                <li key={column.label}>
+                  <span className="font-medium">{fieldLabels[column.role] ?? column.role}</span>:{' '}
+                  {column.label}
+                </li>
+              ))}
+          </ul>
+        </div>
+      )}
+      {operation.action === 'accept' && !preview.tableDecision && (
         <p className="text-sm text-gray-600 mb-4">
           Record your decision to keep these values after inspecting the source. Other problems remain open.
         </p>

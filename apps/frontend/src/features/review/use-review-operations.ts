@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   applyReviewOperation,
   getReview,
@@ -19,7 +19,16 @@ export function useReviewOperations(
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<{ operation: ReviewOperation; preview: ReviewPreview } | null>(null);
   const [toast, setToast] = useState<{ message: string; operationId: string | null } | null>(null);
+  const [lastUndoId, setLastUndoId] = useState<string | null>(data?.lastUndoOperationId ?? null);
   const inFlight = useRef(false);
+  useEffect(() => {
+    setLastUndoId(data?.lastUndoOperationId ?? null);
+  }, [data?.lastUndoOperationId, requestId]);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   const recover = async (caught: unknown) => {
     setError(caught instanceof Error ? caught.message : 'Unable to save. Please try again.');
@@ -59,6 +68,7 @@ export function useReviewOperations(
     try {
       const result = await applyReviewOperation(requestId, pending.operation);
       refresh(result.review);
+      setLastUndoId(result.operationId);
       setPending(null);
       const label = {
         edit: 'Updated',
@@ -68,8 +78,16 @@ export function useReviewOperations(
         remove: 'Removed',
         restore: 'Restored',
       }[pending.operation.action];
+      const mapping =
+        pending.operation.action === 'accept'
+          ? data?.issues?.find(
+              (issue) => issue.scope === 'table' && pending.operation.issueIds?.includes(issue.id),
+            )
+          : null;
       setToast({
-        message: `${label} ${pending.operation.itemIds.length || 'document'}${pending.operation.itemIds.length ? ' items' : ''}`,
+        message: mapping
+          ? `Confirmed columns for ${mapping.itemIds?.length ?? 0} items`
+          : `${label} ${pending.operation.itemIds.length || 'document'}${pending.operation.itemIds.length ? (pending.operation.itemIds.length === 1 ? ' item' : ' items') : ''}`,
         operationId: result.operationId,
       });
       return true;
@@ -82,13 +100,14 @@ export function useReviewOperations(
     }
   };
   const undo = async () => {
-    if (!requestId || !toast?.operationId || !data || inFlight.current) return;
+    if (!requestId || !lastUndoId || !data || inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
-      const result = await undoReviewOperation(requestId, toast.operationId, data.reviewRevision ?? 0);
+      const result = await undoReviewOperation(requestId, lastUndoId, data.reviewRevision ?? 0);
       refresh(result.review);
+      setLastUndoId(null);
       setToast({ message: 'Operation undone', operationId: null });
     } catch (caught) {
       await recover(caught);
@@ -97,7 +116,7 @@ export function useReviewOperations(
       setBusy(false);
     }
   };
-  return { busy, error, setError, pending, setPending, preview, apply, undo, toast, setToast };
+  return { busy, error, setError, pending, setPending, preview, apply, undo, toast, setToast, lastUndoId };
 }
 
 export type ReviewOperations = ReturnType<typeof useReviewOperations>;

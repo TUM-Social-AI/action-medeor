@@ -230,3 +230,69 @@ def test_document_coverage_requires_explicit_reconciliation_after_manual_additio
     ]
     result = project(request)
     assert any(i["itemId"] is None and i["state"] == "open" for i in result["issues"])
+
+
+def test_mapping_is_one_table_decision_and_suppresses_derivative_row_confidence():
+    request = review_fixture()
+    for item in request.items:
+        request.ai_review["sources"][str(item.id)]["mappingUncertain"] = True
+        item.confidence = 60
+        item.review_findings.append(
+            {
+                "code": "low_confidence",
+                "fields": [],
+                "message": "AI confidence is low; check the source",
+                "origin": "rules",
+            }
+        )
+    result = synchronize(request)
+    mapping = [issue for issue in result["issues"] if issue["code"] == "mapping_uncertain"]
+    assert len(mapping) == 1
+    assert mapping[0]["itemId"] is None
+    assert len(mapping[0]["itemIds"]) == 48
+    assert len(mapping[0]["sampleRows"]) == 5
+    assert not any(i["code"] == "low_confidence" for i in result["issues"])
+    confirmed, _, _, _ = evaluate(
+        request, operation(request, "accept", [], issueIds=[mapping[0]["id"]])
+    )
+    assert project(confirmed)["reviewCounts"]["ready"] == 32
+    assert project(confirmed)["reviewCounts"]["issues"] == 17
+
+
+def test_structured_type_findings_are_not_duplicated_as_legacy_other_issues():
+    request = review_fixture()
+    item = request.items[0]
+    message = "The therapeutic milk category needs a human decision"
+    item.review_findings = [
+        {"code": "type_required", "fields": ["domain"], "message": message, "origin": "ai"}
+    ]
+    item.review_reasons = [message]
+    assert not any(
+        i["category"] == "other" and i["itemId"] == item.id for i in project(request)["issues"]
+    )
+
+
+def test_repeated_header_is_one_removal_task_not_missing_product_fields():
+    request = review_fixture()
+    source = request.ai_review["sources"]["1"]
+    source["cells"] = {"0": "Product", "1": "Quantity", "2": "Packs", "3": "Units per pack"}
+    request.items[0].name = "Product"
+    request.items[0].quantity = None
+    result = project(request)
+    issues = [i for i in result["issues"] if i["itemId"] == 1]
+    assert [i["code"] for i in issues] == ["non_item_row"]
+    assert issues[0]["canAccept"] is False
+
+
+def test_correcting_a_specific_ai_flagged_note_resolves_it_without_clearing_other_fields():
+    request = review_fixture()
+    item = request.items[15]
+    item.notes = "False"
+    item.review_findings = [{"code": "other", "fields": ["notes"],
+                             "message": "The source comment is the literal False; confirm the intended note", "origin": "ai"}]
+    synchronize(request)
+    unrelated, _, _, _ = evaluate(request, operation(request, "edit", [16], changes={"priority": "high"}))
+    assert 16 not in project(unrelated)["readyIds"]
+    corrected, _, _, _ = evaluate(request, operation(request, "edit", [16], changes={"notes": ""}))
+    assert 16 in project(corrected)["readyIds"]
+    assert corrected.items[15].quantity == item.quantity

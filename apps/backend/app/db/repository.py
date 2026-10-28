@@ -481,7 +481,8 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
     reasons = {}
     for issue in projection["issues"]:
         if issue["state"] == "open":
-            reasons.setdefault(issue["itemId"], []).append(issue["message"])
+            for item_id in (issue.get("itemIds", []) if issue["itemId"] is None else [issue["itemId"]]):
+                reasons.setdefault(item_id, []).append(issue["message"])
     items = [to_extracted_item(item).model_copy(update={
         "reviewReasons": reasons.get(item.id, []),
         "status": "verified" if item.id in ready_ids else "missing" if not item.name.strip() or item.quantity is None else "needs_review",

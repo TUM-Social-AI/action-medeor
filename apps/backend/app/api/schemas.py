@@ -113,6 +113,7 @@ class ImportProgress(BaseModel):
 
 class ReviewResponse(BaseModel):
     reviewRevision: int | None = None
+    lastUndoOperationId: str | None = None
     issues: list[dict] = Field(default_factory=list)
     tasks: list[dict] = Field(default_factory=list)
     reviewCounts: dict = Field(default_factory=dict)

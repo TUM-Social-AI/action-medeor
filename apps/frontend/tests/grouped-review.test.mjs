@@ -21,7 +21,12 @@ function compile(path, overrides = {}) {
   return exports;
 }
 const model = compile('../src/features/review/model.ts');
-const tools = compile('../src/components/review/ReviewTools.tsx');
+const queue = compile('../src/features/review/task-queue.ts');
+const timeline = compile('../src/components/review/TaskTimeline.tsx');
+const tools = compile('../src/components/review/ReviewTools.tsx', {
+  '../../features/review/task-queue': queue,
+  './TaskTimeline': timeline,
+});
 const items = [
   { id: 1, name: 'Thermometer', itemNumber: 'T1', domain: 'equipment', status: 'verified' },
   { id: 2, name: 'Amoxicillin 500mg', domain: 'medicine', status: 'needs_review' },
@@ -104,4 +109,36 @@ test('removal preview identifies affected items and describes recoverable remova
   );
   assert.match(html, /Thermometer/);
   assert.match(html, /restore them from Removed items/);
+});
+
+test('skipping the entire queue stops instead of wrapping to its first task', () => {
+  const tasks = [{ id: 'columns' }, { id: 'types' }];
+  let progress = { current: null, deferred: [], history: tasks };
+  assert.equal(queue.nextTask(tasks, progress).id, 'columns');
+  progress = queue.deferTask(tasks, progress, 'columns');
+  assert.equal(queue.nextTask(tasks, progress).id, 'types');
+  progress = queue.deferTask(tasks, progress, 'types');
+  assert.equal(queue.nextTask(tasks, progress), undefined);
+  assert.equal(queue.nextTask(tasks, { ...progress, current: 'columns' }).id, 'columns');
+});
+
+test('timeline retains completed tasks while refreshing the remaining tasks', () => {
+  const history = [
+    { id: 'columns', title: 'Confirm source columns', itemIds: [1, 2] },
+    { id: 'types', title: 'Choose product types', itemIds: [2] },
+  ];
+  const remaining = [history[1]];
+  assert.equal(queue.taskHistory(history, remaining).length, 2);
+  const html = renderToStaticMarkup(
+    React.createElement(timeline.TaskTimeline, {
+      history,
+      tasks: remaining,
+      current: 'types',
+      deferred: [],
+      onSelect() {},
+    }),
+  );
+  assert.match(html, /1 of 2 tasks resolved/);
+  assert.match(html, /Resolved/);
+  assert.match(html, /aria-current="step"/);
 });

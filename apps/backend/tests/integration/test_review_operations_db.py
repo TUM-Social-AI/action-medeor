@@ -262,3 +262,46 @@ async def test_concurrent_operations_reject_stale_selection_atomically(saved_rev
     latest = (await client.get(root + "/review")).json()
     assert latest["reviewRevision"] == body["reviewRevision"] + 1
     assert len({item["notes"] for item in latest["items"]}) == 1
+
+
+async def test_shared_mapping_confirmation_and_undo_survive_reload(saved_review):
+    from app.db.repository import get_request_by_id
+    from app.db.session import async_session
+
+    client, body = saved_review
+    root = f"/api/requests/{body['requestId']}"
+    async with async_session() as session:
+        request = await get_request_by_id(session, body["requestId"])
+        sources = {
+            key: {**source, "mappingUncertain": True}
+            for key, source in request.ai_review["sources"].items()
+        }
+        request.ai_review = {**request.ai_review, "sources": sources}
+        for item in request.items:
+            item.confidence = 60
+        await session.commit()
+    latest = (await client.get(root + "/review")).json()
+    assert len(latest["tasks"]) == 1
+    assert len(latest["issues"]) == 1
+    issue = latest["issues"][0]
+    assert issue["scope"] == "table"
+    decision = payload(latest, "accept", [], issueIds=[issue["id"]])
+    applied = await client.post(root + "/review/operations", json=decision)
+    assert applied.status_code == 200, applied.text
+    latest = applied.json()["review"]
+    assert latest["reviewCounts"]["ready"] == 2
+    assert latest["lastUndoOperationId"] == decision["operationId"]
+    reloaded = (await client.get(root + "/review")).json()
+    assert reloaded["lastUndoOperationId"] == decision["operationId"]
+    assert [i["quantity"] for i in reloaded["items"]] == [10, 20]
+    undo = await client.post(
+        root + f"/review/operations/{decision['operationId']}/undo",
+        json={
+            "operationId": str(uuid4()),
+            "expectedRevision": reloaded["reviewRevision"],
+        },
+    )
+    assert undo.status_code == 200, undo.text
+    assert undo.json()["review"]["reviewCounts"]["ready"] == 0
+    assert len(undo.json()["review"]["tasks"]) == 1
+    assert undo.json()["review"]["lastUndoOperationId"] is None

@@ -262,7 +262,15 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
                 for i in updated["issues"]
                 if i["itemId"] == item_id
                 and i["canAccept"]
-                and i["category"] in {"type", "unit", "description"}
+                and (
+                    i["category"] in {"type", "unit", "description"}
+                    or i["category"] == "other"
+                    and i["fields"]
+                    and any(
+                        before["items"][str(item_id)].get(field) != getattr(item, field, None)
+                        for field in i["fields"]
+                    )
+                )
                 and set(i["fields"]) <= set(changes)
             ]
             if operation.action == "quantity_rule":
@@ -302,6 +310,18 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
             "blockers": [],
             "changes": previews,
             "reviewCounts": final["reviewCounts"],
+            "tableDecision": next(
+                (
+                    {
+                        "worksheet": issue.get("worksheet"),
+                        "columns": issue.get("columns", []),
+                        "affectedItems": len(issue.get("itemIds", [])),
+                    }
+                    for issue in initial["issues"]
+                    if issue["id"] in operation.issueIds and issue.get("scope") == "table"
+                ),
+                None,
+            ),
         },
     )
 
@@ -414,3 +434,13 @@ async def undo(
     await session.flush()
     await session.commit()
     return record
+
+
+def undo_available(request, operation) -> bool:
+    """Do not offer an old/conflicting operation merely because it is the latest record."""
+    if request.workflow_status != "review" or operation.action == "undo" or operation.undone_by:
+        return False
+    state = clone(request)
+    synchronize(state)
+    current = snapshot(state, {int(i) for i in operation.after["items"]}, operation.after["issues"])
+    return current == operation.after

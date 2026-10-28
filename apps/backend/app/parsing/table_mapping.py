@@ -22,7 +22,7 @@ from app.parsing.llm_table_classifier import (
     TableMapping,
     map_table_with_llm,
 )
-from app.parsing.table_parser import HEADER_SEARCH_LIMIT, HeaderLayout, cell_text
+from app.parsing.table_parser import HEADER_SEARCH_LIMIT, HeaderLayout, cell_text, repeated_header
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,15 @@ def layout_issues(rows, layout: HeaderLayout | None, *, check_headers: bool = Tr
             for col in range(supplier_start)
         ):
             issues.append("Blank or merged headers have populated columns")
-        if any(is_supplier_field(c) and not is_request_side(c) for c in cells[:supplier_start]):
+        if any(
+            is_supplier_field(c)
+            and not is_request_side(c)
+            and not (
+                match_column_role(c) == "quantity"
+                and normalize(c).startswith(("unit qty", "unit quantity"))
+            )
+            for c in cells[:supplier_start]
+        ):
             issues.append("Request/supplier column boundary is unclear")
         if any(candidates.count(role) > 1 for role in set(candidates) - {None}):
             issues.append("Competing column roles or request/supplier groups")
@@ -67,7 +75,11 @@ def layout_issues(rows, layout: HeaderLayout | None, *, check_headers: bool = Tr
             ):
                 issues.append("Requested quantity column is unclear")
     for row in rows[layout.row_index + 1 :]:
+        if repeated_header(dict(enumerate(row)), layout.labels, layout.roles):
+            continue
         values = {role: cell_text(row[col]) for col, role in layout.roles.items() if col < len(row)}
+        if not values.get("name"):
+            continue
         if values.get("name") and not any(c.isalpha() for c in values["name"]):
             issues.append("Product-name column contains numeric identifiers")
         if values.get("unit") and not any(c.isalpha() for c in values["unit"]):
@@ -111,8 +123,7 @@ def validated_layout(rows, mapping: TableMapping) -> HeaderLayout:
         if numeric_columns and (
             not {"name", "quantity"} <= {match_column_role(cell) for cell in cells}
             or any(
-                column.column_index in numeric_columns
-                and column.role not in {"none", "ordinal"}
+                column.column_index in numeric_columns and column.role not in {"none", "ordinal"}
                 for column in mapping.columns
             )
         ):

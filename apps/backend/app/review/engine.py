@@ -7,6 +7,7 @@ from collections import defaultdict
 from app.parsing.ai_review import FIELDS, deterministic_issues, source_quantity
 from app.parsing.domain_inference import suggest_domain
 from app.parsing.table_mapping import strict_quantity
+from app.parsing.table_parser import repeated_header
 from app.parsing.types import ParsedLineItem
 from app.review.taxonomy import CATEGORIES, classify
 from app.review.taxonomy import FIELDS as ISSUE_FIELDS
@@ -83,6 +84,7 @@ def project(request) -> dict:
     for row in request.review_issues:
         saved_codes[row.item_id].add(row.detail.get("code"))
     item_order = {item.id: index for index, item in enumerate(request.active_items)}
+    mapping_groups = {}
     for item in request.active_items:
         parsed = parsed_item(request, item)
         source = parsed.review_source
@@ -95,10 +97,41 @@ def project(request) -> dict:
                 "roles": source.get("roles", {}),
             }
         )[:16]
+        non_item = repeated_header(
+            source.get("cells", {}), source.get("headers", {}), source.get("roles", {})
+        )
+        mapping_problem = bool(
+            source.get("mappingUncertain")
+            or any(
+                classify(f.get("message", ""), f.get("code")) == "mapping_uncertain"
+                for f in item.review_findings or []
+            )
+        )
+        if mapping_problem and not non_item:
+            group = mapping_groups.setdefault(
+                source_scope, {"source": source, "items": [], "samples": []}
+            )
+            group["items"].append(item.id)
+            if len(group["samples"]) < 5:
+                group["samples"].append(
+                    {
+                        "itemId": item.id,
+                        "name": item.name,
+                        "quantity": item.quantity,
+                        "row": item.source_reference.row if item.source_reference else None,
+                        "cells": source.get("cells", {}),
+                    }
+                )
         findings = {}
 
         def add(reason, origin="rules", code=None, fields=None):
             code = classify(reason, code)
+            if (
+                code == "mapping_uncertain"
+                or mapping_problem
+                and (code == "confirmation_required" or code == "low_confidence" and not fields)
+            ):
+                return
             category = CATEGORIES[code]
             fields = (
                 ISSUE_FIELDS[category]
@@ -117,12 +150,14 @@ def project(request) -> dict:
                 "origins": [origin],
             }
 
-        for reason in deterministic_issues(parsed):
+        if non_item:
+            add("This is a repeated column header, not a requested product.", code="non_item_row")
+        for reason in [] if non_item else deterministic_issues(parsed):
             if item.manual and not item.unit and reason == "Requested unit is unclear":
                 continue
             add(reason)
         # Parser-specific findings which cannot be recovered from final copied values.
-        for finding in item.review_findings or []:
+        for finding in [] if non_item else item.review_findings or []:
             code = classify(finding.get("message", ""), finding.get("code"))
             if code in {"name_required", "type_required", "quantity_required", "quantity_invalid"}:
                 continue  # current values, rather than stale initial findings, decide validity
@@ -135,11 +170,17 @@ def project(request) -> dict:
                 code,
                 finding.get("fields"),
             )
-        for reason in item.review_reasons or []:
+        structured_messages = {f.get("message") for f in item.review_findings or []}
+        for reason in [] if non_item else item.review_reasons or []:
             code = classify(reason)
-            if code == "other":
+            if code == "other" and reason not in structured_messages:
                 add(reason, "legacy")
-        if not findings and item.verification_source != "human" and not item.manual:
+        if (
+            not findings
+            and not mapping_problem
+            and item.verification_source != "human"
+            and not item.manual
+        ):
             had_specific_issue = bool(
                 saved_codes[item.id] - {"low_confidence", "confirmation_required", "other"}
             )
@@ -164,7 +205,7 @@ def project(request) -> dict:
                 "id": issue_id,
                 "itemId": item.id,
                 "blocking": True,
-                "canAccept": code not in HARD,
+                "canAccept": code not in HARD and code != "non_item_row",
                 "fingerprint": evidence_hash,
                 "state": "accepted" if accepted else "open",
                 "sourceScope": source_scope,
@@ -173,6 +214,45 @@ def project(request) -> dict:
                 **facts,
             }
             issues.append(issue)
+    for scope, group in mapping_groups.items():
+        source = group["source"]
+        columns = [
+            {
+                "index": int(col) + 1,
+                "key": col,
+                "label": label,
+                "role": source.get("roles", {}).get(col, "attribute"),
+            }
+            for col, label in source.get("headers", {}).items()
+        ]
+        columns.sort(key=lambda c: c["index"])
+        issue_id = digest([request.request_id, "column_mapping", scope])[:32]
+        fp = digest({"scope": scope, "columns": columns})
+        prior = saved.get(issue_id)
+        accepted = bool(prior and prior.resolution and prior.resolution.get("fingerprint") == fp)
+        issues.append(
+            {
+                "id": issue_id,
+                "itemId": None,
+                "itemIds": group["items"],
+                "code": "mapping_uncertain",
+                "category": "source",
+                "scope": "table",
+                "fields": [],
+                "message": "Confirm the source columns once. Their values are copied to every item in this table.",
+                "origins": ["rules"],
+                "blocking": True,
+                "canAccept": True,
+                "fingerprint": fp,
+                "state": "accepted" if accepted else "open",
+                "sourceScope": scope,
+                "suggestedValue": None,
+                "worksheet": source.get("worksheet", request.selected_sheet),
+                "columns": columns,
+                "sampleRows": group["samples"],
+                "evidence": "",
+            }
+        )
     # Only known extraction-structure notes block; service availability is informational.
     for warning in request.parser_warnings or []:
         if "No requested line items" in warning:
@@ -205,7 +285,14 @@ def project(request) -> dict:
     for issue in open_issues:
         category = issue["category"]
         # Freeform exceptions need individual inspection, not a blanket acceptance.
-        individual = issue["itemId"] if category in {"other", "description"} else None
+        individual = (
+            issue["itemId"]
+            if category in {"other", "description"}
+            and not (
+                issue["fields"] or issue["code"] in {"low_confidence", "confirmation_required"}
+            )
+            else None
+        )
         key = (
             category,
             issue["code"],
@@ -213,11 +300,18 @@ def project(request) -> dict:
             issue["sourceScope"],
             issue["suggestedValue"],
             individual,
+            issue["message"] if category == "other" and issue["fields"] else None,
         )
         grouped[key].append(issue)
     tasks = []
     for key, members in grouped.items():
-        item_ids = list(dict.fromkeys(i["itemId"] for i in members if i["itemId"] is not None))
+        item_ids = list(
+            dict.fromkeys(
+                item_id
+                for i in members
+                for item_id in (i.get("itemIds", []) if i["itemId"] is None else [i["itemId"]])
+            )
+        )
         rank = (
             0
             if key[0] == "source"
@@ -232,7 +326,11 @@ def project(request) -> dict:
                 "id": digest(key)[:24],
                 "category": key[0],
                 "code": key[1],
-                "title": LABELS[key[0]],
+                "title": {
+                    "mapping_uncertain": "Confirm source columns",
+                    "non_item_row": "Remove repeated header rows",
+                    "low_confidence": "Check uncertain copied values",
+                }.get(key[1], LABELS[key[0]]),
                 "itemIds": item_ids,
                 "issueIds": [i["id"] for i in members],
                 "suggestedValue": key[4],
@@ -248,7 +346,11 @@ def project(request) -> dict:
             t["id"],
         )
     )
-    affected = {i["itemId"] for i in open_issues if i["itemId"] is not None}
+    affected = {
+        item_id
+        for i in open_issues
+        for item_id in (i.get("itemIds", []) if i["itemId"] is None else [i["itemId"]])
+    }
     ready = [item.id for item in request.active_items if item.id not in affected]
     return {
         "issues": issues,
@@ -290,8 +392,11 @@ def synchronize(request):
         row.detail = detail
     open_by_item = defaultdict(list)
     for issue in projection["issues"]:
-        if issue["state"] == "open" and issue["itemId"] is not None:
-            open_by_item[issue["itemId"]].append(issue["message"])
+        if issue["state"] == "open":
+            for item_id in (
+                issue.get("itemIds", []) if issue["itemId"] is None else [issue["itemId"]]
+            ):
+                open_by_item[item_id].append(issue["message"])
     for item in request.active_items:
         item.review_reasons = open_by_item[item.id]
         item.status = (

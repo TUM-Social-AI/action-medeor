@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 
 const require = createRequire(import.meta.url);
-const { readFileSync } = await import('node:fs');
+const { readFileSync, existsSync } = await import('node:fs');
 const { dirname, resolve } = await import('node:path');
 const moduleCache = new Map();
 function loadTs(file) {
@@ -23,7 +23,7 @@ function loadTs(file) {
     if (name.endsWith('/api/http')) return { ApiError: class extends Error {} };
     if (name.startsWith('.')) {
       const target = resolve(dirname(path), name);
-      return loadTs(target + (target.endsWith('ReviewTools') ? '.tsx' : '.ts'));
+      return loadTs(target + (existsSync(target + '.tsx') ? '.tsx' : '.ts'));
     }
     return require(name);
   }, result);
@@ -32,7 +32,7 @@ function loadTs(file) {
 const reviewTools = loadTs(new URL('../src/components/review/ReviewTools.tsx', import.meta.url).pathname);
 const reviewModel = loadTs(new URL('../src/features/review/model.ts', import.meta.url).pathname);
 const inactiveOperations = () => ({ busy: false, error: null, pending: null, toast: null });
-const source = await readFile(new URL('../src/components/ReviewItemsScreen.tsx', import.meta.url), 'utf8');
+const source = await readFile(new URL('../src/components/review/ReviewWorkspace.tsx', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
     jsx: ts.JsxEmit.ReactJSX },
@@ -43,11 +43,11 @@ const summaryOutput = ts.transpileModule(summarySource, {
 }).outputText;
 const exports = {};
 new Function('require', 'exports', outputText)(name => {
-  if (name === '../api/client') return {};
-  if (name === './review/ReviewTools') return reviewTools;
-  if (name === '../features/review/model') return reviewModel;
-  if (name === '../features/review/use-review-operations') return { useReviewOperations: inactiveOperations };
-  if (name === './ScreenState' || name === './WorkflowStepper') {
+  if (name.endsWith('/api/client')) return {};
+  if (name === './ReviewTools') return reviewTools;
+  if (name.endsWith('/features/review/model')) return reviewModel;
+  if (name.endsWith('/features/review/use-review-operations')) return { useReviewOperations: inactiveOperations };
+  if (name.endsWith('/ScreenState') || name.endsWith('/WorkflowStepper')) {
     return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
   }
   return require(name);
@@ -60,7 +60,7 @@ const data = {
   attributeColumns: [], columnLabels: {}, availableColumns: [],
 };
 function render(initialData) {
-  return renderToStaticMarkup(React.createElement(exports.ReviewItemsScreen, {
+  return renderToStaticMarkup(React.createElement(exports.ReviewWorkspace, {
     requestId: 'import-test', initialData, onContinue: () => {},
   }));
 }
@@ -136,13 +136,13 @@ function interactiveScreen(initialData = data, client = {}, summary = false) {
   const interactive = {};
   new Function('require', 'exports', summary ? summaryOutput : outputText)(name => {
     if (name === 'react') return hooks;
-    if (name === './review/ReviewTools') return reviewTools;
-    if (name === '../features/review/model') return reviewModel;
-    if (name === '../features/review/use-review-operations') return { useReviewOperations: inactiveOperations };
+    if (name === './ReviewTools') return reviewTools;
+    if (name.endsWith('/features/review/model')) return reviewModel;
+    if (name.endsWith('/features/review/use-review-operations')) return { useReviewOperations: inactiveOperations };
     if (name === 'react-dom') return { createPortal: element => element };
-    if (name === '../api/client') return client;
+    if (name.endsWith('/api/client')) return client;
     if (summary && name === '../api/workflow') return { getRequestSummary: async () => initialData };
-    if (name === './ScreenState' || name === './WorkflowStepper') return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
+    if (name.endsWith('/ScreenState') || name.endsWith('/WorkflowStepper')) return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
     if (summary && name.startsWith('.')) return {
       useOfferDateRefresh: () => {}, SharePointOfferSource: () => null,
       CandidateAvailability: () => null, ProcessingProgress: () => null,
@@ -154,7 +154,7 @@ function interactiveScreen(initialData = data, client = {}, summary = false) {
     effects = [];
     const tree = summary
       ? interactive.OrderSummaryScreen({ requestId: 'import-test', onBack: async () => {} })
-      : interactive.ReviewItemsScreen({ requestId: 'import-test', initialData, onContinue: () => {} });
+      : interactive.ReviewWorkspace({ requestId: 'import-test', initialData, onContinue: () => {} });
     for (const effect of effects) effect();
     return tree;
   };
