@@ -155,7 +155,12 @@ def project(request) -> dict:
         for reason in [] if non_item else deterministic_issues(parsed):
             if item.manual and not item.unit and reason == "Requested unit is unclear":
                 continue
-            add(reason)
+            add(
+                reason,
+                code="quantity_required"
+                if item.quantity is None and reason == "A positive requested quantity is required"
+                else None,
+            )
         # Parser-specific findings which cannot be recovered from final copied values.
         for finding in [] if non_item else item.review_findings or []:
             code = classify(finding.get("message", ""), finding.get("code"))
@@ -190,7 +195,9 @@ def project(request) -> dict:
                 and item.confidence < 80
             ):
                 add("Confidence is low; inspect the source", code="low_confidence")
-            elif item.status != "verified":
+            elif item.verification_source != "ai" and (
+                item.status != "verified" or "confirmation_required" in saved_codes[item.id]
+            ):
                 add("Confirm this item against the source", code="confirmation_required")
         for finding in findings.values():
             code = finding["code"]
@@ -327,6 +334,15 @@ def project(request) -> dict:
                 "category": key[0],
                 "code": key[1],
                 "title": {
+                    "type_conflict": "Resolve conflicting product types",
+                    "quantity_invalid": "Correct invalid quantities",
+                    "quantity_conflict": "Check copied quantities",
+                    "pack_total_conflict": "Resolve pack totals",
+                    "unit_conflict": "Resolve conflicting units",
+                    "packaging_unclear": "Check requested packaging",
+                    "name_required": "Complete product names",
+                    "coverage_uncertain": "Reconcile source coverage",
+                    "confirmation_required": "Confirm unchecked items",
                     "mapping_uncertain": "Confirm source columns",
                     "non_item_row": "Remove repeated header rows",
                     "low_confidence": "Check uncertain copied values",

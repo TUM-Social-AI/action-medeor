@@ -165,7 +165,7 @@ def test_required_values_cannot_be_accepted_and_invalid_batches_do_not_mutate():
         )
     assert error.value.status_code == 422
     assert request.items[20].__dict__ == before
-    issue = next(i for i in projection["issues"] if i["code"] == "quantity_invalid")
+    issue = next(i for i in projection["issues"] if i["code"] == "quantity_required")
     with pytest.raises(HTTPException):
         evaluate(request, operation(request, "accept", [], issueIds=[issue["id"]]))
 

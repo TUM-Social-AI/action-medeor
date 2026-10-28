@@ -56,7 +56,7 @@ import {
   type ReviewView,
 } from './ReviewTools';
 import { useReviewOperations } from '../../features/review/use-review-operations';
-import { filterItems, toggleSelection } from '../../features/review/model';
+import { filterItems, isReady, reviewPresentation, toggleSelection } from '../../features/review/model';
 
 type ReviewWorkspaceProps = {
   requestId: string | null;
@@ -95,12 +95,7 @@ const STATUS_CFG: Record<ItemStatus, { label: string; icon: ReactNode; color: st
     color: 'text-red-700',
     bg: 'bg-red-100',
   },
-  missing: {
-    label: 'Missing',
-    icon: <HelpCircle size={11} />,
-    color: 'text-red-700',
-    bg: 'bg-red-100',
-  },
+  missing: { label: 'Missing', icon: <HelpCircle size={11} />, color: 'text-red-700', bg: 'bg-red-100' },
 };
 
 /** Units the extractor filled in carry their reason in inferredFields.unit; the backend's default
@@ -476,7 +471,7 @@ export function ReviewWorkspace({
   const showShelfLife = items.some((item) => item.shelfLife);
   const showNotes = items.some((item) => item.notes);
   const columnCount =
-    8 +
+    (structuredReview ? 7 : 8) +
     (structuredReview ? 1 : 0) +
     (attributeColumns.length > 0 ? 1 : 0) +
     [showItemNumber, showUnit, showShelfLife, showNotes].filter(Boolean).length;
@@ -765,7 +760,8 @@ export function ReviewWorkspace({
       {!isManualRequest && (
         <details className="mb-4 text-xs text-gray-500">
           <summary className="cursor-pointer">
-            Extraction details{data.parserWarnings?.length ? ` · ${data.parserWarnings.length} notes` : ''}
+            Extraction details
+            {data.parserWarnings?.length ? ` · ${data.parserWarnings.length} notes` : ''}
           </summary>
           <div role="status" className="mt-2 space-y-1 rounded-lg border border-gray-200 bg-white p-4">
             {data.parserWarnings?.some((warning) => !warning.includes('Ignored supplier/admin columns:')) && (
@@ -966,7 +962,8 @@ export function ReviewWorkspace({
                     aria-expanded={detailsOpen}
                     onClick={() => setDetailsOpen(!detailsOpen)}
                   >
-                    Request details{partnerDetails.confirmed ? ' · Confirmed' : ''}
+                    Request details
+                    {partnerDetails.confirmed ? ' · Confirmed' : ''}
                   </button>
                   <button
                     type="button"
@@ -1005,6 +1002,21 @@ export function ReviewWorkspace({
               )}
             {structuredReview && (
               <div className="bg-white border border-gray-200 rounded-xl p-4 mb-3 space-y-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-base font-semibold">{showRemoved ? 'Removed items' : 'All items'}</h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      {showRemoved
+                        ? 'Restore an item to bring it back into review.'
+                        : `${data.reviewCounts?.ready ?? 0} of ${items.length} items ready. AI-checked and human-reviewed items need no further verification.`}
+                    </p>
+                  </div>
+                  {!showRemoved && !!data.tasks?.length && (
+                    <button type="button" className={reviewButton} onClick={() => setView('guided')}>
+                      Resolve {data.tasks.length} {data.tasks.length === 1 ? 'task' : 'tasks'}
+                    </button>
+                  )}
+                </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <input
                     aria-label="Search items"
@@ -1090,19 +1102,6 @@ export function ReviewWorkspace({
                           type="button"
                           className={reviewButton}
                           disabled={itemMutationPending}
-                          onClick={() =>
-                            void operations.preview({
-                              action: 'verify',
-                              itemIds: selectedItems.map((i) => i.id),
-                            })
-                          }
-                        >
-                          Verify selected
-                        </button>
-                        <button
-                          type="button"
-                          className={reviewButton}
-                          disabled={itemMutationPending}
                           onClick={() => setShowBulkEdit(!showBulkEdit)}
                         >
                           Edit field
@@ -1120,6 +1119,35 @@ export function ReviewWorkspace({
                         >
                           Remove selected
                         </button>
+                        <details className="relative">
+                          <summary className={`${reviewButton} list-none cursor-pointer`}>
+                            More actions
+                          </summary>
+                          <div className="absolute left-0 top-full mt-2 z-20 w-72 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+                            <p className="text-xs text-gray-500 mb-2">
+                              Optional: record an additional human check for items that are already ready.
+                            </p>
+                            <button
+                              type="button"
+                              className={reviewButton}
+                              disabled={
+                                itemMutationPending ||
+                                selectedItems.some((item) => !isReady(item)) ||
+                                selectedItems.every((item) => item.verificationSource === 'human')
+                              }
+                              onClick={(event) => {
+                                const menu = event.currentTarget.closest('details');
+                                if (menu) menu.open = false;
+                                void operations.preview({
+                                  action: 'verify',
+                                  itemIds: selectedItems.map((item) => item.id),
+                                });
+                              }}
+                            >
+                              Record human verification
+                            </button>
+                          </div>
+                        </details>
                       </>
                     )}
                     <button type="button" className={reviewButton} onClick={() => setSelected(new Set())}>
@@ -1216,8 +1244,8 @@ export function ReviewWorkspace({
                       ...(showShelfLife ? [{ key: 'shelfLife', label: 'Shelf Life' }] : []),
                       ...(showNotes ? [{ key: 'notes', label: 'Notes' }] : []),
                       { key: 'priority', label: 'Priority' },
-                      { key: null, label: 'Confidence' },
-                      { key: null, label: 'Status' },
+                      ...(!structuredReview ? [{ key: null, label: 'Confidence' }] : []),
+                      { key: null, label: 'Review status' },
                       { key: null, label: 'Actions' },
                     ].map((header, headerIndex) => (
                       <th
@@ -1254,6 +1282,7 @@ export function ReviewWorkspace({
                   )}
                   {displayItems.map((item, index) => {
                     const status = STATUS_CFG[item.status];
+                    const presentation = reviewPresentation(item, data.issues);
                     const priority = PRIORITY_CFG[item.priority];
                     const sharedCheck = (data.issues ?? []).find(
                       (issue) =>
@@ -1316,7 +1345,7 @@ export function ReviewWorkspace({
                             )}
                           </td>
                         )}
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-3 min-w-56 max-w-sm">
                           <button
                             onClick={() => {
                               if (!showRemoved) openEdit(item);
@@ -1400,53 +1429,66 @@ export function ReviewWorkspace({
                             {priority.label}
                           </span>
                         </td>
-                        <td className="px-4 py-3">
-                          {item.confidence === null ? (
-                            <span className="text-xs text-gray-400 italic">N/A</span>
-                          ) : (
-                            <div className="flex items-center gap-2">
-                              <div className="w-14 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                                <div
-                                  className={`h-full rounded-full ${
+                        {!structuredReview && (
+                          <td className="px-4 py-3">
+                            {item.confidence === null ? (
+                              <span className="text-xs text-gray-400 italic">N/A</span>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <div className="w-14 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full ${
+                                      item.confidence >= 85
+                                        ? 'bg-green-500'
+                                        : item.confidence >= 70
+                                          ? 'bg-amber-500'
+                                          : 'bg-red-500'
+                                    }`}
+                                    style={{ width: `${item.confidence}%` }}
+                                  />
+                                </div>
+                                <span
+                                  className={`text-xs ${
                                     item.confidence >= 85
-                                      ? 'bg-green-500'
+                                      ? 'text-green-700'
                                       : item.confidence >= 70
-                                        ? 'bg-amber-500'
-                                        : 'bg-red-500'
+                                        ? 'text-amber-700'
+                                        : 'text-red-700'
                                   }`}
-                                  style={{ width: `${item.confidence}%` }}
-                                />
+                                  style={{ fontWeight: 600 }}
+                                >
+                                  {item.confidence}%
+                                </span>
                               </div>
-                              <span
-                                className={`text-xs ${
-                                  item.confidence >= 85
-                                    ? 'text-green-700'
-                                    : item.confidence >= 70
-                                      ? 'text-amber-700'
-                                      : 'text-red-700'
-                                }`}
-                                style={{ fontWeight: 600 }}
-                              >
-                                {item.confidence}%
-                              </span>
-                            </div>
-                          )}
-                        </td>
+                            )}
+                          </td>
+                        )}
                         <td className="px-4 py-3">
                           <span
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${status.bg} ${status.color}`}
+                            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs whitespace-nowrap ${showRemoved ? 'bg-gray-100 text-gray-500' : structuredReview ? (presentation.tone === 'ready' ? 'bg-teal-50 text-teal-700' : 'bg-amber-50 text-amber-800') : `${status.bg} ${status.color}`}`}
                             style={{ fontWeight: 500 }}
+                            title={showRemoved ? 'Excluded from matching' : presentation.description}
                           >
-                            {status.icon}{' '}
+                            {structuredReview ? (
+                              presentation.tone === 'ready' ? (
+                                <CheckCircle2 size={12} />
+                              ) : (
+                                <AlertCircle size={12} />
+                              )
+                            ) : (
+                              status.icon
+                            )}{' '}
                             {showRemoved
                               ? 'Removed'
-                              : sharedCheck && !blocked
-                                ? 'Shared column check'
-                                : item.verificationSource === 'ai' && item.status === 'verified'
-                                  ? 'AI checked'
-                                  : item.status === 'verified' && item.verificationSource !== 'human'
-                                    ? 'Ready'
-                                    : status.label}
+                              : structuredReview
+                                ? presentation.label
+                                : sharedCheck && !blocked
+                                  ? 'Shared column check'
+                                  : item.verificationSource === 'ai' && item.status === 'verified'
+                                    ? 'AI checked'
+                                    : item.status === 'verified' && item.verificationSource !== 'human'
+                                      ? 'Ready'
+                                      : status.label}
                           </span>
                         </td>
                         <td className="px-4 py-3">
@@ -1485,17 +1527,15 @@ export function ReviewWorkspace({
                                   >
                                     <Edit2 size={11} /> Edit
                                   </button>
-                                  {!sharedCheck &&
-                                    (item.status === 'needs_review' ||
-                                      (structuredReview && item.verificationSource !== 'human')) && (
-                                      <button
-                                        onClick={() => void markVerified(item.id)}
-                                        className="px-2 py-1 rounded-md text-xs bg-green-100 text-green-700 hover:bg-green-200 transition-colors"
-                                        style={{ fontWeight: 600 }}
-                                      >
-                                        Verify
-                                      </button>
-                                    )}
+                                  {!structuredReview && !sharedCheck && item.status === 'needs_review' && (
+                                    <button
+                                      onClick={() => void markVerified(item.id)}
+                                      className="px-2 py-1 rounded-md text-xs bg-green-100 text-green-700 hover:bg-green-200 transition-colors"
+                                      style={{ fontWeight: 600 }}
+                                    >
+                                      Verify
+                                    </button>
+                                  )}
                                 </>
                               )}
                               {(item.manual || structuredReview) && (
@@ -1562,7 +1602,7 @@ export function ReviewWorkspace({
             <div className="mt-5 flex items-center justify-between gap-4">
               <div className="text-sm text-gray-500">
                 {allVerified
-                  ? 'All active items are ready. Confirm when you have finished checking the table.'
+                  ? 'All items have passed review. You can start matching; no extra row verification is needed.'
                   : `${data.tasks?.length ?? blockedItems.length} review tasks remain. Resolve shared checks in guided review.`}
               </div>
               <button
@@ -1885,8 +1925,8 @@ export function ReviewWorkspace({
                 Summary
               </div>
               <div className="text-xs text-gray-700 mt-1">
-                {items.length} items · {verified} verified{manualCount > 0 && ` · ${manualCount} manual`} ·
-                Partner: {partnerDetails.partner || '—'}
+                {items.length} items · {verified} verified
+                {manualCount > 0 && ` · ${manualCount} manual`} · Partner: {partnerDetails.partner || '—'}
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3">
@@ -1974,10 +2014,5 @@ function SourceReferencePanel({ item, reference }: { item: ExtractedItem; refere
 }
 
 function partnerLabel(key: keyof Pick<PartnerDetails, 'partner' | 'region' | 'requestId' | 'contact'>) {
-  return {
-    partner: 'Partner',
-    region: 'Region',
-    requestId: 'Request ID',
-    contact: 'Contact',
-  }[key];
+  return { partner: 'Partner', region: 'Region', requestId: 'Request ID', contact: 'Contact' }[key];
 }

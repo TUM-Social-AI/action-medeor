@@ -92,6 +92,22 @@ test('AI checked rows show inference provenance and need no individual verificat
   assert.doesNotMatch(html, /require manual review before/);
 });
 
+test('the integrated table never asks ready rows to verify again', () => {
+  const item = {
+    id: 1, name: 'Diagnostic scanner', quantity: 2, unit: 'pcs', notes: '', itemNumber: '', shelfLife: '',
+    attributes: {}, priority: 'medium', confidence: 95, status: 'verified', domain: 'equipment', manual: false,
+    verificationSource: 'ai', readyForMatching: true, reviewReasons: [],
+  };
+  const html = render({ ...data, reviewRevision: 0, items: [item], issues: [], tasks: [],
+    reviewCounts: { active: 1, ready: 1, affected: 0, issues: 0, removed: 0 }, canStartMatching: true,
+  });
+  assert.match(html, /AI checked/);
+  assert.match(html, /no extra row verification is needed/);
+  assert.doesNotMatch(html, />Verify</);
+  assert.doesNotMatch(html, /Verify selected/);
+  assert.doesNotMatch(html, />Confidence</);
+});
+
 test('supplier column notes are informational and provider failures remain visible', () => {
   const html = render({ ...data, parserWarnings: ['Ignored supplier/admin columns: Price'],
     reviewSummary: { status: 'unavailable', checked: 0, message: 'Some rows could not be AI checked. Basic extraction has been retained; you can retry.' } });

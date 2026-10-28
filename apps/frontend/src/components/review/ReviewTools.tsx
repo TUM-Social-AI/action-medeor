@@ -259,7 +259,8 @@ export function GuidedReview({
     data,
   });
   const displayId = useRef(target?.id);
-  const [phase, setPhase] = useState<'in' | 'out' | 'idle'>('in');
+  const resolvedTransition = useRef(false);
+  const [phase, setPhase] = useState<'hold' | 'in' | 'out' | 'idle'>('idle');
   useEffect(() => {
     try {
       sessionStorage.setItem(
@@ -281,14 +282,21 @@ export function GuidedReview({
       setPhase('idle');
       return;
     }
-    setPhase('out');
+    // Match the prototype: acknowledge a resolved task, then slide out and in.
+    // Skipping or jumping between open tasks has no success acknowledgement.
+    const resolved = !!displayId.current && !tasks.some((task) => task.id === displayId.current);
+    resolvedTransition.current = resolved;
+    const hold = resolved ? 340 : 0;
+    setPhase(resolved ? 'hold' : 'out');
+    const acknowledge = setTimeout(() => setPhase('out'), hold);
     const leave = setTimeout(() => {
       displayId.current = target?.id;
       setDisplay({ task: target, data });
       setPhase('in');
-    }, 200);
-    const enter = setTimeout(() => setPhase('idle'), 440);
+    }, hold + 200);
+    const enter = setTimeout(() => setPhase('idle'), hold + 430);
     return () => {
+      clearTimeout(acknowledge);
       clearTimeout(leave);
       clearTimeout(enter);
     };
@@ -309,13 +317,11 @@ export function GuidedReview({
   };
   if (!task)
     return (
-      <section
-        hidden={hidden}
-        className="grid grid-cols-1 lg:grid-cols-[15rem_minmax(0,1fr)] gap-5 mb-4"
-        aria-label="Guided review"
-      >
+      <section hidden={hidden} className="space-y-4 mb-4" aria-label="Guided review">
         {timeline}
-        <div className="bg-white border border-gray-200 rounded-xl p-8 text-center review-task-in">
+        <div
+          className={`bg-white border border-gray-200 rounded-xl p-8 text-center ${phase === 'in' ? 'review-task-in' : ''}`}
+        >
           {tasks.length ? (
             <>
               <SkipForward size={28} className="mx-auto text-amber-500 mb-3" />
@@ -335,7 +341,9 @@ export function GuidedReview({
             </>
           ) : (
             <>
-              <CheckCircle2 size={28} className="mx-auto text-[#0E9E8F] mb-3" />
+              <div className="review-pop mx-auto mb-4 w-14 h-14 rounded-full border border-teal-200 bg-teal-50 flex items-center justify-center">
+                <CheckCircle2 size={28} className="text-[#0E9E8F]" />
+              </div>
               <h2>All review tasks resolved</h2>
               <p className="text-sm text-gray-500 mt-2 mb-5">
                 Check the complete list before starting matching.
@@ -380,17 +388,26 @@ export function GuidedReview({
     });
   };
   return (
-    <section
-      hidden={hidden}
-      aria-label="Guided review"
-      className="grid grid-cols-1 lg:grid-cols-[15rem_minmax(0,1fr)] gap-5 mb-4"
-    >
+    <section hidden={hidden} aria-label="Guided review" className="space-y-4 mb-4">
       {timeline}
       <div
         key={task.id}
-        className={`${phase === 'out' ? 'review-task-out' : phase === 'in' ? 'review-task-in' : ''} bg-white border border-gray-200 rounded-xl overflow-hidden`}
-        style={{ pointerEvents: phase === 'out' ? 'none' : undefined }}
+        className={`${phase === 'out' ? 'review-task-out' : phase === 'in' ? 'review-task-in' : ''} relative bg-white border border-gray-200 rounded-xl overflow-hidden`}
+        ref={(element) => element?.toggleAttribute('inert', phase === 'hold' || phase === 'out')}
+        style={{ pointerEvents: phase === 'hold' || phase === 'out' ? 'none' : undefined }}
       >
+        {(phase === 'hold' || phase === 'out') && resolvedTransition.current && (
+          <div
+            role="status"
+            className="review-fade absolute inset-0 z-10 bg-white/95 flex flex-col items-center justify-center gap-3 p-6 text-teal-800"
+          >
+            <span className="review-pop w-14 h-14 rounded-full border border-teal-200 bg-teal-50 flex items-center justify-center">
+              <CheckCircle2 size={28} />
+            </span>
+            <span className="text-base font-semibold">Task resolved</span>
+            <span className="text-sm text-gray-500">Changes saved</span>
+          </div>
+        )}
         <div className="p-5 border-b border-gray-200">
           <h2 className="text-lg">
             {task.title}
@@ -498,13 +515,23 @@ export function GuidedReview({
                             }
                           />
                         </td>
-                        <td className="p-3 min-w-44 font-medium">{item.name}</td>
+                        <td className="p-3 min-w-44 font-medium">{item.name || 'Unnamed item'}</td>
                         <td className="p-3">
                           {task.category === 'type'
                             ? (item.domain ?? 'Not chosen')
                             : task.category === 'unit'
                               ? item.unit || '—'
-                              : (item.quantity ?? 'Missing')}
+                              : task.category === 'description'
+                                ? item.name || 'Missing name'
+                                : task.code === 'non_item_row'
+                                  ? 'Repeated column labels'
+                                  : task.category === 'source'
+                                    ? 'Source reconciliation required'
+                                    : task.category === 'other'
+                                      ? issue?.fields.includes('notes')
+                                        ? item.notes || 'Empty note'
+                                        : `${item.quantity ?? 'Missing'} ${item.unit} · source check needed`
+                                      : (item.quantity ?? 'Missing')}
                           {task.category === 'totals' && (
                             <div className="text-xs text-gray-500 mt-1">
                               Requested: {issue?.requestedTotal ?? '—'}
@@ -610,7 +637,8 @@ export function GuidedReview({
                     operations.busy ||
                     !selected.length ||
                     !selectedIssues.every(
-                      (i) => (rule === 'requested_total' ? i.requestedTotal : i.calculatedTotal) != null,
+                      (i) =>
+                        (rule === 'requested_total' ? (i.requestedTotal ?? 0) : (i.calculatedTotal ?? 0)) > 0,
                     )
                   }
                   onClick={() =>

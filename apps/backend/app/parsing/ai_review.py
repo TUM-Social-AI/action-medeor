@@ -277,7 +277,7 @@ def deterministic_issues(item: ParsedLineItem) -> list[str]:
     if stated_domain and item.domain != stated_domain:
         issues.append("Copied type differs from the explicit source classification")
     requested = source_quantity(item)
-    if requested is not None and item.quantity != requested:
+    if requested is not None and requested > 0 and item.quantity != requested:
         issues.append("Copied quantity differs from the requested source total")
     if (
         item.domain == "medicine"

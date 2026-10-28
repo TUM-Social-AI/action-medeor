@@ -34,6 +34,8 @@ def classify(reason: str, code: str | None = None) -> str:
     if code in CATEGORIES and code != "other":
         return code
     text = reason.casefold()
+    if "confirm this item against the source" in text:
+        return "confirmation_required"
     if "packs ×" in text or "pack" in text and "total" in text and "conflict" in text:
         return "pack_total_conflict"
     if "mapping" in text or "column" in text and ("unclear" in text or "confirm" in text):

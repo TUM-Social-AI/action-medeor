@@ -51,6 +51,22 @@ test('selection uses explicit IDs and preserves unrelated selection immutably', 
   assert.deepEqual([...model.toggleSelection(selected, 1, false)], []);
 });
 
+test('review statuses distinguish readiness from AI and human provenance', () => {
+  const item = { ...items[0], readyForMatching: true };
+  assert.equal(model.reviewPresentation({ ...item, verificationSource: 'ai' }).label, 'AI checked');
+  assert.equal(model.reviewPresentation({ ...item, verificationSource: 'human' }).label, 'Human verified');
+  const edited = { ...item, fieldReviews: { quantity: { source: 'human' } } };
+  assert.equal(model.reviewPresentation(edited).label, 'Human reviewed');
+  assert.equal(model.reviewPresentation(item).label, 'Checks passed');
+  assert.equal(model.reviewPresentation({ ...item, readyForMatching: false, verificationSource: 'ai' }).label, 'Needs human review');
+  assert.equal(model.reviewPresentation({ ...item, readyForMatching: false }, [
+    { itemId: null, itemIds: [item.id], scope: 'table', state: 'open' },
+  ]).label, 'Shared check pending');
+  assert.equal(model.reviewPresentation(item, [
+    { itemId: null, itemIds: [item.id], scope: 'table', state: 'accepted' },
+  ]).label, 'Human reviewed');
+});
+
 test('overview distinguishes items, issues, and tasks', () => {
   const html = renderToStaticMarkup(
     React.createElement(tools.ReviewOverview, {
@@ -141,4 +157,7 @@ test('timeline retains completed tasks while refreshing the remaining tasks', ()
   assert.match(html, /1 of 2 tasks resolved/);
   assert.match(html, /Resolved/);
   assert.match(html, /aria-current="step"/);
+  assert.match(html, /<nav[^>]*aria-label="Review timeline"/);
+  assert.match(html, /Remaining tasks \(1\)/);
+  assert.doesNotMatch(html, /<aside/);
 });

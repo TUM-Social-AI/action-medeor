@@ -5,10 +5,21 @@ the same persisted request. The existing item-detail form, request details, manu
 column renaming, and custom-column extraction are retained.
 
 The application mounts `ReviewWorkspace` directly. Guided review includes a persistent task
-timeline with current, resolved, and deferred steps. Skipping every remaining task shows a
+timeline above the task card, with current, resolved, and deferred steps and a remaining-task
+picker. Skipping every remaining task shows a
 deferred-task summary instead of wrapping back to the first task. Task changes animate out
-and in, respecting reduced-motion preferences. Notifications dismiss after five seconds;
+and in; successfully resolved tasks first hold a success check for 340ms, followed by the
+prototype's 200ms exit and 230ms entry. Skipping has no success state. Motion respects
+reduced-motion preferences. Notifications dismiss after five seconds;
 the separate permanent Undo last action control remains available independently of the toast.
+
+The final table uses backend readiness to distinguish items needing human review from items
+already checked by AI or reviewed by a person. Field and source-layout decisions say
+"Human reviewed"; only explicit whole-item verification says "Human verified". Historical
+rows with no recorded verifier say "Checks passed" rather than inventing provenance. Ready
+rows have no Verify button. Optional additional human verification remains under the selection
+toolbar's More actions menu. Confidence remains available in item details instead of taking a
+separate table column. Matching stays disabled until every active item is ready.
 
 ## Problems and grouping
 
@@ -29,6 +40,35 @@ one confirmation covers every affected row without changing its values. Generic 
 flags caused by the same mapping uncertainty are not separate per-item tasks. Genuine field
 exceptions remain visible. Repeated header rows are excluded during extraction; existing saved
 header rows receive a single reversible removal task rather than missing-product-field tasks.
+
+An unchecked item's confirmation issue survives refresh and unrelated edits. A successful
+subsequent AI check or an explicit source acceptance satisfies it. Missing quantities and
+invalid quantities use separate codes; correcting an invalid source zero does not introduce
+a new conflict against that zero.
+
+## Comprehensive example request
+
+Run explicitly from `apps/backend` against the database you want to populate:
+
+```sh
+.venv/bin/python -m app.jobs.seed_review_example
+```
+
+This adds `EXAMPLE-REVIEW-ALL-CASES`, shown in Request History as
+`EXAMPLE - All review cases.xlsx`. Re-running preserves saved progress. It is opt-in sample
+data; no migration, startup seeding, or AI provider call is involved. The workbook is retained
+as the request's source. Its illustrative extraction results and AI findings are labelled as
+simulated; re-uploading the workbook runs normal extraction and may resolve these cases.
+
+The sample has 21 active items and one removed item, with every supported issue code and
+all seven categories represented. Cases include shared column mapping, a repeated header,
+missing source coverage, missing/conflicting types, missing/invalid quantities, copied-total
+and pack-total conflicts, unclear/conflicting units, packaging, missing/truncated names,
+unexplained low confidence, unchecked items, and unknown findings. One item combines a type
+problem with a pack-total conflict. Two items are already AI checked/human verified for
+comparison. Expand the source attributes for per-row "Example case" and "Try this" hints.
+The source also includes a missing blanket row to add manually, and a Storage conditions
+column available for custom extraction. The removed item can be restored normally.
 
 ## API
 
@@ -106,3 +146,10 @@ Browser checks on an isolated copy of `DCE_P00994.xlsx` covered the four-task ti
 skip-all persistence, one shared column decision, repeated-header removal, five-second toast
 expiry, Undo after reload, task animations, reduced motion, and final matching eligibility.
 The original uploaded request was not edited or automatically accepted during these checks.
+
+The top-timeline and final-table follow-up passed 244 backend tests, all 15 frontend test
+files, TypeScript checks, and the production build. The comprehensive sample is also checked
+for every issue code, correct source evidence, overlapping resolutions, and seed replay without
+resetting progress. Browser verification covers the top timeline at 1440px/1024px, the task
+picker's keyboard dismissal, failure/retry, success/exit/entry motion, all issue categories,
+manual reconciliation, restoration, review-state badges, matching readiness, and reduced motion.
