@@ -107,6 +107,7 @@ class ImportRequestRow(Base):
     selected_sheets: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
 
     workflow_status: Mapped[str] = mapped_column(default="draft")
+    review_revision: Mapped[int] = mapped_column(default=0, server_default="0")
     catalog_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, default=None)
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
 
@@ -115,6 +116,13 @@ class ImportRequestRow(Base):
         cascade="all, delete-orphan",
         order_by="RequestItemRow.position",
     )
+    review_issues: Mapped[list["RequestReviewIssueRow"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin",
+    )
+
+    @property
+    def active_items(self) -> list["RequestItemRow"]:
+        return [item for item in self.items if item.removed_at is None and item.source_active]
     source_references: Mapped[list["RequestSourceReferenceRow"]] = relationship(
         back_populates="request",
         cascade="all, delete-orphan",
@@ -144,6 +152,12 @@ class RequestItemRow(Base):
     status: Mapped[str] = mapped_column(default="needs_review")
     domain: Mapped[str | None] = mapped_column(default=None)
     manual: Mapped[bool] = mapped_column(default=False, server_default="false")
+    removed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    removed_by: Mapped[str | None] = mapped_column(default=None)
+    source_key: Mapped[str | None] = mapped_column(default=None)
+    source_active: Mapped[bool] = mapped_column(default=True, server_default="true")
+    field_reviews: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    review_findings: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     verification_source: Mapped[str | None] = mapped_column(default=None)
     inferred_fields: Mapped[dict] = mapped_column(JSON, default=dict)
     review_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -176,3 +190,33 @@ class RequestSourceReferenceRow(Base):
 
     request: Mapped[ImportRequestRow] = relationship(back_populates="source_references")
     item: Mapped[RequestItemRow] = relationship(back_populates="source_reference")
+
+
+class RequestReviewIssueRow(Base):
+    __tablename__ = "request_review_issues"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    request_id: Mapped[str] = mapped_column(
+        ForeignKey("import_requests.request_id", ondelete="CASCADE"), index=True,
+    )
+    item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("request_items.id", ondelete="CASCADE"), index=True,
+    )
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    resolution: Mapped[dict | None] = mapped_column(JSON, default=None)
+
+
+class RequestReviewOperationRow(Base):
+    __tablename__ = "request_review_operations"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    request_id: Mapped[str] = mapped_column(
+        ForeignKey("import_requests.request_id", ondelete="CASCADE"), index=True,
+    )
+    actor: Mapped[str]
+    action: Mapped[str]
+    payload: Mapped[dict] = mapped_column(JSON)
+    before: Mapped[dict] = mapped_column(JSON)
+    after: Mapped[dict] = mapped_column(JSON)
+    undone_by: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -20,7 +20,7 @@ import { IngestionScreen } from './components/IngestionScreen';
 import { Layout } from './components/Layout';
 import { OrderSummaryScreen } from './components/OrderSummaryScreen';
 import { ProcessingScreen } from './components/ProcessingScreen';
-import { ReviewItemsScreen } from './components/ReviewItemsScreen';
+import { ReviewWorkspace } from './components/review/ReviewWorkspace';
 import { SmartMatchingScreen } from './components/SmartMatchingScreen';
 import { TrendDashboard } from './components/TrendDashboard';
 import { CatalogueScreen } from './components/CatalogueScreen';
@@ -255,7 +255,7 @@ export default function App() {
         onContinue={(file, selectedSheets) => void handleImport(file, selectedSheets)} error={workflowError} onOpenRequest={openRequest}
         onStartManual={handleStartManual}
       />}
-      {currentScreen === 'review' && (requestId || manualDraft) && <ReviewItemsScreen
+      {currentScreen === 'review' && (requestId || manualDraft) && <ReviewWorkspace
         key={requestId ?? 'manual-draft'} requestId={requestId} initialData={reviewData}
         onCreateManual={handleCreateManual}
         onContinue={() => void handleStartMatching()}

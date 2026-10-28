@@ -422,7 +422,8 @@ async def test_edits_manual_rows_and_custom_columns_preserve_review(client, monk
             f"/api/requests/{rid}/items/{item_id}", json={"notes": "Human presentation"}
         )
         assert edit.status_code == 200
-        assert edit.json()["verificationSource"] == "human"
+        assert edit.json()["verificationSource"] is None
+        assert edit.json()["fieldReviews"]["notes"]["source"] == "human"
         manual = await client.post(
             f"/api/requests/{rid}/items",
             json={"name": "Manual device", "quantity": 3, "unit": "pcs", "domain": "equipment"},
@@ -435,7 +436,8 @@ async def test_edits_manual_rows_and_custom_columns_preserve_review(client, monk
         assert columns.status_code == 200, columns.text
         item = next(i for i in columns.json()["items"] if i["id"] == item_id)
         assert item["notes"] == "Human presentation"
-        assert item["verificationSource"] == "human"
+        assert item["verificationSource"] is None
+        assert item["fieldReviews"]["notes"]["source"] == "human"
         assert item["inferredFields"]["unit"]
         assert item["attributes"]["Source notes"] == "Original presentation"
         assert call.call_count == 1

@@ -51,14 +51,14 @@ async def process_request(request_id: str) -> None:
         request = await get_request_by_id(session, request_id)
         if request is None:
             return
-        item_ids = [item.id for item in request.items if item.match_status != "completed"]
+        item_ids = [item.id for item in request.active_items if item.match_status != "completed"]
 
     for item_id in item_ids:
         try:
             async with async_session() as session:
                 request = await get_request_by_id(session, request_id)
                 assert request is not None
-                item = next(item for item in request.items if item.id == item_id)
+                item = next(item for item in request.active_items if item.id == item_id)
                 item.match_status = "running"
                 await session.commit()
                 # A previous process can finish a run before it links it to the request item.
@@ -95,7 +95,7 @@ async def process_request(request_id: str) -> None:
             async with async_session() as session:
                 request = await get_request_by_id(session, request_id)
                 if request:
-                    item = next(item for item in request.items if item.id == item_id)
+                    item = next(item for item in request.active_items if item.id == item_id)
                     item.match_status = "failed"
                     item.match_error = str(exc)[:2000]
                     await session.commit()
@@ -113,11 +113,11 @@ async def process_request(request_id: str) -> None:
             return
         # A restarted worker can inherit a completed run that was linked just
         # before the previous process stopped, so reconcile its default here.
-        for item in request.items:
+        for item in request.active_items:
             await auto_select_item(session, item)
-        failed = any(item.match_status == "failed" for item in request.items)
+        failed = any(item.match_status == "failed" for item in request.active_items)
         undecided = await session.scalar(
-            text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id
+            text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id AND ri.removed_at IS NULL AND ri.source_active = true
                     AND (ri.current_match_run_id IS NULL OR NOT EXISTS
                         (SELECT 1 FROM match_decisions md
                          WHERE md.match_run_id = ri.current_match_run_id))"""),

@@ -30,7 +30,7 @@ def request_state(request: ImportRequestRow, match_rate: float | None = None) ->
         sourceFile=request.source_file_name or None,
         partner=request.partner,
         region=request.region,
-        itemCount=len(request.items),
+        itemCount=len(request.active_items),
         matchRate=match_rate,
         createdAt=request.created_at.isoformat() if request.created_at else "",
     )
@@ -90,7 +90,7 @@ async def matching_state(session: AsyncSession, request_id: str) -> RequestMatch
     if request is None:
         return None
     lines: list[MatchingLineState] = []
-    for item in request.items:
+    for item in request.active_items:
         candidates: list[dict] = []
         selected_candidate_id = None
         decision_type = None
@@ -156,7 +156,7 @@ async def matching_state(session: AsyncSession, request_id: str) -> RequestMatch
     return RequestMatchingState(
         requestId=request_id,
         status=request.workflow_status,
-        completed=sum(item.match_status == "completed" for item in request.items),
-        total=len(request.items),
+        completed=sum(item.match_status == "completed" for item in request.active_items),
+        total=len(request.active_items),
         lines=lines,
     )

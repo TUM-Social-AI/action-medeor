@@ -84,6 +84,8 @@ class ExtractedItem(BaseModel):
     verificationSource: Literal["ai", "human"] | None = None
     inferredFields: dict[str, str] = Field(default_factory=dict)
     reviewReasons: list[str] = Field(default_factory=list)
+    fieldReviews: dict = Field(default_factory=dict)
+    readyForMatching: bool = False
 
 
 class ReviewCounts(BaseModel):
@@ -110,6 +112,13 @@ class ImportProgress(BaseModel):
 
 
 class ReviewResponse(BaseModel):
+    reviewRevision: int | None = None
+    lastUndoOperationId: str | None = None
+    issues: list[dict] = Field(default_factory=list)
+    tasks: list[dict] = Field(default_factory=list)
+    reviewCounts: dict = Field(default_factory=dict)
+    removedItems: list[ExtractedItem] = Field(default_factory=list)
+    canStartMatching: bool = False
     parserWarnings: list[str] = Field(default_factory=list)
     usedLlm: bool = False
     extractionMode: Literal["basic", "balanced"] = "basic"
@@ -156,7 +165,7 @@ class ColumnLabelUpdate(BaseModel):
 
 class ItemUpdate(BaseModel):
     name: str | None = None
-    quantity: int | None = None
+    quantity: int | None = Field(default=None, gt=0, strict=True)
     unit: str | None = None
     notes: str | None = None
     itemNumber: str | None = None

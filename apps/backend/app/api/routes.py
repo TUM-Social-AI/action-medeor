@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -39,7 +39,7 @@ from app.api.schemas import (
     WorksheetSelection,
 )
 from app.db import repository
-from app.db.models import ImportProgressRow
+from app.db.models import ImportProgressRow, ImportRequestRow, RequestReviewOperationRow
 from app.db.repository import RawFileUnavailable
 from app.db.session import get_session
 from app.matching.api import get_matching_service
@@ -48,6 +48,9 @@ from app.matching.contracts import DecisionType, MatchDecisionRequestV1
 from app.parsing import CustomColumnSpec, ParsingError, parse_upload
 from app.parsing.ai_review import fingerprint, review_document
 from app.parsing.review_sources import fill_legacy_sources
+from app.review import service as review_service
+from app.review.contracts import ReviewOperation, UndoOperation
+from app.review.engine import project, synchronize
 
 router = APIRouter(prefix="/api")
 
@@ -201,8 +204,8 @@ async def list_requests(session: AsyncSession = Depends(get_session)) -> list[Re
     return [
         request_state(
             request,
-            match_rate=round(100 * matched[request.request_id] / len(request.items), 1)
-            if request.request_id in matched and request.items else None,
+            match_rate=round(100 * matched[request.request_id] / len(request.active_items), 1)
+            if request.request_id in matched and request.active_items else None,
         )
         for request in requests
     ]
@@ -276,10 +279,27 @@ async def review(request_id: str, session: AsyncSession = Depends(get_session)) 
     request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         await repository.suggest_missing_item_domains(session, request)
-        return repository.to_review_response(request)
+        return await review_response_with_history(session, request)
 
     require_mock_request(request_id)
     return fixtures.review_response()
+
+
+async def review_response_with_history(
+    session: AsyncSession, request: ImportRequestRow
+) -> ReviewResponse:
+    result = await session.execute(
+        select(RequestReviewOperationRow)
+        .where(RequestReviewOperationRow.request_id == request.request_id)
+        .order_by(RequestReviewOperationRow.created_at.desc(), RequestReviewOperationRow.id.desc())
+        .limit(1)
+    )
+    latest = result.scalar_one_or_none()
+    response = repository.to_review_response(request)
+    response.lastUndoOperationId = (
+        latest.id if latest and review_service.undo_available(request, latest) else None
+    )
+    return response
 
 
 @router.post("/requests/{request_id}/items", status_code=201)
@@ -306,16 +326,53 @@ async def remove_manual_item(
     request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
-    item = next((item for item in request.items if item.id == item_id), None)
+    item = next((item for item in request.active_items if item.id == item_id), None)
     if item is None:
         raise HTTPException(status_code=404, detail="Item not found")
     if request.workflow_status != "review":
         raise HTTPException(status_code=409, detail="Review is locked after matching starts")
-    if not item.manual:
-        raise HTTPException(status_code=409, detail="Only manual items can be removed")
-    await session.delete(item)
-    await session.commit()
+    from uuid import uuid4
+    await review_service.apply(session, request, ReviewOperation(
+        operationId=str(uuid4()), expectedRevision=request.review_revision,
+        action="remove", itemIds=[item_id],
+    ))
     return Response(status_code=204)
+
+
+@router.post("/requests/{request_id}/review/operations/preview")
+async def preview_review_operation(
+    request_id: str, payload: ReviewOperation, session: AsyncSession = Depends(get_session),
+) -> dict:
+    request = await repository.get_request_by_id(session, request_id)
+    if request is None:
+        raise HTTPException(404, "Request not found")
+    return review_service.evaluate(request, payload)[3]
+
+
+@router.post("/requests/{request_id}/review/operations")
+async def apply_review_operation(
+    request_id: str, payload: ReviewOperation, http_request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    request = await repository.get_request_by_id(session, request_id, lock=True)
+    if request is None:
+        raise HTTPException(404, "Request not found")
+    actor = http_request.headers.get("x-ms-client-principal-id") or "local"
+    record = await review_service.apply(session, request, payload, actor)
+    return {"review": await review_response_with_history(session, request), "operationId": record.id}
+
+
+@router.post("/requests/{request_id}/review/operations/{operation_id}/undo")
+async def undo_review_operation(
+    request_id: str, operation_id: str, payload: UndoOperation, http_request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    request = await repository.get_request_by_id(session, request_id, lock=True)
+    if request is None:
+        raise HTTPException(404, "Request not found")
+    actor = http_request.headers.get("x-ms-client-principal-id") or "local"
+    record = await review_service.undo(session, request, operation_id, payload, actor)
+    return {"review": await review_response_with_history(session, request), "operationId": record.id}
 
 
 @router.patch("/requests/{request_id}/items/{item_id}")
@@ -327,12 +384,12 @@ async def update_item(
 ) -> ExtractedItem:
     request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
-        if not any(item.id == item_id for item in request.items):
+        if not any(item.id == item_id for item in request.active_items):
             raise HTTPException(status_code=404, detail="Item not found")
         if request.workflow_status != "review":
             raise HTTPException(status_code=409, detail="Review is locked after matching starts")
         update = payload.model_dump(exclude_unset=True)
-        item = next(item for item in request.items if item.id == item_id)
+        item = next(item for item in request.active_items if item.id == item_id)
         if item.manual:
             # Keep manual items complete when editing them, just as on creation.
             try:
@@ -364,7 +421,7 @@ async def verify_item(
 ) -> ExtractedItem:
     request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
-        if not any(item.id == item_id for item in request.items):
+        if not any(item.id == item_id for item in request.active_items):
             raise HTTPException(status_code=404, detail="Item not found")
         if request.workflow_status != "review":
             raise HTTPException(status_code=409, detail="Review is locked after matching starts")
@@ -415,7 +472,7 @@ async def update_column_label(
     payload: ColumnLabelUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    request = await repository.get_request_by_id(session, request_id)
+    request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is not None:
         updated = await repository.update_column_label(
             session, request_id, payload.columnKey, payload.label
@@ -492,6 +549,7 @@ async def select_worksheet(
             detail="The original file is unavailable; re-upload it to switch sheets",
         )
     content, file_name, mode = request.raw_file, request.source_file_name, request.extraction_mode
+    before_revision = request.review_revision
     specs = [CustomColumnSpec(**entry) for entry in request.custom_columns or []]
     # Release the read transaction during provider work, then re-check before replacing rows.
     await session.commit()
@@ -508,6 +566,8 @@ async def select_worksheet(
     request = await repository.get_request_by_id(session, request_id, lock=True)
     if request is None or request.workflow_status != "review":
         raise HTTPException(status_code=409, detail="Review is locked after matching starts")
+    if request.review_revision != before_revision:
+        raise HTTPException(status_code=409, detail="Request changed during extraction. Reload and try again.")
     updated = await repository.replace_extracted_items(session, request, parsed)
     return repository.to_review_response(updated)
 
@@ -548,13 +608,11 @@ async def start_matching(
             status_code=409, detail="Upload a file or create a manual request before matching"
         )
     await repository.suggest_missing_item_domains(session, request, commit=False)
-    if not request.items or any(
-        item.status != "verified" or not item.domain for item in request.items
-    ):
+    if not project(request)["canStartMatching"]:
         raise HTTPException(
             status_code=422, detail="Verify and classify every item before matching"
         )
-    for item in request.items:
+    for item in request.active_items:
         try:
             to_inquiry_line(request, item)
         except ValueError as exc:
@@ -563,7 +621,7 @@ async def start_matching(
         request.catalog_snapshot_id = await latest_snapshot_id(session)
     if request.catalog_snapshot_id is None:
         raise HTTPException(status_code=409, detail="Import a catalog before matching")
-    for item in request.items:
+    for item in request.active_items:
         if item.match_status == "failed":
             item.match_status = "pending"
             item.match_error = None
@@ -599,16 +657,16 @@ async def auto_select_matching(
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
     if request.workflow_status in {"match_review", "complete"}:
-        for item in request.items:
+        for item in request.active_items:
             await auto_select_item(session, item)
         undecided = await session.scalar(
-            text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id
+            text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id AND ri.removed_at IS NULL AND ri.source_active = true
                     AND (ri.current_match_run_id IS NULL OR NOT EXISTS
                          (SELECT 1 FROM match_decisions md
                           WHERE md.match_run_id = ri.current_match_run_id))"""),
             {"id": request_id},
         )
-        if undecided == 0 and request.items:
+        if undecided == 0 and request.active_items:
             request.workflow_status = "complete"
             await session.commit()
     state = await matching_state(session, request_id)
@@ -626,13 +684,13 @@ async def finalize_request(
     if request.workflow_status not in {"complete", "finalized"}:
         raise HTTPException(status_code=409, detail="Decide every matched item before finalizing")
     undecided = await session.scalar(
-        text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id
+        text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id AND ri.removed_at IS NULL AND ri.source_active = true
                 AND (ri.match_status != 'completed' OR ri.current_match_run_id IS NULL
                      OR NOT EXISTS (SELECT 1 FROM match_decisions md
                                     WHERE md.match_run_id = ri.current_match_run_id))"""),
         {"id": request_id},
     )
-    if not request.items or undecided:
+    if not request.active_items or undecided:
         raise HTTPException(status_code=409, detail="Decide every matched item before finalizing")
     request.workflow_status = "finalized"
     await session.commit()
@@ -671,7 +729,7 @@ async def decide_match(
         "finalized",
     }:
         raise HTTPException(status_code=409, detail="Matching has not started")
-    item = next((item for item in request.items if item.id == item_id), None)
+    item = next((item for item in request.active_items if item.id == item_id), None)
     if item is None:
         raise HTTPException(status_code=404, detail="Item not found")
     if item.match_status != "completed" or item.current_match_run_id is None:
@@ -709,7 +767,7 @@ async def decide_match(
     )
     await service.save_decision(decision)
     undecided = await session.scalar(
-        text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id
+        text("""SELECT COUNT(*) FROM request_items ri WHERE ri.request_id = :id AND ri.removed_at IS NULL AND ri.source_active = true
                 AND (ri.match_status != 'completed' OR ri.current_match_run_id IS NULL
                      OR NOT EXISTS (SELECT 1 FROM match_decisions md
                                     WHERE md.match_run_id = ri.current_match_run_id))"""),
@@ -742,7 +800,7 @@ async def _saved_summary(session: AsyncSession, request) -> dict:
         raise HTTPException(status_code=409, detail="Decide every matched item before summary")
     state = await matching_state(session, request.request_id)
     assert state is not None
-    source_items = {item.id: item for item in request.items}
+    source_items = {item.id: item for item in request.active_items}
     items = []
     for line in state.lines:
         candidate = next(
@@ -867,6 +925,7 @@ async def ai_review(
     sheet = request.selected_sheet
     selected_sheets = request.selected_sheets or None
     before = fingerprint(content, document)
+    before_revision = request.review_revision
     cached = request.ai_review or {}
     if (
         cached.get("fingerprint") == before
@@ -883,6 +942,7 @@ async def ai_review(
     if (
         current is None
         or current.workflow_status != "review"
+        or current.review_revision != before_revision
         or fingerprint(current.raw_file or b"", repository.review_document_from_request(current))
         != before
     ):
@@ -891,5 +951,9 @@ async def ai_review(
             status_code=409, detail="Request changed during AI review. Reload and try again."
         )
     repository.apply_ai_review(current, document)
+    synchronize(current)
+    current.ai_review = {**current.ai_review, "fingerprint": fingerprint(
+        current.raw_file or b"", repository.review_document_from_request(current),
+    )}
     await session.commit()
     return repository.to_review_response(current)
