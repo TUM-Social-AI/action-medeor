@@ -78,6 +78,8 @@ def parse_excel(
     document.sheets = sheets
     document.selected_sheet = selected
     document.selected_sheets = [selected]
+    for item in document.items:
+        item.review_source["worksheet"] = selected
     capture_rows(document, rows)
     return document
 

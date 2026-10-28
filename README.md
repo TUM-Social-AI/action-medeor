@@ -90,7 +90,33 @@ pg_restore -h localhost -U allocura -d allocura --no-owner --no-acl --exit-on-er
 The dump includes embeddings. Set `DATABASE_URL=postgresql+asyncpg://allocura:allocura@localhost:5432/allocura`
 for the local backend.
 
+### Migrate another database
+
+For a new database, an older database, or a restored full database dump, run the same migrations
+from `apps/backend`, using the backend's target connection:
+
+```bash
+cd apps/backend
+export DATABASE_URL='postgresql+asyncpg://USER:PASSWORD@HOST:5432/DATABASE'
+uv run alembic current
+uv run alembic upgrade head
+uv run alembic current
+```
+
+The final revision should match `uv run alembic heads`. Migrations follow `down_revision`
+dependencies, not filename/date order. Upgrading creates a fresh schema or applies revisions
+after the database's recorded version. It does not check that previously applied tables still
+exist. Preserve migration history in full dumps and avoid changing dependencies of revisions
+that developers or deployments may already have applied. The backend must use the same
+`DATABASE_URL`. A database whose schema disagrees with its recorded revision needs a targeted
+one-time reconciliation before normal upgrades; do not change the shared migration chain to
+match an individual development database.
+
 ## Local Foundry extraction
+
+The item-review workflow supports guided problem groups, bulk edits and verification,
+recoverable removal, and undo. See [grouped review](docs/grouped-review.md) for the operation
+API, migration, and verification details.
 
 For a backend started directly with uvicorn, use `apps/backend/.env.example` as a
 template for the ignored `apps/backend/.env` file. Add these settings if they are missing:

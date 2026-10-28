@@ -15,9 +15,11 @@ from app.parsing.llm_client import LlmUnavailable, call_llm
 from app.parsing.table_mapping import strict_quantity
 from app.parsing.text_heuristics import DEFAULT_UNIT_EVIDENCE, extract_quantity_and_unit
 from app.parsing.types import ParsedDocument, ParsedLineItem
+from app.review.taxonomy import CATEGORIES, classify
+from app.review.taxonomy import FIELDS as ISSUE_FIELDS
 
 logger = logging.getLogger(__name__)
-REVIEW_VERSION = 3
+REVIEW_VERSION = 4
 MAX_ITEMS = 100
 MAX_CHARACTERS = 32_000
 FIELDS = ("name", "quantity", "unit", "domain", "notes", "item_number", "shelf_life")
@@ -38,6 +40,8 @@ class Issue(BaseModel):
     model_config = ConfigDict(extra="forbid")
     row_id: str
     reason: str = Field(min_length=1, max_length=500)
+    code: str = "other"
+    fields: list[Literal["name", "quantity", "unit", "domain", "notes", "item_number", "shelf_life"]] = Field(default_factory=list)
 
 
 class ConfidenceOverride(BaseModel):
@@ -86,6 +90,10 @@ may be empty: the application records the actual source cell. Do not cite suppli
 For free-text corrections, source_column=null and evidence must be a short literal source quote,
 not an explanation. Use exact field names.
 Protected fields and manual rows must not be overwritten: report a discrepancy as an issue.
+For each issue include code (type_required, type_conflict, quantity_required, quantity_invalid,
+quantity_conflict, pack_total_conflict, unit_unclear, unit_conflict, packaging_unclear,
+name_required, name_unclear, mapping_uncertain, coverage_uncertain, low_confidence, or other)
+and fields (the affected field names; empty when the entire source row needs inspection).
 Rows without exceptions are approved, subject to deterministic validation.
 """
 
@@ -460,6 +468,11 @@ def review_document(document: ParsedDocument) -> ParsedDocument:
             before = {field: getattr(item, field) for field in FIELDS}
             working = copy.deepcopy(item)
             issues = [i.reason for i in response.issues if i.row_id == item.review_id]
+            working.review_findings = [
+                {"code": classify(i.reason, i.code), "message": i.reason, "origin": "ai",
+                 "fields": i.fields or ISSUE_FIELDS[CATEGORIES[classify(i.reason, i.code)]]}
+                for i in response.issues if i.row_id == item.review_id
+            ]
             patches = [p for p in response.corrections if p.row_id == item.review_id]
             patches.sort(key=lambda p: p.field != "domain")
             invalid_row = False
@@ -509,6 +522,12 @@ def review_document(document: ParsedDocument) -> ParsedDocument:
             if issues:
                 working.confidence = min(working.confidence, 60)
             working.review_reasons = list(dict.fromkeys(issues))
+            known = {f["message"] for f in working.review_findings}
+            working.review_findings.extend(
+                {"code": classify(reason), "message": reason, "origin": "rules",
+                 "fields": ISSUE_FIELDS[CATEGORIES[classify(reason)]]}
+                for reason in working.review_reasons if reason not in known
+            )
             working.status = "needs_review" if issues else "verified"
             working.verification_source = (
                 None if issues else ("human" if item.verification_source == "human" else "ai")

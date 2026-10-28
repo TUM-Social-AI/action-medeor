@@ -1,6 +1,7 @@
 """Manual requests and additions use the same persisted review/matching workflow."""
 
 import os
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -167,7 +168,15 @@ async def test_manual_request_and_uploaded_additions_survive_reload() -> None:
             assert extracted["manual"] is False
             assert (await client.delete(
                 f"/api/requests/{upload_id}/items/{extracted['id']}"
-            )).status_code == 409
+            )).status_code == 204
+            removed_review = (await client.get(f"/api/requests/{upload_id}/review")).json()
+            assert removed_review["removedItems"][0]["id"] == extracted["id"]
+            restored = await client.post(f"/api/requests/{upload_id}/review/operations", json={
+                "operationId": str(uuid4()),
+                "expectedRevision": removed_review["reviewRevision"],
+                "action": "restore", "itemIds": [extracted["id"]],
+            })
+            assert restored.status_code == 200, restored.text
             added = await client.post(f"/api/requests/{upload_id}/items", json=payload)
             assert added.status_code == 201, added.text
             manual_item = added.json()

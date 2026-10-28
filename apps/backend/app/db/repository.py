@@ -25,6 +25,9 @@ from app.parsing.domain_inference import suggest_domain
 from app.parsing.keywords import match_column_role
 from app.parsing.service import parse_upload
 from app.parsing.types import CustomColumnSpec, ParsedDocument, ParsedLineItem
+from app.review.engine import project, synchronize
+from app.review.taxonomy import CATEGORIES, classify
+from app.review.taxonomy import FIELDS as ISSUE_FIELDS
 
 
 def generate_request_id() -> str:
@@ -60,7 +63,7 @@ async def save_parsed_request(
         request_id = generate_request_id()
         # Initialize even empty imports: accessing an unloaded collection after flush
         # would otherwise attempt synchronous lazy loading on the async session.
-        request = ImportRequestRow(request_id=request_id, source_file_name="", items=[])
+        request = ImportRequestRow(request_id=request_id, source_file_name="", items=[], review_issues=[])
     request.source_file_name = file_name
     request.rows_detected = parsed.rows_detected
     request.request_date = dt.date.today().isoformat()
@@ -84,6 +87,7 @@ async def save_parsed_request(
     session.add(request)
     await session.flush()
     _store_review_state(request, new_items, parsed)
+    synchronize(request)
     await session.commit()
 
     # session.refresh(request, attribute_names=["items"]) reloads the items collection but does
@@ -94,6 +98,15 @@ async def save_parsed_request(
     refreshed = await get_request_by_id(session, request.request_id)
     assert refreshed is not None  # we just committed this row in the same session
     return refreshed
+
+
+def source_key(item: ParsedLineItem, position: int, worksheet: str | None = None) -> str:
+    from app.review.engine import digest
+    source = item.review_source
+    if item.row > 0:
+        worksheet = source.get("worksheet") or worksheet
+        return digest([worksheet, item.page if not worksheet else 0, item.row])
+    return digest(["text", item.page, item.excerpt, position])
 
 
 def _append_parsed_items(
@@ -119,6 +132,12 @@ def _append_parsed_items(
             verification_source=parsed_item.verification_source,
             inferred_fields=parsed_item.inferred_fields,
             review_reasons=parsed_item.review_reasons,
+            review_findings=parsed_item.review_findings or [
+                {"code": classify(reason), "message": reason, "origin": "rules",
+                 "fields": ISSUE_FIELDS[CATEGORIES[classify(reason)]]}
+                for reason in parsed_item.review_reasons
+            ],
+            source_key=source_key(parsed_item, position, request.selected_sheet),
             protected_fields=parsed_item.protected_fields,
         )
         if parsed_item.excerpt:
@@ -141,7 +160,7 @@ def _store_review_state(
         str(item.id): source.review_source
         for item, source in zip(new_items, parsed.items, strict=True)
     }
-    request.ai_review = {"summary": parsed.review_summary, "sources": sources}
+    request.ai_review = {"summary": parsed.review_summary, "sources": {**(request.ai_review or {}).get("sources", {}), **sources}}
     request.ai_review = {
         **request.ai_review,
         "fingerprint": fingerprint(request.raw_file or b"", review_document_from_request(request)),
@@ -151,32 +170,40 @@ def _store_review_state(
 async def replace_extracted_items(
     session: AsyncSession, request: ImportRequestRow, parsed: ParsedDocument
 ) -> ImportRequestRow:
-    """Swap the extracted rows for a freshly parsed set (e.g. another worksheet), keeping manual
-    rows and the partner details. Only valid during review, before matching references items."""
-    manual = [item for item in request.items if item.manual]
-    for item in [item for item in request.items if not item.manual]:
-        request.items.remove(item)  # delete-orphan removes the row and its source reference
-    request.rows_detected = parsed.rows_detected
-    request.used_llm_fallback = parsed.used_llm_fallback
+    """Merge a selected source without discarding human edits or removal tombstones."""
+    existing = {item.source_key: item for item in request.items if item.source_key and not item.manual}
+    for item in request.items:
+        if not item.manual:
+            item.source_active = False
+    sources = dict((request.ai_review or {}).get("sources", {}))
+    for position, source in enumerate(parsed.items):
+        key = source_key(source, position, parsed.selected_sheet)
+        item = existing.get(key)
+        if item is None:
+            item = _append_parsed_items(request, ParsedDocument(items=[source]), position)[0]
+            item.source_key = key
+        else:
+            protected = set(item.protected_fields or [])
+            for field in FIELDS:
+                if field not in protected:
+                    setattr(item, field, getattr(source, field))
+            item.attributes = {**(item.attributes or {}), **source.attributes}
+        item.source_active = True
+        item.position = position
+        await session.flush()
+        sources[str(item.id)] = source.review_source
+    for name in ("rows_detected", "table_mappings", "attribute_columns", "available_columns",
+                 "sheets", "selected_sheet", "selected_sheets"):
+        setattr(request, name, getattr(parsed, name))
     request.parser_warnings = parsed.warnings
-    request.table_mappings = parsed.table_mappings
-    request.attribute_columns = parsed.attribute_columns
-    request.available_columns = parsed.available_columns
-    request.sheets = parsed.sheets
-    request.selected_sheet = parsed.selected_sheet
-    request.selected_sheets = parsed.selected_sheets
-    new_items = _append_parsed_items(request, parsed)
-    for position, item in enumerate(manual, len(new_items)):
-        item.position = position  # manual rows stay after the extracted ones
-    # The loaded collection keeps insertion order (kept manual rows first) and a re-fetch in this
-    # session won't reorder an already-loaded collection, so put it in position order here.
+    request.ai_review = {**(request.ai_review or {}), "sources": sources, "summary": parsed.review_summary}
+    request.review_revision = (request.review_revision or 0) + 1
+    for position, item in enumerate([i for i in request.items if i.manual], len(parsed.items)):
+        item.position = position
     request.items.sort(key=lambda item: item.position)
-    await session.flush()
-    _store_review_state(request, new_items, parsed)
+    synchronize(request)
     await session.commit()
-    refreshed = await get_request_by_id(session, request.request_id)
-    assert refreshed is not None
-    return refreshed
+    return request
 
 
 async def get_request_by_id(
@@ -187,6 +214,7 @@ async def get_request_by_id(
         .where(ImportRequestRow.request_id == request_id)
         .options(
             selectinload(ImportRequestRow.items).selectinload(RequestItemRow.source_reference),
+            selectinload(ImportRequestRow.review_issues),
         )
     )
     if lock:
@@ -202,7 +230,7 @@ async def suggest_missing_item_domains(
     if request.workflow_status != "review":
         return
     changed = False
-    for item in request.items:
+    for item in request.active_items:
         if item.domain is None and not item.review_reasons:
             source_type = next(
                 (
@@ -217,6 +245,7 @@ async def suggest_missing_item_domains(
                 item.domain = domain
                 changed = True
     if changed and commit:
+        request.review_revision += 1
         await session.commit()
 
 
@@ -224,56 +253,31 @@ async def get_item_by_id(session: AsyncSession, item_id: int) -> RequestItemRow 
     return await session.get(RequestItemRow, item_id)
 
 
-async def update_item_fields(
-    session: AsyncSession,
-    item_id: int,
-    fields: dict,
-) -> RequestItemRow | None:
+async def update_item_fields(session: AsyncSession, item_id: int, fields: dict) -> RequestItemRow | None:
+    from app.review.contracts import ReviewOperation
+    from app.review.service import apply
     item = await get_item_by_id(session, item_id)
-    if item is None:
+    if item is None or item.removed_at is not None:
         return None
-    actual_changes = {
-        _ITEM_UPDATE_FIELD_MAP.get(key, key)
-        for key, value in fields.items()
-        if getattr(item, _ITEM_UPDATE_FIELD_MAP.get(key, key)) != value
-    }
-    for key, value in fields.items():
-        setattr(item, _ITEM_UPDATE_FIELD_MAP.get(key, key), value)
-    item.status = "verified"
-    item.verification_source = "human"
-    item.review_reasons = []
-    # Editing confirms the submitted values; a verification click confirms every core field.
-    changed_fields = {_ITEM_UPDATE_FIELD_MAP.get(key, key) for key in fields}
-    legacy = (
-        {field for field in FIELDS if getattr(item, field) not in (None, "")}
-        if item.protected_fields is None
-        else set(item.protected_fields)
-    )
-    item.protected_fields = sorted(legacy | changed_fields)
-    inferred = dict(item.inferred_fields or {})
-    for field in actual_changes:
-        inferred.pop(
-            {"domain": "type", "item_number": "itemNumber", "shelf_life": "shelfLife"}.get(
-                field, field
-            ),
-            None,
-        )
-    item.inferred_fields = inferred
-    await session.commit()
-    await session.refresh(item)
+    request = await get_request_by_id(session, item.request_id, lock=True)
+    await apply(session, request, ReviewOperation(
+        operationId=str(uuid.uuid4()), expectedRevision=request.review_revision,
+        action="edit", itemIds=[item_id], changes=fields,
+    ))
     return item
 
 
 async def verify_item(session: AsyncSession, item_id: int) -> RequestItemRow | None:
+    from app.review.contracts import ReviewOperation
+    from app.review.service import apply
     item = await get_item_by_id(session, item_id)
-    if item is None:
+    if item is None or item.removed_at is not None:
         return None
-    item.status = "verified"
-    item.verification_source = "human"
-    item.review_reasons = []
-    item.protected_fields = sorted(set(item.protected_fields or []) | set(FIELDS))
-    await session.commit()
-    await session.refresh(item)
+    request = await get_request_by_id(session, item.request_id, lock=True)
+    await apply(session, request, ReviewOperation(
+        operationId=str(uuid.uuid4()), expectedRevision=request.review_revision,
+        action="verify", itemIds=[item_id],
+    ))
     return item
 
 
@@ -327,6 +331,7 @@ async def update_column_label(
     else:
         updated_labels.pop(column_key, None)  # blank label = reset to the default
     request.column_labels = updated_labels
+    request.review_revision = (request.review_revision or 0) + 1
 
     await session.commit()
     await session.refresh(request)
@@ -372,15 +377,30 @@ async def add_custom_column(
     tabular_file = request.source_file_name.lower().endswith((".xlsx", ".xls", ".csv"))
     table_pages = parsed.table_mappings.get("tables", {})
     by_source = {(item.page, item.row): item for item in parsed.items if item.row > 0}
-    for item in request.items:
+    for item in request.active_items:
         if item.manual:
             continue
         reference = item.source_reference
         table_item = tabular_file or (reference is not None and str(reference.page) in table_pages)
         if table_item and reference and reference.row > 0:
             source_item = by_source.get((reference.page, reference.row))
-        elif not table_item and item.position < len(parsed.items):
-            source_item = parsed.items[item.position]
+        elif not table_item:
+            # LLM extraction order can change when adding a field. Require a unique source
+            # excerpt match rather than assigning an unrelated row's attributes by position.
+            matches = [candidate for candidate in parsed.items
+                       if reference and " ".join(candidate.excerpt.split())
+                       == " ".join(reference.excerpt.split()) and candidate.excerpt.strip()]
+            if not matches:
+                # Older/free-text extractions can lack excerpts. A unique complete identity
+                # on both sides is still usable, including when another row was removed.
+                def identity(candidate):
+                    return (" ".join(candidate.name.casefold().split()), candidate.quantity,
+                            " ".join(candidate.unit.casefold().split()))
+                if sum(identity(other) == identity(item) for other in request.items if not other.manual) == 1:
+                    matches = [candidate for candidate in parsed.items if identity(candidate) == identity(item)]
+            source_item = matches[0] if len(matches) == 1 else None
+            if source_item is None:
+                parsed.warnings.append("Some source rows could not be aligned; check the new column manually")
         else:
             source_item = None
         value = source_item.attributes.get(spec.display_name) if source_item else None
@@ -388,6 +408,7 @@ async def add_custom_column(
             updated_attributes = dict(item.attributes or {})
             updated_attributes[spec.display_name] = value
             item.attributes = updated_attributes
+    request.review_revision = (request.review_revision or 0) + 1
     request.table_mappings = parsed.table_mappings
     request.parser_warnings = list(dict.fromkeys([*(request.parser_warnings or []), *parsed.warnings]))
     request.used_llm_fallback = request.used_llm_fallback or parsed.used_llm_fallback
@@ -437,6 +458,8 @@ def to_extracted_item(row: RequestItemRow) -> ExtractedItem:
         verificationSource=row.verification_source,
         inferredFields=row.inferred_fields or {},
         reviewReasons=row.review_reasons or [],
+        fieldReviews=row.field_reviews or {},
+        readyForMatching=row.status == "verified",
     )
 
 
@@ -453,7 +476,17 @@ def to_partner_details(row: ImportRequestRow) -> PartnerDetails:
 
 
 def to_review_response(row: ImportRequestRow) -> ReviewResponse:
-    items = [to_extracted_item(item) for item in row.items]
+    projection = project(row)
+    ready_ids = set(projection["readyIds"])
+    reasons = {}
+    for issue in projection["issues"]:
+        if issue["state"] == "open":
+            reasons.setdefault(issue["itemId"], []).append(issue["message"])
+    items = [to_extracted_item(item).model_copy(update={
+        "reviewReasons": reasons.get(item.id, []),
+        "status": "verified" if item.id in ready_ids else "missing" if not item.name.strip() or item.quantity is None else "needs_review",
+        "readyForMatching": item.id in ready_ids,
+    }) for item in row.active_items]
     source_references = [
         SourceReference(
             itemId=item.id,
@@ -461,11 +494,15 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
             row=item.source_reference.row,
             excerpt=item.source_reference.excerpt,
         )
-        for item in row.items
+        for item in row.active_items
         if item.source_reference is not None
     ]
 
     return ReviewResponse(
+        reviewRevision=row.review_revision,
+        issues=projection["issues"], tasks=projection["tasks"],
+        reviewCounts=projection["reviewCounts"], canStartMatching=projection["canStartMatching"],
+        removedItems=[to_extracted_item(item) for item in row.items if item.removed_at and item.source_active],
         requestId=row.request_id,
         source=SourceInfo(
             fileName=row.source_file_name,
@@ -504,6 +541,7 @@ async def create_draft_request(session: AsyncSession, *, manual: bool = False) -
         request_id=generate_request_id(), source_file_name="",
         workflow_status="review" if manual else "draft",
         request_date=dt.date.today().isoformat() if manual else None,
+        review_issues=[], items=[],
     )
     session.add(request)
     await session.commit()
@@ -526,6 +564,7 @@ def append_manual_item(request: ImportRequestRow, payload: ManualItemCreate) -> 
     )
     item.name = item.name.strip()
     request.items.append(item)
+    request.review_revision = (request.review_revision or 0) + 1
     return item
 
 
@@ -537,7 +576,7 @@ async def create_manual_request(
         request_id=generate_request_id(), source_file_name="", workflow_status="review",
         request_date=dt.date.today().isoformat(), partner=payload.partner,
         region=payload.region, contact=payload.contact, confirmed=payload.confirmed,
-        column_labels=payload.columnLabels,
+        column_labels=payload.columnLabels, items=[], review_issues=[],
     )
     append_manual_item(request, payload.item)
     session.add(request)
@@ -567,7 +606,7 @@ async def request_match_rates(session: AsyncSession) -> dict[str, int]:
                     WHERE match_run_id = ri.current_match_run_id
                     ORDER BY created_at DESC, id DESC LIMIT 1
                 ) md ON TRUE
-                WHERE r.workflow_status IN ('complete', 'finalized')
+                WHERE ri.removed_at IS NULL AND ri.source_active = true AND r.workflow_status IN ('complete', 'finalized')
                 GROUP BY ri.request_id""")
     )
     return {row.request_id: int(row.matched) for row in result}
@@ -623,7 +662,7 @@ async def list_requests(session: AsyncSession) -> list[ImportRequestRow]:
 def review_document_from_request(request: ImportRequestRow) -> ParsedDocument:
     sources = (request.ai_review or {}).get("sources", {})
     document = ParsedDocument(extraction_mode=request.extraction_mode)
-    for item in request.items:
+    for item in request.active_items:
         reference = item.source_reference
         document.items.append(
             ParsedLineItem(
@@ -641,6 +680,7 @@ def review_document_from_request(request: ImportRequestRow) -> ParsedDocument:
                 protected_fields=item.protected_fields,
                 inferred_fields=dict(item.inferred_fields or {}),
                 review_reasons=list(item.review_reasons or []),
+                review_findings=list(item.review_findings or []),
                 review_source=sources.get(str(item.id), {}),
             )
         )
@@ -648,7 +688,7 @@ def review_document_from_request(request: ImportRequestRow) -> ParsedDocument:
 
 
 def apply_ai_review(request: ImportRequestRow, document: ParsedDocument) -> None:
-    items = {str(item.id): item for item in request.items}
+    items = {str(item.id): item for item in request.active_items}
     for result in document.items:
         item = items[result.review_id]
         if item.manual:
@@ -660,6 +700,9 @@ def apply_ai_review(request: ImportRequestRow, document: ParsedDocument) -> None
         item.verification_source = result.verification_source
         item.inferred_fields = result.inferred_fields
         item.review_reasons = result.review_reasons
+        item.review_findings = result.review_findings
+    request.review_revision = (request.review_revision or 0) + 1
+    synchronize(request)
     request.used_llm_fallback = request.used_llm_fallback or document.used_llm_fallback
     history = list((request.ai_review or {}).get("attempt_history", []))
     previous = (request.ai_review or {}).get("summary", {})
@@ -674,6 +717,7 @@ def apply_ai_review(request: ImportRequestRow, document: ParsedDocument) -> None
     request.ai_review = {
         "attempt_history": history[-5:],
         "summary": document.review_summary,
-        "sources": {item.review_id: item.review_source for item in document.items},
+        "sources": {**(request.ai_review or {}).get("sources", {}),
+                    **{item.review_id: item.review_source for item in document.items}},
         "fingerprint": fingerprint(request.raw_file or b"", document),
     }

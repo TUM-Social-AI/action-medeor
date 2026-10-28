@@ -7,6 +7,31 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 
 const require = createRequire(import.meta.url);
+const { readFileSync } = await import('node:fs');
+const { dirname, resolve } = await import('node:path');
+const moduleCache = new Map();
+function loadTs(file) {
+  const path = resolve(file);
+  if (moduleCache.has(path)) return moduleCache.get(path);
+  const result = {};
+  moduleCache.set(path, result);
+  const compiled = ts.transpileModule(readFileSync(path, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  new Function('require', 'exports', compiled)(name => {
+    if (name.endsWith('/api/client')) return {};
+    if (name.endsWith('/api/http')) return { ApiError: class extends Error {} };
+    if (name.startsWith('.')) {
+      const target = resolve(dirname(path), name);
+      return loadTs(target + (target.endsWith('ReviewTools') ? '.tsx' : '.ts'));
+    }
+    return require(name);
+  }, result);
+  return result;
+}
+const reviewTools = loadTs(new URL('../src/components/review/ReviewTools.tsx', import.meta.url).pathname);
+const reviewModel = loadTs(new URL('../src/features/review/model.ts', import.meta.url).pathname);
+const inactiveOperations = () => ({ busy: false, error: null, pending: null, toast: null });
 const source = await readFile(new URL('../src/components/ReviewItemsScreen.tsx', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
@@ -19,6 +44,9 @@ const summaryOutput = ts.transpileModule(summarySource, {
 const exports = {};
 new Function('require', 'exports', outputText)(name => {
   if (name === '../api/client') return {};
+  if (name === './review/ReviewTools') return reviewTools;
+  if (name === '../features/review/model') return reviewModel;
+  if (name === '../features/review/use-review-operations') return { useReviewOperations: inactiveOperations };
   if (name === './ScreenState' || name === './WorkflowStepper') {
     return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
   }
@@ -108,6 +136,9 @@ function interactiveScreen(initialData = data, client = {}, summary = false) {
   const interactive = {};
   new Function('require', 'exports', summary ? summaryOutput : outputText)(name => {
     if (name === 'react') return hooks;
+    if (name === './review/ReviewTools') return reviewTools;
+    if (name === '../features/review/model') return reviewModel;
+    if (name === '../features/review/use-review-operations') return { useReviewOperations: inactiveOperations };
     if (name === 'react-dom') return { createPortal: element => element };
     if (name === '../api/client') return client;
     if (summary && name === '../api/workflow') return { getRequestSummary: async () => initialData };

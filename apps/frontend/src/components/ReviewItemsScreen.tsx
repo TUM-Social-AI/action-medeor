@@ -42,6 +42,9 @@ import type {
 } from '../api/types';
 import { ErrorPanel, LoadingPanel } from './ScreenState';
 import { WorkflowStepper } from './WorkflowStepper';
+import { BulkEdit, GuidedReview, OperationPreview, ReviewCheckbox, ReviewOverview, ReviewToast, ViewNavigation, problemLabels, reviewButton, reviewInput, type ReviewView } from './review/ReviewTools';
+import { useReviewOperations } from '../features/review/use-review-operations';
+import { filterItems, toggleSelection } from '../features/review/model';
 
 type ReviewItemsScreenProps = {
   requestId: string | null;
@@ -163,6 +166,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     initialData?.partner ?? null,
   );
   const [editingItem, setEditingItem] = useState<ExtractedItem | null>(null);
+  const itemDialog = useRef<HTMLDivElement>(null);
   const [isNewItem, setIsNewItem] = useState(false);
   const [isSavingItem, setIsSavingItem] = useState(false);
   const [removingItemId, setRemovingItemId] = useState<number | null>(null);
@@ -171,6 +175,28 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const [editValues, setEditValues] = useState<Partial<ExtractedItem>>({});
   const unitInferred = Boolean(editingItem?.inferredFields?.unit) && editValues.unit === editingItem?.unit;
   const typeInferred = Boolean(editingItem?.inferredFields?.type) && editValues.domain === editingItem?.domain;
+  useEffect(() => {
+    const dialog = itemDialog.current;
+    if (!editingItem || !dialog) return;
+    const previous = document.activeElement;
+    if (!dialog.contains(previous)) dialog.focus();
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled)'));
+      const first = controls[0], last = controls.at(-1);
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+        event.preventDefault(); last?.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog)) {
+        event.preventDefault(); first.focus();
+      }
+    };
+    dialog.addEventListener('keydown', trapFocus);
+    return () => {
+      dialog.removeEventListener('keydown', trapFocus);
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, [editingItem?.id]);
   useEffect(() => {
     if (!editingItem || isNewItem) return;
     const handleEscape = (event: KeyboardEvent) => {
@@ -199,6 +225,37 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const [isAddingColumn, setIsAddingColumn] = useState(false);
   const [isReviewingAi, setIsReviewingAi] = useState(false);
   const busyDialog = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState<ReviewView>(typeof initialData?.reviewRevision === 'number' && initialData.source.fileName ? 'overview' : 'all');
+  const initializedView = useRef(initialData ? requestId : null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [search, setSearch] = useState('');
+  const [stateFilter, setStateFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [showRemoved, setShowRemoved] = useState(false);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const refreshReview = (review: ReviewResponse) => {
+    setData(review); setItems(review.items); setPartnerDetails(review.partner);
+    setColumnLabels(review.columnLabels ?? {}); setAvailableColumns(review.availableColumns ?? []);
+  };
+  const operations = useReviewOperations(requestId, data, refreshReview);
+  const structuredReview = typeof data?.reviewRevision === 'number';
+  useEffect(() => {
+    if (data && initializedView.current !== requestId) {
+      initializedView.current = requestId;
+      setView(typeof data.reviewRevision === 'number' && data.source.fileName ? 'overview' : 'all');
+    }
+  }, [data, requestId]);
+  useEffect(() => { setSelected(new Set()); }, [search, stateFilter, typeFilter, categoryFilter, showRemoved]);
+  useEffect(() => {
+    if (operations.toast?.operationId) {
+      setEditingItem(null); setShowBulkEdit(false); setSelected(new Set());
+    }
+  }, [operations.toast?.operationId]);
+  const categoryItems = new Set((data?.issues ?? []).filter(issue => issue.state === 'open' && issue.category === categoryFilter).flatMap(issue => issue.itemId === null ? [] : [issue.itemId]));
+  const tableItems = showRemoved ? data?.removedItems ?? [] : items;
+  const displayItems = filterItems(tableItems, search, stateFilter, typeFilter, categoryFilter, categoryItems);
+  const selectedItems = tableItems.filter(item => selected.has(item.id));
   useEffect(() => {
     if (!isReviewingAi) return;
     const appRoot = document.getElementById('root');
@@ -217,9 +274,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     setError(null);
     try {
       const reviewed = await reviewWithAi(requestId);
-      setData(reviewed);
-      setItems(reviewed.items);
-      setPartnerDetails(reviewed.partner);
+      refreshReview(reviewed);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to review with AI');
     } finally { setIsReviewingAi(false); }
@@ -232,7 +287,10 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
     setColumnLabels(previous => ({ ...previous, [key]: label }));
     if (!requestId) return;
     updateColumnLabel(requestId, key, label)
-      .then(setColumnLabels)
+      .then(async labels => {
+        setColumnLabels(labels);
+        if (structuredReview) refreshReview(await getReview(requestId));
+      })
       .catch(caught => {
         setError(caught instanceof Error ? caught.message : 'Unable to rename column');
       });
@@ -361,7 +419,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const showShelfLife = items.some(item => item.shelfLife);
   const showNotes = items.some(item => item.notes);
   const columnCount =
-    8 +
+    8 + (structuredReview ? 1 : 0) +
     (attributeColumns.length > 0 ? 1 : 0) +
     [showItemNumber, showUnit, showShelfLife, showNotes].filter(Boolean).length;
 
@@ -372,9 +430,9 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
   const manualCount = items.filter(item => item.manual).length;
   const isManualRequest = !!data && !data.source.fileName;
   const itemMutationPending =
-    isReviewingAi || isSavingItem || removingItemId !== null;
-  const allVerified = items.length > 0 && verified === items.length && items.every(item => item.domain && !item.reviewReasons?.length)
-    && !itemMutationPending && !isAddingColumn;
+    isReviewingAi || isSavingItem || removingItemId !== null || operations.busy;
+  const allVerified = (structuredReview ? !!data?.canStartMatching : items.length > 0 && verified === items.length && items.every(item => item.domain && !item.reviewReasons?.length))
+    && !itemMutationPending && !isAddingColumn && !operations.pending;
   const blockedItems = items.filter(needsManualReview);
 
   const openEdit = (item: ExtractedItem) => {
@@ -443,10 +501,17 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
         setEditingItem(null);
         return;
       }
+      if (structuredReview && !isNewItem) {
+        const changes = Object.fromEntries(Object.entries(payload).filter(([key, value]) => value !== editingItem[key as keyof ExtractedItem]));
+        if (!Object.keys(changes).length) { setEditingItem(null); return; }
+        await operations.preview({ action: 'edit', itemIds: [editingItem.id], changes });
+        return;
+      }
       const updated = isNewItem
         ? await addManualItem(requestId, payload)
         : await updateItem(requestId, editingItem.id, payload);
-      setItems(prev => isNewItem ? [...prev, updated] : prev.map(item => (item.id === updated.id ? updated : item)));
+      if (structuredReview) refreshReview(await getReview(requestId));
+      else setItems(prev => isNewItem ? [...prev, updated] : prev.map(item => (item.id === updated.id ? updated : item)));
       setEditingItem(null);
       setError(null);
     } catch (caught) {
@@ -458,6 +523,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
 
   const removeItem = async (id: number) => {
     if (!requestId || itemMutationPending) return;
+    if (structuredReview) { await operations.preview({ action: 'remove', itemIds: [id] }); return; }
     setRemovingItemId(id);
     try {
       await removeManualItem(requestId, id);
@@ -482,6 +548,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       openEdit(item);
       return;
     }
+    if (structuredReview) { await operations.preview({ action: 'verify', itemIds: [id] }); return; }
     try {
       const updated = await verifyItem(requestId, id);
       setItems(prev => prev.map(item => (item.id === id ? updated : item)));
@@ -578,6 +645,9 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
       </div>
 
       {error && <div className="mb-4"><ErrorPanel message={error} /></div>}
+      {operations.error && !operations.pending && <div className="mb-4"><ErrorPanel message={operations.error} /></div>}
+      <OperationPreview operations={operations} />
+      <ReviewToast operations={operations} />
       {!!data.parserWarnings?.some(warning => !warning.startsWith('Ignored supplier/admin columns:')) && (
         <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <p className="font-semibold">Import notes — check the source before continuing</p>
@@ -640,7 +710,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
           </div>
           )}
 
-          {blockedItems.length > 0 && (
+          {view === 'all' && blockedItems.length > 0 && (
             <div className="bg-amber-50 border border-amber-300 rounded-lg px-4 py-3 flex items-start gap-2.5 mb-4">
               <AlertTriangle size={15} className="text-amber-500 flex-shrink-0 mt-0.5" />
               <div>
@@ -655,6 +725,32 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
             </div>
           )}
 
+          {structuredReview && <>
+            {!isManualRequest && <ViewNavigation view={view} setView={setView} />}
+            {view === 'overview' && <ReviewOverview data={data} onStart={() => setView('guided')} onAll={() => setView('all')} />}
+            <GuidedReview key={data.requestId} data={data} hidden={view !== 'guided'} operations={operations} onEdit={openEdit} onAll={() => setView('all')} />
+          </>}
+          <div hidden={view !== 'all'}>
+          {structuredReview && <div className="bg-white border border-gray-200 rounded-xl p-4 mb-3 space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <input aria-label="Search items" placeholder="Search items…" value={search} onChange={e => setSearch(e.target.value)} className={`${reviewInput} flex-1 min-w-40`} />
+              <select aria-label="Review state filter" value={stateFilter} onChange={e => setStateFilter(e.target.value)} className={reviewInput}><option value="all">All states</option><option value="ready">Ready</option><option value="needs">Needs review</option></select>
+              <select aria-label="Product type filter" value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className={reviewInput}><option value="all">All types</option><option value="medicine">Medicine</option><option value="equipment">Equipment</option></select>
+              <select aria-label="Problem category filter" value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className={reviewInput}><option value="all">All problems</option>{[...new Set((data.issues ?? []).filter(i => i.state === 'open').map(i => i.category))].map(category => <option key={category} value={category}>{problemLabels[category] ?? category}</option>)}</select>
+              <button type="button" className={reviewButton} aria-pressed={showRemoved} onClick={() => setShowRemoved(!showRemoved)}>{showRemoved ? 'Active items' : `Removed items (${data.reviewCounts?.removed ?? 0})`}</button>
+            </div>
+            <div className="text-xs text-gray-500">{displayItems.length} {showRemoved ? 'removed' : 'active'} items shown · Selection applies to these filtered rows.</div>
+            {selectedItems.length > 0 && <div role="toolbar" aria-label="Selected item actions" className="flex flex-wrap gap-2 items-center bg-slate-50 border border-slate-200 rounded-lg p-3">
+              <span className="text-sm font-medium mr-2">{selectedItems.length} items selected</span>
+              {showRemoved ? <button type="button" className={reviewButton} disabled={itemMutationPending} onClick={() => void operations.preview({ action: 'restore', itemIds: selectedItems.map(i => i.id) })}>Restore selected</button> : <>
+                <button type="button" className={reviewButton} disabled={itemMutationPending} onClick={() => void operations.preview({ action: 'verify', itemIds: selectedItems.map(i => i.id) })}>Verify selected</button>
+                <button type="button" className={reviewButton} disabled={itemMutationPending} onClick={() => setShowBulkEdit(!showBulkEdit)}>Edit field</button>
+                <button type="button" className={reviewButton} disabled={itemMutationPending} onClick={() => void operations.preview({ action: 'remove', itemIds: selectedItems.map(i => i.id) })}>Remove selected</button>
+              </>}
+              <button type="button" className={reviewButton} onClick={() => setSelected(new Set())}>Clear selection</button>
+            </div>}
+            <BulkEdit selected={selectedItems} hidden={!showBulkEdit || showRemoved || !selectedItems.length} operations={operations} />
+          </div>}
           {!isManualRequest && <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 mb-3 flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-1.5 text-gray-500 flex-shrink-0">
               <ListPlus size={14} />
@@ -703,6 +799,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50">
+                  {structuredReview && <th className="sticky top-0 z-10 bg-gray-50 pl-4 pr-0 py-3 w-10"><ReviewCheckbox label="Select all filtered items" checked={displayItems.length > 0 && displayItems.every(i => selected.has(i.id))} mixed={displayItems.some(i => selected.has(i.id)) && !displayItems.every(i => selected.has(i.id))} disabled={itemMutationPending} onChange={checked => setSelected(checked ? new Set(displayItems.map(i => i.id)) : new Set())} /></th>}
                   {[
                     ...(attributeColumns.length > 0 ? [{ key: null, label: '' }] : []),
                     { key: null, label: '#' },
@@ -736,16 +833,16 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                 </tr>
               </thead>
               <tbody>
-                {items.length === 0 && (
+                {displayItems.length === 0 && (
                   <tr><td colSpan={columnCount} className="px-6 py-12 text-center">
                     <PenLine size={24} className="mx-auto mb-3 text-gray-300" />
-                    <div className="text-sm text-gray-500">No items yet. Add your first item below.</div>
+                    <div className="text-sm text-gray-500">{showRemoved ? 'No removed items match these filters.' : items.length ? 'No items match these filters.' : 'No items yet. Add your first item below.'}</div>
                   </td></tr>
                 )}
-                {items.map((item, index) => {
+                {displayItems.map((item, index) => {
                   const status = STATUS_CFG[item.status];
                   const priority = PRIORITY_CFG[item.priority];
-                  const blocked = needsManualReview(item);
+                  const blocked = !showRemoved && needsManualReview(item);
                   const isExpanded = expandedItems.has(item.id);
                   const missingName = item.status === 'missing' || !item.name;
 
@@ -753,7 +850,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                     <tr
                       key={item.id}
                       className={`border-b border-gray-100 transition-colors ${
-                        blocked
+                        selected.has(item.id) ? 'bg-slate-50 hover:bg-slate-100' : blocked
                           ? 'bg-amber-50 hover:bg-amber-100/60'
                           : item.status === 'needs_review'
                             ? 'bg-amber-50/30 hover:bg-amber-50/60'
@@ -761,6 +858,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       }`}
                       style={blocked ? { boxShadow: 'inset 3px 0 0 #F59E0B' } : undefined}
                     >
+                      {structuredReview && <td className="pl-4 pr-0 py-3"><ReviewCheckbox label={`Select ${item.name}`} checked={selected.has(item.id)} disabled={itemMutationPending} onChange={checked => setSelected(previous => toggleSelection(previous, item.id, checked))} /></td>}
                       {attributeColumns.length > 0 && (
                         <td className="pl-4 pr-0 py-3">
                           <button
@@ -785,7 +883,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       )}
                       <td className="px-4 py-3">
                         <button
-                          onClick={() => openEdit(item)}
+                          onClick={() => { if (!showRemoved) openEdit(item); }}
                           className={`text-left transition-colors hover:underline ${
                             missingName ? 'text-gray-400 italic' : 'text-gray-900 hover:text-[#1B4E8A]'
                           }`}
@@ -889,14 +987,14 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                       </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${status.bg} ${status.color}`} style={{ fontWeight: 500 }}>
-                          {status.icon} {item.verificationSource === 'ai' && item.status === 'verified' ? 'AI checked' : status.label}
+                          {status.icon} {showRemoved ? 'Removed' : item.verificationSource === 'ai' && item.status === 'verified' ? 'AI checked' : item.status === 'verified' && item.verificationSource !== 'human' ? 'Ready' : status.label}
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-1.5">
+                        {showRemoved ? <button type="button" className={reviewButton} disabled={itemMutationPending} onClick={() => void operations.preview({ action: 'restore', itemIds: [item.id] })}>Restore</button> : <div className="flex items-center gap-1.5">
                           {blocked ? (
                             <button
-                              onClick={() => openEdit(item)}
+                              onClick={() => { if (!showRemoved) openEdit(item); }}
                               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-amber-500 text-white hover:bg-amber-600 transition-colors shadow-sm"
                               style={{ fontWeight: 700 }}
                             >
@@ -906,13 +1004,13 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                           ) : (
                             <>
                               <button
-                                onClick={() => openEdit(item)}
+                                onClick={() => { if (!showRemoved) openEdit(item); }}
                                 className="flex items-center gap-1 px-2 py-1 rounded-md text-xs bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
                                 style={{ fontWeight: 500 }}
                               >
                                 <Edit2 size={11} /> Edit
                               </button>
-                              {item.status === 'needs_review' && (
+                              {(item.status === 'needs_review' || structuredReview && item.verificationSource !== 'human') && (
                                 <button
                                   onClick={() => void markVerified(item.id)}
                                   className="px-2 py-1 rounded-md text-xs bg-green-100 text-green-700 hover:bg-green-200 transition-colors"
@@ -923,18 +1021,18 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                               )}
                             </>
                           )}
-                          {item.manual && (
+                          {(item.manual || structuredReview) && (
                             <button
                               onClick={() => void removeItem(item.id)}
                               disabled={itemMutationPending || isAddingColumn}
                               aria-label={`Remove ${item.name}`}
-                              title="Remove manual item"
+                              title="Remove item from request"
                               className="p-1 rounded text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-40"
                             >
                               <X size={14} />
                             </button>
                           )}
-                        </div>
+                        </div>}
                       </td>
                     </tr>
                   );
@@ -1017,6 +1115,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
               Confirm Items & Start Matching
               <ArrowRight size={15} />
             </button>
+          </div>
           </div>
         </div>
 
@@ -1141,7 +1240,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
           onClick={event => {
             if (event.target === event.currentTarget && !isNewItem && !isSavingItem) setEditingItem(null);
           }}>
-          <div role="dialog" aria-modal="true" aria-labelledby="item-dialog-title" className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+          <div ref={itemDialog} role="dialog" aria-modal="true" aria-labelledby="item-dialog-title" tabIndex={-1} className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden outline-none">
             <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between shrink-0">
               <div>
                 <h3 id="item-dialog-title" className="text-gray-900">
@@ -1159,6 +1258,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
             <div className="px-6 py-5 min-h-0 overflow-y-auto overscroll-contain">
               {itemError && <div className="mb-4"><ErrorPanel message={itemError} /></div>}
               <SourceReferencePanel item={editingItem} reference={sourceReferences[editingItem.id]} />
+              {structuredReview && (data.issues ?? []).filter(issue => issue.itemId === editingItem.id && issue.state === 'open' && issue.canAccept).map(issue => <div key={issue.id} className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3"><p className="text-xs text-amber-900 mb-2">{issue.message}</p><button type="button" className={reviewButton} disabled={itemMutationPending} onClick={() => void operations.preview({ action: 'accept', itemIds: [editingItem.id], issueIds: [issue.id] })}>I inspected the source — accept current value</button></div>)}
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -1313,7 +1413,7 @@ export function ReviewItemsScreen({ requestId, initialData, onContinue, onCreate
                 className="px-5 py-2 bg-[#1B4E8A] text-white rounded-lg text-sm hover:bg-[#163d6d] transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
                 style={{ fontWeight: 600 }}
               >
-                {isSavingItem ? 'Saving…' : isNewItem ? 'Add Item' : 'Save & Mark Verified'}
+                {isSavingItem ? 'Saving…' : isNewItem ? 'Add Item' : structuredReview ? 'Preview changes' : 'Save & Mark Verified'}
               </button>
             </div>
           </div>

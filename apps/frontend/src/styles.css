@@ -61,6 +61,15 @@
 }
 
 @layer components {
+  .review-task-in { animation: review-task-enter 230ms ease-out both; }
+  .review-toast { animation: review-task-enter 200ms ease-out both; }
+  @keyframes review-task-enter {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .review-task-in, .review-toast { animation: none; }
+  }
   .workflow-stepper {
     container-type: inline-size;
     width: 100%;
