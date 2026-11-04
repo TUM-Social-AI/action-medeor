@@ -2,6 +2,7 @@
 
 from app.parsing.free_text_parser import extract_from_free_text
 from app.parsing.partner_extraction import capture_context
+from app.parsing.pdf_text import extract_page_text
 from app.parsing.table_mapping import MappingSession
 from app.parsing.table_parser import is_table_well_structured, parse_table_rows
 from app.parsing.types import CustomColumnSpec, ParsedDocument
@@ -23,7 +24,7 @@ def parse_pdf(
 
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for page_index, page in enumerate(pdf.pages, start=1):
-            page_text = page.extract_text() or ""
+            page_text = extract_page_text(page)
             capture_context(document, page_text)
             candidates = page.find_tables()
             selected = (

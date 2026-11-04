@@ -399,7 +399,7 @@ Configure the Graph credentials, drive/root IDs and explicit domain-folder IDs f
 `apps/backend/.env.example`. At least one domain folder must be configured; medication can stay
 empty until uploaded. Configured domain folders must be immediate children of the permitted root.
 Partner-request example folders are excluded from offer processing. Only `.xlsx`, `.xls` and
-selectable-text `.pdf` files are eligible; `.eml`, Office temporary files and other formats are skipped.
+`.pdf` files (including scanned PDFs) are eligible; `.eml`, Office temporary files and other formats are skipped.
 
 From `apps/backend`:
 
@@ -900,3 +900,20 @@ Actions tab with branch `main`. Confirm that the known `allocura` repository con
 expected `<git-sha>` tag and that the workflow did not add a `latest` tag. Also confirm that this
 identity cannot push another repository name, list the registry catalog, delete images, or manage
 the ACR resource.
+
+### OCR for scanned PDFs
+
+Request uploads and SharePoint offer imports use native PDF text where available and
+Tesseract OCR for image-only pages. Mixed PDFs are handled page by page. OCR text passes
+through the existing item/offer extraction and evidence checks; original files stay unchanged.
+Pages with selectable text are not OCRed, including images embedded on those pages.
+OCR does not recover table geometry; scanned tables use free-text extraction.
+
+Both backend Docker images include Tesseract with English, German, French and Arabic packs.
+For local development install `tesseract` and `tesseract-lang` using Homebrew, or install
+`tesseract-ocr` plus `tesseract-ocr-eng`, `tesseract-ocr-deu`, `tesseract-ocr-fra` and
+`tesseract-ocr-ara` on Debian/Ubuntu. Python dependencies are installed with `uv sync`.
+Set `OCR_LANGUAGES` (default `eng+deu+fra+ara`) and `OCR_TIMEOUT_SECONDS` (default `60`,
+per page) in the backend environment. Missing engines, unusable language settings and OCR timeouts
+fail extraction explicitly rather than importing partial document data. Blank pages
+without images do not invoke OCR. Blurry scans and handwriting may still need manual review.

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://allocura:allocura@localhost:5432/allocura"
     )
     cors_origins: str = ""
+    ocr_languages: str = "eng+deu+fra+ara"
+    ocr_timeout_seconds: int = Field(default=60, gt=0)
     matching_lexical_weight: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     matching_min_semantic_score: float = Field(default=0.50, ge=0, le=1, allow_inf_nan=False)
     matching_vector_weight: float = Field(default=2.0, gt=0, allow_inf_nan=False)

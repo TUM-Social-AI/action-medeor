@@ -19,8 +19,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.parsing.llm_client import call_llm
+from app.parsing.pdf_text import extract_page_text
 
-PROMPT_VERSION = "supplier-offers-v4"
+PROMPT_VERSION = "supplier-offers-v5"
 MAX_INPUT_CHARS = 24_000
 MAX_ROWS = 24
 
@@ -365,11 +366,11 @@ def _read_pdf(content: bytes, max_chars: int) -> tuple[list[SourceChunk], list[s
     warnings: list[str] = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for number, page in enumerate(pdf.pages, 1):
-            text = page.extract_text() or ""
+            text = extract_page_text(page)
             tables = page.extract_tables() or []
             if not text.strip():
                 warnings.append(
-                    f"page:{number}: no selectable text; scanned/empty page unsupported"
+                    f"page:{number}: no readable text after text extraction/OCR; empty or unreadable page unsupported"
                 )
             pages.append({"page": number, "text": text, "tables": tables})
     if not pages or all(not p["text"].strip() for p in pages):
