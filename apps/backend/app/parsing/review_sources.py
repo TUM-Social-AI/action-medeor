@@ -2,6 +2,7 @@
 
 import io
 
+from app.parsing.pdf_text import extract_page_text
 from app.parsing.review_context import text_review_source
 from app.parsing.table_mapping import MappingSession
 from app.parsing.table_parser import is_table_well_structured, parse_table_rows
@@ -42,7 +43,7 @@ def fill_legacy_sources(
                     )
                     document.used_llm_fallback |= parsed.used_llm_fallback
                 else:
-                    texts[index] = page.extract_text() or ""
+                    texts[index] = extract_page_text(page)
     elif extension == "docx":
         from docx import Document
 

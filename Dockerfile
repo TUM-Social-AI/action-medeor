@@ -24,6 +24,10 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 ENV PATH="/app/.venv/bin:$PATH"
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr tesseract-ocr-eng tesseract-ocr-deu tesseract-ocr-fra tesseract-ocr-ara \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY apps/backend/pyproject.toml apps/backend/uv.lock ./
