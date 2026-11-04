@@ -236,6 +236,8 @@ class RequestState(BaseModel):
 
 
 class MatchingLineState(BaseModel):
+    originalLanguage: str | None = None
+    translatedName: str | None = None
     itemId: int
     name: str
     quantity: int | None

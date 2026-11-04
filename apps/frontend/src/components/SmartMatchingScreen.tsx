@@ -17,6 +17,7 @@ import { useOfferDateRefresh } from '../features/matching/use-offer-date-refresh
 import { WorkflowStepper } from './WorkflowStepper';
 import { SharePointOfferSource } from './SharePointOfferSource';
 import { CandidateAvailability } from './CandidateAvailability';
+import { RequestedItemName } from './RequestedItemName';
 import { CandidateChecks } from './CandidateChecks';
 
 type Props = { requestId: string; onContinue: () => Promise<void> };
@@ -334,7 +335,7 @@ export function SmartMatchingScreen({ requestId, onContinue }: Props) {
           <div className={'px-5 py-3.5 border-b border-gray-200 flex items-center gap-3 ' + (line.decisionType === 'no_match' ? 'bg-gray-200/70' : 'bg-gray-50')}>
             <MapPin size={15} className="text-gray-400 flex-shrink-0" />
             <div className="flex-1 flex items-center gap-3 flex-wrap">
-              <span className="text-sm text-gray-900 font-bold">{line.name}</span>
+              <RequestedItemName key={requestId + line.itemId + line.name} requestId={requestId} line={line} />
               <span className="text-sm text-gray-500">Qty: {line.quantity?.toLocaleString() ?? 'Not specified'} {line.unit}</span>
               <span className="text-xs text-gray-500 capitalize">{line.domain}</span>
             </div>
