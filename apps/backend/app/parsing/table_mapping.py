@@ -135,7 +135,7 @@ def validated_layout(rows, mapping: TableMapping) -> HeaderLayout:
         if role in {"none", "ordinal"}:
             continue
         layout.labels[col] = label or f"Column {col + 1}"
-        if role == "attribute":
+        if role in {"attribute", "translation"}:
             # Repeated labels cannot silently overwrite each other's data.
             extra_label = layout.labels[col]
             if extra_label in layout.extras.values():

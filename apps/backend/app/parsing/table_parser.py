@@ -72,7 +72,7 @@ def _find_header_row(rows: list[list[object]]) -> HeaderLayout | None:
                 layout.extras[previous] = layout.labels[previous]
                 del layout.roles[previous]
                 layout.roles[col_index] = role
-            elif role and role not in layout.roles.values():
+            elif role and role != "translation" and role not in layout.roles.values():
                 layout.roles[col_index] = role
             else:
                 layout.extras[col_index] = (
@@ -229,7 +229,9 @@ def parse_table_rows(
         notes = values.get("notes", "")
         translation = values.get("translation", "")
         if translation:
-            notes = f"Translation: {translation}" + (f" · {notes}" if notes else "")
+            # Preserve translations from legacy saved layouts as source columns too.
+            column = next(col for col, role in layout.roles.items() if role == "translation")
+            attributes[layout.labels.get(column, "Translation")] = translation
 
         # Partner procurement forms use their own priority-tier wording ("Prioritaire-Priority",
         # "Standard", "Optionnel-Optional") - mapped onto our scale; anything genuinely
