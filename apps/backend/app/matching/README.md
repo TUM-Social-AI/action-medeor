@@ -503,8 +503,8 @@ apply. After those filters, medicine catalog articles and standalone historical 
 confirmed matching normalized ingredient labels take precedence: if any remain, only these
 are returned. If none remain, the pre-ingredient-check pool is returned (up to top-k) with
 `ingredient_fallback=1`, review status, and an explicit ingredient-not-confirmed label.
-Ingredient failures remain inspectable as review findings. Fallbacks cannot be automatically
-selected, even for an exact item-number reference. No empty result is filled with candidates
+Ingredient failures remain inspectable as review findings. Fallbacks remain undecided for
+manual review, even for an exact item-number reference. No empty result is filled with candidates
 that fail other exclusions or the semantic cutoff. Equipment behavior is unchanged.
 
 Combination medicines must have the same ingredient labels; structured active_ingredient
@@ -512,3 +512,19 @@ attributes take precedence. Labels are compared literally; brands and synonyms a
 Dose/form wording locates ingredient boundaries but no new strength or form comparison is made.
 Pre-existing structured attribute checks retain their original policy. Weights remain 1:2 and
 semantic cutoff 0.50. Existing saved runs remain unchanged; test with a new request.
+
+### Automatic request decisions
+
+The request worker selects the top-ranked catalog article or historical offer when its displayed
+`search_similarity` is strictly above 50 for medicine with a confirmed passing
+`medicine_active_ingredient_match`, or strictly above 50 for equipment. Ingredient fallback,
+excluded and disallowed candidates are never selected. Exact references, name similarity,
+strength and form comparisons do not bypass or add to these automatic selection rules;
+the matching engine's existing constraints still apply before ranking.
+
+Medicine lines whose first candidate has no confirmed matching ingredient remain undecided,
+regardless of its score. Only the first candidate is considered; a confirmed ingredient on a
+lower-ranked candidate does not trigger a decision. Other completed lines receive an automatic
+`no_match` decision, including empty results.
+Both selections and “No match” defaults are persisted with actor `automatic`, can be changed
+during review, and never replace an existing decision when the worker resumes.

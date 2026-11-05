@@ -14,6 +14,8 @@ export type SavedRequest = {
   createdAt: string;
 };
 export type SavedMatchLine = {
+  originalLanguage?: string | null;
+  translatedName?: string | null;
   itemId: number;
   name: string;
   quantity: number | null;
@@ -119,3 +121,6 @@ export const finalizeRequest = (id: string) =>
   requestJson<SavedRequest>(`/api/requests/${id}/finalize`, { method: 'POST' });
 export const reopenRequestMatching = (id: string) =>
   requestJson<SavedRequest>(`/api/requests/${id}/reopen-matching`, { method: 'POST' });
+
+export const translateRequestItem = (id: string, itemId: number) =>
+  requestJson<{ translation: string }>(`/api/requests/${encodeURIComponent(id)}/items/${itemId}/translation`, { method: 'POST' });

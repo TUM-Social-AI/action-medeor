@@ -170,7 +170,8 @@ def test_parse_table_rows_captures_translation_and_shelf_life() -> None:
     assert result.rows_detected == 1
     item = result.items[0]
     assert item.shelf_life == "16 months"
-    assert "Wasserbasierendes Gleitmittel" in item.notes
+    assert item.attributes == {"Translation": "Wasserbasierendes Gleitmittel, steril"}
+    assert result.attribute_columns == ["Translation"]
 
 
 def test_extract_request_priority_hint_reads_special_info_field() -> None:
@@ -591,3 +592,45 @@ def test_medicine_with_default_unit_needs_no_review() -> None:
 def test_explicit_unit_is_not_marked_as_default() -> None:
     item = parse_table_rows([["Product", "Quantity", "Unit"], ["Gauze", 5, "rolls"]]).items[0]
     assert item.unit == "rolls" and "unit" not in item.inferred_fields
+
+
+def test_supplied_translations_survive_as_separate_source_columns(monkeypatch) -> None:
+    from app.parsing import llm_table_classifier
+
+    def unavailable(*args, **kwargs):
+        raise llm_table_classifier.LlmUnavailable("offline")
+
+    monkeypatch.setattr(llm_table_classifier, "call_llm", unavailable)
+    result = parse_table_rows([
+        ["Désignation", "Product description translation (English)",
+         "Übersetzung Deutsch", "Quantity", "Notes"],
+        ["Aiguille stérile 21G", "Sterile needle 21G", "Sterile Nadel 21G", 20, "Keep dry"],
+        ["Seringue 5 ml", "", "", 10, ""],
+    ])
+    assert len(result.items) == 2
+    assert result.items[0].name == "Aiguille stérile 21G"
+    assert result.items[0].notes == "Keep dry"
+    assert result.items[0].attributes == {
+        "Product description translation (English)": "Sterile needle 21G",
+        "Übersetzung Deutsch": "Sterile Nadel 21G",
+    }
+    assert result.attribute_columns == list(result.items[0].attributes)
+    assert result.items[1].attributes == {}
+
+
+def test_mapped_multiple_translations_keep_source_labels() -> None:
+    from app.parsing.llm_table_classifier import ColumnMapping, TableMapping
+    from app.parsing.table_mapping import validated_layout
+
+    rows = [
+        ["Désignation", "English", "Deutsch", "Quantity"],
+        ["Aiguille", "Needle", "Nadel", 20],
+    ]
+    mapping = TableMapping(header_row_index=0, columns=[
+        ColumnMapping(column_index=i, role=role, scope="request")
+        for i, role in enumerate(["name", "translation", "translation", "quantity"])
+    ])
+    layout = validated_layout(rows, mapping)
+    result = parse_table_rows(rows, layout=layout)
+    assert result.items[0].name == "Aiguille"
+    assert result.items[0].attributes == {"English": "Needle", "Deutsch": "Nadel"}

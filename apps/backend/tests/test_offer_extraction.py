@@ -415,7 +415,7 @@ def test_blank_pdf_reports_unsupported_without_calling_model() -> None:
     writer.save()
     result = extract_offers(buffer.getvalue(), "empty.pdf", llm=lambda *_: pytest.fail("No text"))
     assert result.chunks_attempted == 0
-    assert "scanned/empty page unsupported" in result.warnings[0]
+    assert "empty or unreadable page unsupported" in result.warnings[0]
 
 
 def test_blank_workbook_does_not_call_model() -> None:

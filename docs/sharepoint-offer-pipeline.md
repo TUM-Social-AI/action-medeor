@@ -146,9 +146,11 @@ Configure these on the **job**, not just the web container:
 
 Configured domain folders must be distinct, immediate child folders of the permitted root.
 Nested customer-request folders are provenance only: historical offers are not restricted to that
-customer. File formats are `.xlsx`, `.xls` and selectable-text `.pdf`, case-insensitively.
+customer. File formats are `.xlsx`, `.xls` and `.pdf` (including scanned PDFs), case-insensitively.
 `.eml`, Office `~$` files and unsupported formats are never downloaded by offer processing.
-Scanned/empty PDFs and mixed PDFs with unreadable pages are reported as unsupported; OCR is absent.
+Image-only PDF pages use local Tesseract OCR; native text is preserved on other pages.
+Empty or unreadable pages remain unsupported. OCR engine failures/timeouts fail the processing
+turn for retry rather than publishing partial offers. See the README OCR setup section.
 
 ## One-document check and retries
 

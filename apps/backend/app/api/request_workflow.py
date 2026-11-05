@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api.schemas import MatchingLineState, RequestMatchingState, RequestState
 from app.db.models import ImportRequestRow, RequestItemRow
@@ -21,6 +22,7 @@ from app.matching.contracts import (
 )
 from app.matching.ranking.features import description_similarity, search_similarity_components
 from app.matching.ranking.ranker import calculate_ranking_scores
+from app.parsing.item_language import item_language
 
 
 def request_state(request: ImportRequestRow, match_rate: float | None = None) -> RequestState:
@@ -141,6 +143,9 @@ async def matching_state(session: AsyncSession, request_id: str) -> RequestMatch
                 MatchingLineState(
                     itemId=item.id,
                     name=item.name,
+                    originalLanguage=await run_in_threadpool(item_language, item.name),
+                    translatedName=(item.german_translation or {}).get("text")
+                    if (item.german_translation or {}).get("source") == item.name else None,
                     quantity=item.quantity,
                     unit=item.unit,
                     priority=item.priority,

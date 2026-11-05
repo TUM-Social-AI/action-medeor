@@ -53,7 +53,10 @@ prices, dates or products for request fields, even when supplier cells are fille
 Prefer the explicit requested total. Also identify request pack count and units-per-pack when
 present, so code can check arithmetic. These three different roles may coexist.
 Return EVERY column index exactly once, including blank/excluded columns. Each core role may
-appear at most once. Use attribute for other request fields, ordinal for line numbers, none for
+appear at most once, except translation, which may appear for multiple supplied languages.
+Keep the original description as name; map supplied translated descriptions to translation
+(or attribute for additional description columns), preserving every language.
+Use attribute for other request fields, ordinal for line numbers, none for
 irrelevant columns. Non-request columns must have role none (or ordinal). Use unknown scope
 when genuinely ambiguous. Never guess a missing role.
 An ancillary header cell may contain a numeric template marker; exclude that column rather

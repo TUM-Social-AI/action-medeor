@@ -425,7 +425,7 @@ Configure the Graph credentials, drive/root IDs and explicit domain-folder IDs f
 `apps/backend/.env.example`. At least one domain folder must be configured; medication can stay
 empty until uploaded. Configured domain folders must be immediate children of the permitted root.
 Partner-request example folders are excluded from offer processing. Only `.xlsx`, `.xls` and
-selectable-text `.pdf` files are eligible; `.eml`, Office temporary files and other formats are skipped.
+`.pdf` files (including scanned PDFs) are eligible; `.eml`, Office temporary files and other formats are skipped.
 
 From `apps/backend`:
 
@@ -501,6 +501,12 @@ the full architecture in the [detailed walkthrough](apps/backend/app/matching/RE
 
 ## Product Matching
 
+In Smart Matching, **Generate translation** translates a requested item name into German using
+the configured LLM provider. **Back to original** and **See translation** switch the displayed
+name without changing the request. Translations are saved per item and source name, reused after
+reloads, and regenerated on demand if the name changes. Apply the database migrations with
+`cd apps/backend && uv run alembic upgrade head` before running the updated application.
+
 The backend contains an explainable matching engine for normalized medicine and equipment
 inquiries. It combines exact, lexical, vector, and historical retrieval, applies versioned
 constraints, calculates packaging and availability evidence, and stores match runs and human
@@ -513,12 +519,16 @@ is verified and classified, the UI queues matching for all lines. The backend wo
 the API is running and recovers expired jobs after a restart. Results, progress, and selections
 remain available when the browser is closed or refreshed. Completed lines can be selected
 while the worker processes other lines. The worker saves a default
-selection when the top article has the exact requested article number, or its text similarity is
-at least 0.78 with compatible numbers and product form. The UI shows the numeric ranking
-score calculated from the matching criteria before candidates are sorted. It preserves
-the lexicographic priority order and is normalized to 0–100 within each requested item:
-the best available candidate scores 100. It is not a calibrated confidence percentage. Name similarity and retrieval evidence remain available
-in candidate details. Other items wait for a person. Alternative
+selection of the top candidate when its search similarity is strictly above 50 for medicine
+with a confirmed matching active ingredient, or strictly above 50 for equipment. Otherwise,
+it saves a “No match” decision, including when no candidates exist. Medicine lines whose top
+candidate has an unconfirmed or differing ingredient remain undecided regardless of score;
+lower-ranked candidates are not considered for automatic decisions. Exact article numbers do
+not bypass these rules. The UI shows
+the same search similarity on a 0–100 scale, calculated from the available lexical and vector
+channels. It is not a calibrated confidence percentage. Name similarity and retrieval evidence
+remain available in candidate details. Automatic selections and “No match” defaults can be
+changed during review. Alternative
 selections do not require a reason; saved decisions are retained for later offline evaluation and
 do not update live ranking. Opening the summary explicitly finalizes the request. Finalized requests
 open at the summary from history; returning to matching clears that final state while retaining the
@@ -734,7 +744,45 @@ Locally, Docker Compose keeps PostgreSQL data in the named `postgres-data` volum
 Docker as `allocura_postgres-data`). In Azure,
 `DATABASE_URL` must point to a separately managed PostgreSQL service with pgvector enabled; rebuilding
 or replacing the application container must not delete the database. Run `alembic upgrade head` as a
-deployment step before serving the new application version.
+manual deployment step before serving the new application version. The containers and production
+workflow do not run migrations automatically.
+
+### Deploy translation and guided review together
+
+Migration `20261105_0001` joins the translation (`20261104_0001`) and grouped-review
+(`20261028_0001`) histories without changing either existing migration. There is one final head.
+Upgrading from their common ancestor or either feature revision applies the missing changes;
+existing request data, cached translations, and review history are retained. No example seed or
+request reimport is needed.
+
+Before release, verify the production database backup and rehearse the upgrade on a separate
+database. From a checkout containing both features and the merge migration, configure
+`DATABASE_URL` securely for production and run:
+
+```bash
+cd apps/backend
+uv run alembic current
+uv run alembic upgrade head
+uv run alembic current
+```
+
+The final revision should be `20261105_0001 (head)`. Run this once before deploying the new
+application version. The migration applies both feature branches as needed; no separate
+per-feature upgrade commands are required.
+
+The production workflow publishes and deploys pushes to `main` only when the associated PR has
+the `deploy:production` label. Merge the translation PR without that label, update and test the
+guided-review branch with `main`, manually migrate the production database, then label and merge
+the final PR to deploy both features once. The existing revision can continue serving during
+these additive schema changes. The workflow waits for the new revision to become ready; it
+does not verify or update the schema.
+
+After deployment, verify an existing request, a guided-review edit and Undo, matching, and a
+translation after reload. `/api/health` checks database connectivity, not the schema revision.
+For verification from a trusted environment with the production `DATABASE_URL`, run
+`uv run alembic current` from `apps/backend`; it should report `20261105_0001 (head)`.
+If an application rollback is needed, keep the additive schema and roll back the application
+image. Downgrading these feature migrations drops their stored translations and review history.
 
 ## Combined Production Container
 
@@ -926,3 +974,20 @@ Actions tab with branch `main`. Confirm that the known `allocura` repository con
 expected `<git-sha>` tag and that the workflow did not add a `latest` tag. Also confirm that this
 identity cannot push another repository name, list the registry catalog, delete images, or manage
 the ACR resource.
+
+### OCR for scanned PDFs
+
+Request uploads and SharePoint offer imports use native PDF text where available and
+Tesseract OCR for image-only pages. Mixed PDFs are handled page by page. OCR text passes
+through the existing item/offer extraction and evidence checks; original files stay unchanged.
+Pages with selectable text are not OCRed, including images embedded on those pages.
+OCR does not recover table geometry; scanned tables use free-text extraction.
+
+Both backend Docker images include Tesseract with English, German, French and Arabic packs.
+For local development install `tesseract` and `tesseract-lang` using Homebrew, or install
+`tesseract-ocr` plus `tesseract-ocr-eng`, `tesseract-ocr-deu`, `tesseract-ocr-fra` and
+`tesseract-ocr-ara` on Debian/Ubuntu. Python dependencies are installed with `uv sync`.
+Set `OCR_LANGUAGES` (default `eng+deu+fra+ara`) and `OCR_TIMEOUT_SECONDS` (default `60`,
+per page) in the backend environment. Missing engines, unusable language settings and OCR timeouts
+fail extraction explicitly rather than importing partial document data. Blank pages
+without images do not invoke OCR. Blurry scans and handwriting may still need manual review.
