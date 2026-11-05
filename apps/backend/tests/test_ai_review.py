@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from app.parsing import ai_review, llm_table_classifier
-from app.parsing.ai_review import Correction, Issue, ReviewBatch, review_document
+from app.parsing.ai_review import Correction, Inference, Issue, ReviewBatch, review_document
 from app.parsing.llm_client import LlmUnavailable
 from app.parsing.service import parse_upload
 from app.parsing.table_parser import parse_table_rows
@@ -19,26 +19,36 @@ def checked(prompt, schema):
     patches = []
     for row in data["rows"]:
         for field, value in [("domain", "equipment"), ("unit", "pcs")]:
+            if row["copied"][field]:
+                continue
             patches.append(
-                Correction(
+                Inference(
                     row_id=row["row_id"],
                     field=field,
                     value=value,
-                    inferred=True,
-                    evidence=row["copied"]["name"],
+                    confidence=95,
+                    evidence=row["copied"]["name"][:120],
                 )
             )
     return ReviewBatch(
         confidence=95,
         completed=True,
         reviewed_count=len(data["rows"]),
-        corrections=patches,
+        inferences=patches,
         issues=[],
     )
 
 
 def device(quantity=2, name="Diagnostic scanner model A"):
     return parse_table_rows([["Product", "Quantity", "Unit"], [name, quantity, ""]])
+
+
+def test_review_cache_changes_when_source_roles_change_even_if_values_do_not():
+    doc = device()
+    before = ai_review.fingerprint(b"unchanged workbook", doc)
+    assert ai_review.fingerprint(b"unchanged workbook", doc) == before
+    doc.items[0].review_source["roles"]["1"] = "quantity_packs"
+    assert ai_review.fingerprint(b"unchanged workbook", doc) != before
 
 
 def install(monkeypatch, response=checked):
@@ -56,12 +66,13 @@ def patch(
     return Correction(row_id=row_id, field=field, value=value, inferred=inferred, evidence=evidence)
 
 
-def response(corrections=(), issues=(), *, completed=True, count=1):
+def response(corrections=(), issues=(), *, completed=True, count=1, inferences=()):
     return ReviewBatch(
         confidence=95,
         completed=completed,
         reviewed_count=count,
         corrections=list(corrections),
+        inferences=list(inferences),
         issues=list(issues),
     )
 
@@ -74,7 +85,7 @@ def test_anonymized_pdf_needs_only_final_confirmation(monkeypatch):
     review_document(doc)
     assert [item.name.replace("\n", " ") for item in doc.items] == NAMES
     assert [item.quantity for item in doc.items] == QUANTITIES
-    assert all(item.domain == "equipment" and item.unit == "pcs" for item in doc.items)
+    assert all(item.domain == "equipment" and item.unit == "Stück" for item in doc.items)
     assert all(item.status == "verified" and item.verification_source == "ai" for item in doc.items)
     assert all(set(item.inferred_fields) == {"type", "unit"} for item in doc.items)
     assert mapping.call_count == 1 and call.call_count == 1
@@ -98,12 +109,11 @@ def test_completed_compact_acknowledgement_approves_complete_rows(monkeypatch):
         response(completed=False),
         response(count=0),
         response([patch("domain", "equipment", inferred=True, row_id="unknown")]),
-        response(
-            [
-                patch("domain", "equipment", inferred=True),
-                patch("domain", "medicine", inferred=True),
-            ]
-        ),
+        response(inferences=[
+            Inference(row_id="row-0001", field="domain", value=value,
+                      confidence=95, evidence="Diagnostic scanner model A")
+            for value in ["equipment", "medicine"]
+        ]),
     ],
 )
 def test_invalid_or_incomplete_batch_never_claims_ai_check(monkeypatch, result):
@@ -133,7 +143,6 @@ def test_provider_unavailable_keeps_copied_values(monkeypatch):
         ("domain", "other", True, "Diagnostic scanner model A"),
         ("name", "Made up name", False, "2"),
         ("name", "Diagnostic scanner", False, "Diagnostic scanner model A"),
-        ("quantity", 2, True, "2"),
         ("unit", "litres", True, "Diagnostic scanner model A"),
         ("unit", "pcs", True, "Nonexistent source evidence"),
     ],
@@ -148,12 +157,13 @@ def test_unsupported_corrections_require_human_review(
     assert doc.items[0].status == "needs_review"
     assert doc.items[0].verification_source is None
     assert doc.items[0].review_reasons
-    assert doc.review_summary["status"] == "unavailable"
+    assert doc.review_summary["status"] == "completed"
+    assert doc.review_summary["corrected"] == 0
     assert doc.items[0].quantity == 2
     assert doc.items[0].name == "Diagnostic scanner model A"
 
 
-def test_source_supported_quantity_correction(monkeypatch):
+def test_source_supported_quantity_difference_is_flagged_for_human(monkeypatch):
     doc = device(15)
     doc.items[0].quantity = 5
     install(
@@ -167,9 +177,10 @@ def test_source_supported_quantity_correction(monkeypatch):
         ),
     )
     review_document(doc)
-    assert doc.items[0].quantity == 15
-    assert doc.items[0].status == "verified"
-    assert doc.review_summary["corrected"] == 1
+    assert doc.items[0].quantity == 5
+    assert doc.items[0].status == "needs_review"
+    assert doc.review_summary["corrected"] == 0
+    assert any("15" in reason and "manually" in reason for reason in doc.items[0].review_reasons)
 
 
 @pytest.mark.parametrize("protected", [["quantity"], None])
@@ -189,9 +200,9 @@ def test_human_and_legacy_nonempty_values_are_protected(monkeypatch, protected):
     )
     review_document(doc)
     assert doc.items[0].quantity == 5
-    assert doc.items[0].domain == "equipment" and doc.items[0].unit == "pcs"
+    assert doc.items[0].domain == "equipment" and doc.items[0].unit == "Stück"
     assert doc.items[0].status == "needs_review"
-    assert any("protected quantity" in reason for reason in doc.items[0].review_reasons)
+    assert any("Copied quantity: 5" in reason for reason in doc.items[0].review_reasons)
 
 
 def test_ambiguous_medicine_packaging_not_inferred(monkeypatch):
@@ -207,9 +218,9 @@ def test_ambiguous_medicine_packaging_not_inferred(monkeypatch):
     )
     review_document(doc)
     assert doc.items[0].domain == "medicine"
-    # An unsupported AI correction still requires review; the default itself does not.
+    # A proposed replacement is flagged; the existing default stays unchanged.
     assert doc.items[0].unit == "Stück" and doc.items[0].status == "needs_review"
-    assert "Only clear individual-device counts may use inferred pcs" in doc.items[0].review_reasons
+    assert any("Copied unit: Stück" in reason for reason in doc.items[0].review_reasons)
 
 
 def test_pack_arithmetic_conflict_remains_unresolved(monkeypatch):
@@ -342,39 +353,64 @@ def test_packaging_noun_is_not_a_source_stated_requested_unit(monkeypatch):
     review_document(doc)
     assert doc.items[0].unit == "Stück"  # the unverified packaging noun doesn't replace the default
     assert doc.items[0].status == "needs_review"
-    assert doc.review_summary["status"] == "unavailable"
+    assert doc.review_summary["status"] == "completed"
 
 
-def test_unit_in_an_explicit_requested_quantity_is_source_stated(monkeypatch):
+@pytest.mark.parametrize("source_column", [None, 1])
+def test_unit_in_an_explicit_requested_quantity_is_source_stated(monkeypatch, source_column):
     doc = parse_table_rows([["Product", "Quantity"], ["Antibiotic", "3 vials"]])
-    install(monkeypatch, response([patch("unit", "vials", evidence="3 vials")]))
+    correction = patch("unit", "vials", evidence="3 vials" if source_column is None else "")
+    correction.source_column = source_column
+    install(monkeypatch, response([correction]))
     review_document(doc)
     assert doc.items[0].unit == "vials"
     assert doc.items[0].status == "verified"
     assert "unit" not in doc.items[0].inferred_fields
 
 
-def test_table_column_references_do_not_require_repeated_literal_quotes(monkeypatch):
-    doc = device()
-    patches = [
-        Correction(
-            row_id="row-0001",
-            field=field,
-            value=value,
-            inferred=True,
-            evidence="A paraphrased explanation",
-            source_column=0,
-        )
-        for field, value in [("domain", "equipment"), ("unit", "pcs")]
-    ]
-    install(monkeypatch, response(patches))
+@pytest.mark.parametrize("batch_size", [1, 100])
+def test_review_resolves_extracted_headers_and_roles_for_each_table(monkeypatch, batch_size):
+    first = device().items[0]
+    second = parse_table_rows(
+        [["Quantity", "Unit", "Product"], [3, "", "Diagnostic scanner model B"]]
+    ).items[0]
+    doc = ParsedDocument(items=[first, second])
+    monkeypatch.setattr(ai_review, "MAX_ITEMS", batch_size)
+
+    def review(prompt, schema):
+        payload = json.loads(prompt.rsplit("\n", 1)[1])
+        for row in payload["rows"]:
+            context = payload["contexts"][row["source"]["context_id"]]
+            name_col = 0 if row["copied"]["name"] == first.name else 2
+            quantity_col = 1 if name_col == 0 else 0
+            assert context["headers"][str(name_col)] == "Product"
+            assert context["headers"][str(quantity_col)] == "Quantity"
+            assert context["roles"][str(name_col)] == "name"
+            assert row["source"]["cells"][str(name_col)] == row["copied"]["name"]
+            assert context["roles"][str(quantity_col)] == "quantity"
+            assert "correction_columns" not in context
+        return checked(prompt, schema)
+
+    calls = install(monkeypatch, review)
     review_document(doc)
-    assert doc.items[0].status == "verified"
-    assert doc.items[0].confidence == 95
-    assert doc.items[0].inferred_fields == {"type": doc.items[0].name, "unit": doc.items[0].name}
+    assert calls.call_count == (2 if batch_size == 1 else 1)
+    assert all(item.status == "verified" for item in doc.items)
 
 
-def test_column_reference_must_support_the_correct_field(monkeypatch):
+def test_empty_type_inference_requires_literal_source_evidence(monkeypatch):
+    doc = device()
+    install(monkeypatch, response(inferences=[Inference(
+        row_id="row-0001", field="domain", value="equipment", confidence=95,
+        evidence="A paraphrased explanation",
+    )]))
+    review_document(doc)
+    assert doc.items[0].status == "needs_review"
+    assert doc.items[0].domain is None
+    assert "type" not in doc.items[0].inferred_fields
+
+
+@pytest.mark.parametrize("source_column", [1, 2, 99])
+def test_legacy_column_reference_cannot_produce_column_errors(monkeypatch, source_column):
     doc = device()
     install(
         monkeypatch,
@@ -386,14 +422,30 @@ def test_column_reference_must_support_the_correct_field(monkeypatch):
                     value="equipment",
                     inferred=True,
                     evidence="",
-                    source_column=1,
+                    source_column=source_column,
                 )
             ]
         ),
     )
     review_document(doc)
-    assert doc.items[0].domain is None
-    assert doc.review_summary["failures"] == {"invalid_correction": 1}
+    assert doc.items[0].domain == "equipment"
+    assert doc.review_summary["failures"] == {}
+    assert not any("source column" in message for message in doc.items[0].review_reasons)
+
+
+def test_quantity_column_unit_correction_preserves_an_explicit_unit_column(monkeypatch):
+    doc = parse_table_rows(
+        [["Product", "Quantity", "Unit"], ["Antibiotic", "3 vials", "boxes"]]
+    )
+    correction = Correction(
+        row_id="row-0001", field="unit", value="vials",
+        inferred=False, evidence="", source_column=1,
+    )
+    install(monkeypatch, response([correction]))
+    review_document(doc)
+    assert doc.items[0].unit == "boxes"
+    assert doc.items[0].status == "needs_review"
+    assert any("Copied unit: boxes" in reason for reason in doc.items[0].review_reasons)
 
 
 def test_batch_confidence_and_row_exceptions_are_persisted(monkeypatch):

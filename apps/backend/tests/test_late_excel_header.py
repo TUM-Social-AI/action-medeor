@@ -4,7 +4,7 @@ import json
 from unittest.mock import Mock
 
 from app.parsing import ai_review, llm_table_classifier
-from app.parsing.ai_review import Correction, Issue, PartnerReviewBatch, review_document
+from app.parsing.ai_review import Inference, Issue, PartnerReviewBatch, review_document
 from app.parsing.llm_table_classifier import ColumnMapping, TableMapping
 from app.parsing.service import parse_upload
 from tests.test_parsing import build_xlsx
@@ -48,10 +48,10 @@ def checked_covered_request(prompt, schema):
     assert [row["row"] for row in payload["rows"]] == list(range(12, 20))
     return PartnerReviewBatch(
         completed=True, reviewed_count=8, confidence=96, partner_json='{"partner":null,"region":null,"contact":null}',
-        corrections=[Correction(
+        inferences=[Inference(
             row_id=row["row_id"], field="domain", value="equipment" if index in {4, 6} else "medicine",
-            inferred=True, evidence="", source_column=1,
-        ) for index, row in enumerate(payload["rows"])],
+            confidence=96, evidence=row["copied"]["name"],
+        ) for index, row in enumerate(payload["rows"]) if not row["copied"]["domain"]],
         issues=[Issue(row_id=payload["rows"][index]["row_id"], reason=reason) for index, reason in [
             (4, "Dressing specification is unclear"), (7, "Medicine strength needs confirmation"),
         ]],

@@ -13,6 +13,7 @@ from app.parsing.keywords import (
     classify_columns,
     is_total_quantity_column,
     match_column_role,
+    normalize,
 )
 from app.parsing.text_heuristics import (
     build_item,
@@ -44,6 +45,18 @@ def cell_text(value: object) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def repeated_header(cells: dict, labels: dict, roles: dict) -> bool:
+    """A repeated header needs at least two matching core labels, including the name."""
+    matched = {
+        role
+        for col, role in roles.items()
+        if labels.get(col)
+        and normalize(cell_text(cells.get(col))) == normalize(cell_text(labels[col]))
+        and role in {"name", "quantity", "item_number", "unit"}
+    }
+    return "name" in matched and len(matched) >= 2
 
 
 def _find_header_row(rows: list[list[object]]) -> HeaderLayout | None:
@@ -85,7 +98,9 @@ def _find_header_row(rows: list[list[object]]) -> HeaderLayout | None:
         numeric_columns = {index for index, text in enumerate(cells) if text.isdigit()}
         if numeric_columns:
             name_column = next((col for col, role in layout.roles.items() if role == "name"), -1)
-            if not {"name", "quantity"} <= roles or any(col > name_column for col in numeric_columns):
+            if not {"name", "quantity"} <= roles or any(
+                col > name_column for col in numeric_columns
+            ):
                 continue
         if _REQUIRED_ROLES <= roles:
             score = (
@@ -175,6 +190,8 @@ def parse_table_rows(
 
     for offset, row in enumerate(data_rows):
         row_number = start_index + offset + 1
+        if repeated_header(dict(enumerate(row)), layout.labels, layout.roles):
+            continue
         values = {role: cell_text(row[col]) for col, role in layout.roles.items() if col < len(row)}
         name = values.get("name", "")
         if not name or name.strip().lower() in {"total", "grand total", "subtotal"}:

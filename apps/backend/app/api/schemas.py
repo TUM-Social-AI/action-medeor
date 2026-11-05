@@ -59,11 +59,22 @@ class PartnerDetails(BaseModel):
     sourceFile: str | None = None
 
 
+class SourceCell(BaseModel):
+    index: int
+    label: str
+    value: str
+    exampleNote: bool = False
+
+
 class SourceReference(BaseModel):
     itemId: int
     page: int
     row: int
     excerpt: str
+    worksheet: str | None = None
+    illustrative: bool = False
+    literal: bool = False
+    cells: list[SourceCell] = Field(default_factory=list)
 
 
 class ExtractedItem(BaseModel):
@@ -84,6 +95,8 @@ class ExtractedItem(BaseModel):
     verificationSource: Literal["ai", "human"] | None = None
     inferredFields: dict[str, str] = Field(default_factory=dict)
     reviewReasons: list[str] = Field(default_factory=list)
+    fieldReviews: dict = Field(default_factory=dict)
+    readyForMatching: bool = False
 
 
 class ReviewCounts(BaseModel):
@@ -110,6 +123,13 @@ class ImportProgress(BaseModel):
 
 
 class ReviewResponse(BaseModel):
+    reviewRevision: int | None = None
+    lastUndoOperationId: str | None = None
+    issues: list[dict] = Field(default_factory=list)
+    tasks: list[dict] = Field(default_factory=list)
+    reviewCounts: dict = Field(default_factory=dict)
+    removedItems: list[ExtractedItem] = Field(default_factory=list)
+    canStartMatching: bool = False
     parserWarnings: list[str] = Field(default_factory=list)
     usedLlm: bool = False
     extractionMode: Literal["basic", "balanced"] = "basic"
@@ -156,7 +176,7 @@ class ColumnLabelUpdate(BaseModel):
 
 class ItemUpdate(BaseModel):
     name: str | None = None
-    quantity: int | None = None
+    quantity: int | None = Field(default=None, gt=0, strict=True)
     unit: str | None = None
     notes: str | None = None
     itemNumber: str | None = None
@@ -174,6 +194,14 @@ class ManualItemCreate(BaseModel):
     shelfLife: str = ""
     priority: Priority = "medium"
     domain: Literal["medicine", "equipment"]
+
+
+class MissingItemResolution(BaseModel):
+    operationId: str = Field(min_length=1, max_length=100)
+    expectedRevision: int = Field(ge=0)
+    issueId: str = Field(min_length=1)
+    item: ManualItemCreate | None = None
+    itemId: int | None = Field(default=None, gt=0)
 
 
 class RequestCreate(BaseModel):

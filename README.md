@@ -90,7 +90,33 @@ pg_restore -h localhost -U allocura -d allocura --no-owner --no-acl --exit-on-er
 The dump includes embeddings. Set `DATABASE_URL=postgresql+asyncpg://allocura:allocura@localhost:5432/allocura`
 for the local backend.
 
+### Migrate another database
+
+For a new database, an older database, or a restored full database dump, run the same migrations
+from `apps/backend`, using the backend's target connection:
+
+```bash
+cd apps/backend
+export DATABASE_URL='postgresql+asyncpg://USER:PASSWORD@HOST:5432/DATABASE'
+uv run alembic current
+uv run alembic upgrade head
+uv run alembic current
+```
+
+The final revision should match `uv run alembic heads`. Migrations follow `down_revision`
+dependencies, not filename/date order. Upgrading creates a fresh schema or applies revisions
+after the database's recorded version. It does not check that previously applied tables still
+exist. Preserve migration history in full dumps and avoid changing dependencies of revisions
+that developers or deployments may already have applied. The backend must use the same
+`DATABASE_URL`. A database whose schema disagrees with its recorded revision needs a targeted
+one-time reconciliation before normal upgrades; do not change the shared migration chain to
+match an individual development database.
+
 ## Local Foundry extraction
+
+The item-review workflow supports guided problem groups, bulk edits and verification,
+recoverable removal, and undo. See [grouped review](docs/grouped-review.md) for the operation
+API, migration, and verification details.
 
 For a backend started directly with uvicorn, use `apps/backend/.env.example` as a
 template for the ignored `apps/backend/.env` file. Add these settings if they are missing:
@@ -718,7 +744,45 @@ Locally, Docker Compose keeps PostgreSQL data in the named `postgres-data` volum
 Docker as `allocura_postgres-data`). In Azure,
 `DATABASE_URL` must point to a separately managed PostgreSQL service with pgvector enabled; rebuilding
 or replacing the application container must not delete the database. Run `alembic upgrade head` as a
-deployment step before serving the new application version.
+manual deployment step before serving the new application version. The containers and production
+workflow do not run migrations automatically.
+
+### Deploy translation and guided review together
+
+Migration `20261105_0001` joins the translation (`20261104_0001`) and grouped-review
+(`20261028_0001`) histories without changing either existing migration. There is one final head.
+Upgrading from their common ancestor or either feature revision applies the missing changes;
+existing request data, cached translations, and review history are retained. No example seed or
+request reimport is needed.
+
+Before release, verify the production database backup and rehearse the upgrade on a separate
+database. From a checkout containing both features and the merge migration, configure
+`DATABASE_URL` securely for production and run:
+
+```bash
+cd apps/backend
+uv run alembic current
+uv run alembic upgrade head
+uv run alembic current
+```
+
+The final revision should be `20261105_0001 (head)`. Run this once before deploying the new
+application version. The migration applies both feature branches as needed; no separate
+per-feature upgrade commands are required.
+
+The production workflow publishes and deploys pushes to `main` only when the associated PR has
+the `deploy:production` label. Merge the translation PR without that label, update and test the
+guided-review branch with `main`, manually migrate the production database, then label and merge
+the final PR to deploy both features once. The existing revision can continue serving during
+these additive schema changes. The workflow waits for the new revision to become ready; it
+does not verify or update the schema.
+
+After deployment, verify an existing request, a guided-review edit and Undo, matching, and a
+translation after reload. `/api/health` checks database connectivity, not the schema revision.
+For verification from a trusted environment with the production `DATABASE_URL`, run
+`uv run alembic current` from `apps/backend`; it should report `20261105_0001 (head)`.
+If an application rollback is needed, keep the additive schema and roll back the application
+image. Downgrading these feature migrations drops their stored translations and review history.
 
 ## Combined Production Container
 

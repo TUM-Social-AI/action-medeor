@@ -128,24 +128,21 @@ async def test_saved_request_matches_and_reopens(monkeypatch, manual_addition) -
                     {"id": items[0]["id"], "name": descriptions[0]},
                 )
                 await session.commit()
-            # Only genuinely ambiguous lines need a manual classification.
+            # Clearing a required classification is rejected without changing the row.
             obscured = await client.patch(
                 f"/api/requests/{request_id}/items/{items[0]['id']}",
                 json={"name": "Unspecified supply", "domain": None},
             )
-            assert obscured.status_code == 200
-            blocked = await client.post(f"/api/requests/{request_id}/matching")
-            assert blocked.status_code == 422
+            assert obscured.status_code == 422
             reviewed = await client.patch(
                 f"/api/requests/{request_id}/items/{items[0]['id']}",
                 json={"name": descriptions[0], "domain": "equipment"},
             )
             assert reviewed.status_code == 200
-            await client.patch(
+            rejected_quantity = await client.patch(
                 f"/api/requests/{request_id}/items/{items[0]['id']}", json={"quantity": -1}
             )
-            invalid = await client.post(f"/api/requests/{request_id}/matching")
-            assert invalid.status_code == 422
+            assert rejected_quantity.status_code == 422
             await client.patch(
                 f"/api/requests/{request_id}/items/{items[0]['id']}",
                 json={"quantity": 2, "itemNumber": first_number},

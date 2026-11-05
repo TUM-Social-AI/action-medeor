@@ -7,12 +7,15 @@ import type {
   ImportFileType,
   ItemUpdate,
   ManualItemCreate,
+  MissingItemSubmission,
   MatchingResponse,
   OfferResponse,
   PartnerDetails,
   PartnerUpdate,
   RecentImport,
   ReviewResponse,
+  ReviewOperation,
+  ReviewPreview,
   SummaryResponse,
   TrendsResponse,
 } from './types';
@@ -52,6 +55,30 @@ export function inspectImport(file: File) {
 
 export function getReview(requestId: string) {
   return requestJson<ReviewResponse>(`/api/requests/${requestId}/review`);
+}
+
+export function previewReviewOperation(requestId: string, operation: ReviewOperation) {
+  return requestJson<ReviewPreview>(`/api/requests/${requestId}/review/operations/preview`, {
+    method: 'POST', body: JSON.stringify(operation),
+  });
+}
+
+export function applyReviewOperation(requestId: string, operation: ReviewOperation) {
+  return requestJson<{ review: ReviewResponse; operationId: string }>(`/api/requests/${requestId}/review/operations`, {
+    method: 'POST', body: JSON.stringify(operation),
+  });
+}
+
+export function resolveMissingItem(requestId: string, submission: MissingItemSubmission) {
+  return requestJson<{ review: ReviewResponse; operationId: string; itemId: number }>(`/api/requests/${requestId}/review/missing-items`, {
+    method: 'POST', body: JSON.stringify(submission),
+  });
+}
+
+export function undoReviewOperation(requestId: string, operationId: string, expectedRevision: number) {
+  return requestJson<{ review: ReviewResponse; operationId: string }>(`/api/requests/${requestId}/review/operations/${operationId}/undo`, {
+    method: 'POST', body: JSON.stringify({ expectedRevision, operationId: crypto.randomUUID() }),
+  });
 }
 
 export function updateItem(requestId: string, itemId: number, payload: ItemUpdate) {

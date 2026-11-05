@@ -61,6 +61,32 @@
 }
 
 @layer components {
+  .review-overview { max-height: max(20rem, calc(100dvh - 18rem)); }
+  .review-items-table { max-height: max(18rem, calc(100dvh - 22rem)); }
+  .review-task-in { animation: review-task-enter 230ms ease-out both; }
+  .review-task-out { animation: review-task-leave 200ms ease-in both; }
+  .review-toast { animation: review-task-enter 200ms ease-out both; }
+  .review-pop { animation: review-success-pop 260ms cubic-bezier(.2,.9,.3,1.2) both; }
+  .review-fade { animation: review-fade-in 150ms ease-out both; }
+  @keyframes review-success-pop {
+    0% { transform: scale(.5); opacity: 0; }
+    70% { transform: scale(1.12); }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  @keyframes review-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes review-task-enter {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes review-task-leave {
+    to { opacity: 0; transform: translateY(-8px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .review-task-in, .review-task-out, .review-toast, .review-pop, .review-fade { animation: none; }
+  }
   .workflow-stepper {
     container-type: inline-size;
     width: 100%;

@@ -7,7 +7,33 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 
 const require = createRequire(import.meta.url);
-const source = await readFile(new URL('../src/components/ReviewItemsScreen.tsx', import.meta.url), 'utf8');
+const { readFileSync, existsSync } = await import('node:fs');
+const { dirname, resolve } = await import('node:path');
+const moduleCache = new Map();
+function loadTs(file) {
+  const path = resolve(file);
+  if (moduleCache.has(path)) return moduleCache.get(path);
+  const result = {};
+  moduleCache.set(path, result);
+  const compiled = ts.transpileModule(readFileSync(path, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  new Function('require', 'exports', compiled)(name => {
+    if (name.endsWith('/api/client')) return {};
+    if (name.endsWith('/api/http')) return { ApiError: class extends Error {} };
+    if (name.startsWith('.')) {
+      const target = resolve(dirname(path), name);
+      return loadTs(target + (existsSync(target + '.tsx') ? '.tsx' : '.ts'));
+    }
+    return require(name);
+  }, result);
+  return result;
+}
+const reviewTools = loadTs(new URL('../src/components/review/ReviewTools.tsx', import.meta.url).pathname);
+const reviewModel = loadTs(new URL('../src/features/review/model.ts', import.meta.url).pathname);
+const reviewQueue = loadTs(new URL('../src/features/review/task-queue.ts', import.meta.url).pathname);
+const inactiveOperations = () => ({ busy: false, error: null, pending: null, toast: null });
+const source = await readFile(new URL('../src/components/review/ReviewWorkspace.tsx', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
     jsx: ts.JsxEmit.ReactJSX },
@@ -18,8 +44,12 @@ const summaryOutput = ts.transpileModule(summarySource, {
 }).outputText;
 const exports = {};
 new Function('require', 'exports', outputText)(name => {
-  if (name === '../api/client') return {};
-  if (name === './ScreenState' || name === './WorkflowStepper') {
+  if (name.endsWith('/api/client')) return {};
+  if (name === './ReviewTools') return reviewTools;
+  if (name.endsWith('/features/review/model')) return reviewModel;
+  if (name.endsWith('/features/review/task-queue')) return reviewQueue;
+  if (name.endsWith('/features/review/use-review-operations')) return { useReviewOperations: inactiveOperations };
+  if (name.endsWith('/ScreenState') || name.endsWith('/WorkflowStepper')) {
     return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
   }
   return require(name);
@@ -32,7 +62,7 @@ const data = {
   attributeColumns: [], columnLabels: {}, availableColumns: [],
 };
 function render(initialData) {
-  return renderToStaticMarkup(React.createElement(exports.ReviewItemsScreen, {
+  return renderToStaticMarkup(React.createElement(exports.ReviewWorkspace, {
     requestId: 'import-test', initialData, onContinue: () => {},
   }));
 }
@@ -64,6 +94,34 @@ test('AI checked rows show inference provenance and need no individual verificat
   assert.doesNotMatch(html, /require manual review before/);
 });
 
+test('the integrated table never asks ready rows to verify again', () => {
+  const item = {
+    id: 1, name: 'Diagnostic scanner', quantity: 2, unit: 'pcs', notes: '', itemNumber: '', shelfLife: '',
+    attributes: {}, priority: 'medium', confidence: 95, status: 'verified', domain: 'equipment', manual: false,
+    verificationSource: 'ai', readyForMatching: true, reviewReasons: [],
+  };
+  const html = render({ ...data, reviewRevision: 0, items: [item], issues: [], tasks: [],
+    reviewCounts: { active: 1, ready: 1, affected: 0, issues: 0, removed: 0 }, canStartMatching: true,
+  });
+  assert.match(html, /AI checked/);
+  assert.match(html, /no extra row verification is needed/);
+  assert.doesNotMatch(html, />Verify</);
+  assert.doesNotMatch(html, /Verify selected/);
+  assert.doesNotMatch(html, />Confidence</);
+});
+
+test('column extraction is inside the compact source disclosure and metadata lives in guided review', () => {
+  const tree = interactiveScreen({ ...data, reviewRevision: 0, tasks: [], issues: [] })();
+  const disclosure = findElement(tree, element => element.type === 'details' &&
+    renderToStaticMarkup(element).includes('Additional attribute'));
+  assert.ok(disclosure);
+  assert.ok(findElement(disclosure, element => element.props?.['aria-label'] === 'Additional attribute'));
+  const guided = findElement(tree, element => element.props?.requestDetails);
+  assert.ok(guided);
+  assert.match(renderToStaticMarkup(guided.props.requestDetails.content), /All fields are optional/);
+  assert.equal(findElement(guided.props.requestDetails.content, element => element.props?.required), undefined);
+});
+
 test('supplier column notes are informational and provider failures remain visible', () => {
   const html = render({ ...data, parserWarnings: ['Ignored supplier/admin columns: Price'],
     reviewSummary: { status: 'unavailable', checked: 0, message: 'Some rows could not be AI checked. Basic extraction has been retained; you can retry.' } });
@@ -83,7 +141,7 @@ test('unresolved row issues are shown next to the source item', () => {
 });
 
 
-function interactiveScreen(initialData = data, client = {}, summary = false) {
+function interactiveScreen(initialData = data, client = {}, summary = false, operations = inactiveOperations()) {
   const slots = [];
   let cursor = 0;
   let effects = [];
@@ -108,10 +166,14 @@ function interactiveScreen(initialData = data, client = {}, summary = false) {
   const interactive = {};
   new Function('require', 'exports', summary ? summaryOutput : outputText)(name => {
     if (name === 'react') return hooks;
+    if (name === './ReviewTools') return reviewTools;
+    if (name.endsWith('/features/review/model')) return reviewModel;
+    if (name.endsWith('/features/review/task-queue')) return reviewQueue;
+    if (name.endsWith('/features/review/use-review-operations')) return { useReviewOperations: () => operations };
     if (name === 'react-dom') return { createPortal: element => element };
-    if (name === '../api/client') return client;
+    if (name.endsWith('/api/client')) return client;
     if (summary && name === '../api/workflow') return { getRequestSummary: async () => initialData };
-    if (name === './ScreenState' || name === './WorkflowStepper') return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
+    if (name.endsWith('/ScreenState') || name.endsWith('/WorkflowStepper')) return { ErrorPanel: () => null, LoadingPanel: () => null, WorkflowStepper: () => null };
     if (summary && name.startsWith('.')) return {
       useOfferDateRefresh: () => {}, SharePointOfferSource: () => null,
       CandidateAvailability: () => null, ProcessingProgress: () => null,
@@ -123,7 +185,7 @@ function interactiveScreen(initialData = data, client = {}, summary = false) {
     effects = [];
     const tree = summary
       ? interactive.OrderSummaryScreen({ requestId: 'import-test', onBack: async () => {} })
-      : interactive.ReviewItemsScreen({ requestId: 'import-test', initialData, onContinue: () => {} });
+      : interactive.ReviewWorkspace({ requestId: 'import-test', initialData, onContinue: () => {} });
     for (const effect of effects) effect();
     return tree;
   };
@@ -144,6 +206,7 @@ for (const screen of ['review', 'summary']) {
     const edit = tree => findElement(tree, element => element.props?.['aria-label'] === 'Edit partner details');
     renderTree();
     await Promise.resolve();
+    if (screen === 'review') findElement(renderTree(), element => element.props?.['aria-label'] === 'Request details').props.onClick();
     let tree = renderTree();
     assert.ok(edit(tree));
     assert.match(renderToStaticMarkup(tree), /Details confirmed/);
@@ -168,10 +231,14 @@ for (const screen of ['review', 'summary']) {
     await Promise.resolve();
     tree = renderTree();
     assert.doesNotMatch(renderToStaticMarkup(tree), /Details confirmed/);
-    button(tree, 'Confirm Details').props.onClick();
+    if (screen === 'review') findElement(tree, element => element.type === 'form').props.onSubmit({ preventDefault() {} });
+    else button(tree, 'Confirm Details').props.onClick();
     tree = renderTree();
-    assert.equal(button(tree, 'Confirming…').props.disabled, true);
-    assert.equal(edit(tree).props.disabled, true);
+    if (screen === 'review') assert.equal(findElement(tree, element => element.type === 'input' && element.props.value === 'Edited Partner').props.disabled, true);
+    else {
+      assert.equal(button(tree, 'Confirming…').props.disabled, true);
+      assert.equal(edit(tree).props.disabled, true);
+    }
     resolveConfirm({ ...partner, partner: 'Edited Partner', confirmed: true });
     await Promise.resolve();
     tree = renderTree();
@@ -184,8 +251,133 @@ function findElement(tree, predicate) {
   if (!tree || typeof tree !== 'object') return undefined;
   if (Array.isArray(tree)) return tree.map(child => findElement(child, predicate)).find(Boolean);
   if (predicate(tree)) return tree;
+  const details = findElement(tree.props?.requestDetails?.content, predicate);
+  if (details) return details;
   return findElement(tree.props?.children, predicate);
 }
+
+for (const manual of [false, true]) {
+  test(`${manual ? 'new' : 'existing'} item submission highlights required fields before making a request`, async () => {
+    const item = {
+      id: 1, name: 'Example item', quantity: null, unit: 'pcs', domain: null, notes: '',
+      itemNumber: '', shelfLife: '', attributes: {}, priority: 'medium', confidence: 60,
+      status: 'missing', manual: false, reviewReasons: [],
+    };
+    const priorDocument = globalThis.document;
+    globalThis.document = { addEventListener() {}, removeEventListener() {} };
+    const calls = [];
+    let finishSave;
+    const save = (...args) => {
+      calls.push(args.at(-1));
+      return new Promise(resolve => { finishSave = resolve; });
+    };
+    const renderTree = interactiveScreen({ ...data, items: manual ? [] : [item] }, {
+      updateItem: save, addManualItem: save,
+    });
+    const dialog = tree => findElement(tree, element => element.props?.['aria-labelledby'] === 'item-dialog-title');
+    const field = (tree, id) => findElement(dialog(tree), element => element.props?.id === id);
+    const submit = tree => findElement(dialog(tree), element => element.type === 'button' && element.props.type === 'submit');
+    const open = () => findElement(renderTree(), element => element.type === 'button' &&
+      (renderToStaticMarkup(element).includes(manual ? 'Add item manually' : 'Review Required') ||
+        !manual && element.props.children === 'Example item')).props.onClick();
+    try {
+      open();
+      let tree = renderTree();
+      field(tree, 'item-name').props.onChange({ target: { value: ' ' } });
+      tree = renderTree();
+      assert.equal(submit(tree).props.disabled, false);
+      assert.equal(dialog(tree).props.noValidate, true);
+      assert.equal(field(tree, 'item-quantity').props['aria-invalid'], false);
+      let prevented = false;
+      dialog(tree).props.onSubmit({ preventDefault() { prevented = true; } });
+      tree = renderTree();
+      assert.equal(prevented, true);
+      assert.equal(calls.length, 0);
+      for (const id of ['item-name', 'item-quantity', 'item-type']) {
+        assert.equal(field(tree, id).props['aria-invalid'], true);
+        assert.match(field(tree, id).props.className, /border-red-500/);
+        assert.ok(field(tree, id).props['aria-describedby']);
+      }
+      assert.match(renderToStaticMarkup(dialog(tree)), /Complete required fields: Item name, Quantity, Product type/);
+      field(tree, 'item-name').props.onChange({ target: { value: 'Example item' } });
+      for (const value of ['0', '-1', '1.5']) {
+        field(renderTree(), 'item-quantity').props.onChange({ target: { value } });
+        assert.equal(field(renderTree(), 'item-quantity').props['aria-invalid'], true);
+      }
+      field(renderTree(), 'item-quantity').props.onChange({ target: { value: '5' } });
+      tree = renderTree();
+      assert.equal(field(tree, 'item-name').props['aria-invalid'], false);
+      assert.equal(field(tree, 'item-quantity').props['aria-invalid'], false);
+      assert.equal(field(tree, 'item-type').props['aria-invalid'], true);
+      field(tree, 'item-type').props.onChange({ target: { value: 'equipment' } });
+      tree = renderTree();
+      assert.equal(findElement(dialog(tree), element => element.props?.id === 'item-validation-summary'), undefined);
+      dialog(tree).props.onSubmit({ preventDefault() {} });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].quantity, 5);
+      assert.equal(calls[0].domain, 'equipment');
+      assert.equal(submit(renderTree()).props.disabled, true);
+      finishSave({ ...item, ...calls[0], status: 'verified', manual });
+      await Promise.resolve();
+      assert.equal(dialog(renderTree()), undefined);
+      open();
+      tree = renderTree();
+      assert.equal(field(tree, 'item-name').props['aria-invalid'], false);
+      assert.equal(findElement(dialog(tree), element => element.props?.id === 'item-validation-summary'), undefined);
+    } finally {
+      globalThis.document = priorDocument;
+    }
+  });
+}
+
+test('guided editors immediately show invalid required fields and coverage opens the add form', () => {
+  const item = { id: 1, name: 'Gauze', quantity: 0, unit: 'pcs', domain: 'equipment', notes: '',
+    itemNumber: '', shelfLife: '', attributes: {}, priority: 'medium', status: 'needs_review', manual: false };
+  const previousDocument = globalThis.document;
+  globalThis.document = { addEventListener() {}, removeEventListener() {} };
+  try {
+    const renderTree = interactiveScreen({ ...data, reviewRevision: 0, items: [item], tasks: [], issues: [] });
+    let tree = renderTree();
+    const guided = findElement(tree, e => e.props?.onAdd && e.props?.requestDetails);
+    guided.props.onEdit(item, ['quantity']);
+    tree = renderTree();
+    const quantity = findElement(tree, e => e.props?.id === 'item-quantity');
+    assert.equal(quantity.props['aria-invalid'], true);
+    assert.match(quantity.props.className, /border-red-500/);
+    const close = findElement(tree, e => e.props?.['aria-label'] === 'Close item dialog');
+    close.props.onClick();
+    tree = renderTree();
+    findElement(tree, e => e.props?.onAdd && e.props?.requestDetails).props.onAdd();
+    tree = renderTree();
+    assert.equal(findElement(tree, e => e.props?.id === 'item-name').props['aria-invalid'], true);
+    assert.match(renderToStaticMarkup(tree), /Add Item Manually/);
+  } finally { globalThis.document = previousDocument; }
+});
+
+test('guided item editor says Done without changes and previews actual edits', async () => {
+  const item = { id: 1, name: 'Gauze', quantity: 10, unit: 'pcs', domain: 'equipment', notes: '',
+    itemNumber: '', shelfLife: '', attributes: {}, priority: 'medium', status: 'verified', manual: false };
+  const previousDocument = globalThis.document;
+  globalThis.document = { addEventListener() {}, removeEventListener() {} };
+  const calls = [];
+  try {
+    const renderTree = interactiveScreen({ ...data, reviewRevision: 0, items: [item], tasks: [], issues: [] },
+      {}, false, { ...inactiveOperations(), preview: async input => calls.push(input) });
+    const dialog = tree => findElement(tree, e => e.props?.['aria-labelledby'] === 'item-dialog-title');
+    const submit = tree => findElement(dialog(tree), e => e.type === 'button' && e.props.type === 'submit');
+    const open = () => findElement(renderTree(), e => e.props?.requestDetails).props.onEdit(item);
+    open();
+    assert.equal(submit(renderTree()).props.children, 'Done');
+    await dialog(renderTree()).props.onSubmit({ preventDefault() {} });
+    assert.equal(dialog(renderTree()), undefined);
+    assert.deepEqual(calls, []);
+    open();
+    findElement(dialog(renderTree()), e => e.props?.id === 'item-quantity').props.onChange({ target: { value: '12' } });
+    assert.equal(submit(renderTree()).props.children, 'Preview item changes');
+    await dialog(renderTree()).props.onSubmit({ preventDefault() {} });
+    assert.deepEqual(calls, [{ action: 'edit', itemIds: [1], changes: { quantity: 12 } }]);
+  } finally { globalThis.document = previousDocument; }
+});
 
 test('inferred controls show their values, stop highlighting edited values, and the item dialog dismisses safely', () => {
   const item = {
@@ -298,4 +490,26 @@ test('a defaulted unit is visibly marked as a default, not as source data', () =
   assert.ok(html.includes('>default<'));
   assert.ok(!html.includes('No unit in the request'));
   assert.ok(!html.includes('Medicine packaging requires'));
+});
+
+test('source rows, example annotations and generated findings are labelled separately', () => {
+  const item = { id: 1, name: 'Cannula', quantity: 9, unit: 'pcs', manual: false,
+    verificationSource: 'ai', confidence: 95, reviewReasons: [] };
+  const reference = { itemId: 1, page: 0, row: 8, literal: true, illustrative: true, cells: [
+    { index: 1, label: 'Product', value: 'Cannula' },
+    { index: 2, label: 'Requested total', value: '12' },
+    { index: 8, label: 'Example case', value: 'Copied total conflict', exampleNote: true },
+  ] };
+  const html = renderToStaticMarkup(React.createElement(exports.SourceReferencePanel, { item, reference, issues: [
+    { message: 'Copied quantity differs from source', origins: ['rules'] },
+    { message: 'Possible packaging ambiguity', origins: ['ai'] },
+  ] }));
+  const source = html.slice(html.indexOf('Original source row'), html.indexOf('</dl>'));
+  assert.match(source, /Requested total/);
+  assert.doesNotMatch(source, /Copied total conflict|Possible packaging ambiguity/);
+  assert.match(html, /Example annotations \(fixture instructions\)/);
+  assert.match(html, /Validation check/);
+  assert.match(html, /Simulated AI finding/);
+  assert.match(html, /Simulated AI check/);
+  assert.doesNotMatch(html, /Page 0|Keep these values/);
 });

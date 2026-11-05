@@ -50,6 +50,7 @@ class ParsedLineItem:
     verification_source: str | None = None
     inferred_fields: dict[str, str] = field(default_factory=dict)
     review_reasons: list[str] = field(default_factory=list)
+    review_findings: list[dict] = field(default_factory=list)
     protected_fields: list[str] | None = field(default_factory=list)
     review_id: str = ""
     manual: bool = False

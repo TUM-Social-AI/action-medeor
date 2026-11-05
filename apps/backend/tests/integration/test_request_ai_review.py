@@ -378,12 +378,7 @@ async def test_failure_is_visible_and_retryable(client, monkeypatch, failure):
             return_value=ReviewBatch(
                 confidence=95,
                 completed=True,
-                reviewed_count=1,
-                corrections=[
-                    Correction(
-                        row_id="row-0001", field="quantity", value=999, inferred=False, evidence="2"
-                    )
-                ],
+                reviewed_count=0,
                 issues=[],
             )
         )
@@ -422,7 +417,8 @@ async def test_edits_manual_rows_and_custom_columns_preserve_review(client, monk
             f"/api/requests/{rid}/items/{item_id}", json={"notes": "Human presentation"}
         )
         assert edit.status_code == 200
-        assert edit.json()["verificationSource"] == "human"
+        assert edit.json()["verificationSource"] is None
+        assert edit.json()["fieldReviews"]["notes"]["source"] == "human"
         manual = await client.post(
             f"/api/requests/{rid}/items",
             json={"name": "Manual device", "quantity": 3, "unit": "pcs", "domain": "equipment"},
@@ -435,7 +431,8 @@ async def test_edits_manual_rows_and_custom_columns_preserve_review(client, monk
         assert columns.status_code == 200, columns.text
         item = next(i for i in columns.json()["items"] if i["id"] == item_id)
         assert item["notes"] == "Human presentation"
-        assert item["verificationSource"] == "human"
+        assert item["verificationSource"] is None
+        assert item["fieldReviews"]["notes"]["source"] == "human"
         assert item["inferredFields"]["unit"]
         assert item["attributes"]["Source notes"] == "Original presentation"
         assert call.call_count == 1
@@ -504,7 +501,7 @@ async def test_legacy_values_are_preserved_but_gaps_can_be_filled(client, monkey
         assert result.status_code == 200, result.text
         item = result.json()["items"][0]
         assert item["notes"] == "Legacy notes"
-        assert item["domain"] == "equipment" and item["unit"] == "pcs"
+        assert item["domain"] == "equipment" and item["unit"] == "Stück"
         assert item["status"] == "needs_review"
     finally:
         await client.delete(f"/api/requests/{rid}")
