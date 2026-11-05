@@ -131,6 +131,7 @@ class RequestItemRow(Base):
     position: Mapped[int] = mapped_column(default=0)
 
     name: Mapped[str]
+    german_translation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     quantity: Mapped[int | None] = mapped_column(default=None)
     unit: Mapped[str] = mapped_column(default="")
     notes: Mapped[str] = mapped_column(default="")

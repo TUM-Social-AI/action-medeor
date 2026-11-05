@@ -475,6 +475,12 @@ the full architecture in the [detailed walkthrough](apps/backend/app/matching/RE
 
 ## Product Matching
 
+In Smart Matching, **Generate translation** translates a requested item name into German using
+the configured LLM provider. **Back to original** and **See translation** switch the displayed
+name without changing the request. Translations are saved per item and source name, reused after
+reloads, and regenerated on demand if the name changes. Apply the database migrations with
+`cd apps/backend && uv run alembic upgrade head` before running the updated application.
+
 The backend contains an explainable matching engine for normalized medicine and equipment
 inquiries. It combines exact, lexical, vector, and historical retrieval, applies versioned
 constraints, calculates packaging and availability evidence, and stores match runs and human

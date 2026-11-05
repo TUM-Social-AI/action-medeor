@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -39,7 +39,7 @@ from app.api.schemas import (
     WorksheetSelection,
 )
 from app.db import repository
-from app.db.models import ImportProgressRow
+from app.db.models import ImportProgressRow, RequestItemRow
 from app.db.repository import RawFileUnavailable
 from app.db.session import get_session
 from app.matching.api import get_matching_service
@@ -893,3 +893,35 @@ async def ai_review(
     repository.apply_ai_review(current, document)
     await session.commit()
     return repository.to_review_response(current)
+
+
+@router.post("/requests/{request_id}/items/{item_id}/translation")
+async def translate_request_item(
+    request_id: str,
+    item_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    from app.parsing.item_translation import translate_item_name
+    from app.parsing.llm_client import LlmUnavailable
+
+    # Serialize requests for this item so concurrent clicks reuse the saved result.
+    item = await session.scalar(
+        select(RequestItemRow).where(
+            RequestItemRow.id == item_id,
+            RequestItemRow.request_id == request_id,
+        ).with_for_update()
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    cached = item.german_translation or {}
+    if cached.get("source") == item.name and cached.get("text"):
+        return {"translation": cached["text"]}
+    try:
+        translated = await run_in_threadpool(translate_item_name, item.name)
+    except LlmUnavailable as exc:
+        raise HTTPException(
+            status_code=503, detail="Translation unavailable. Please try again."
+        ) from exc
+    item.german_translation = {"source": item.name, "text": translated}
+    await session.commit()
+    return {"translation": translated}
