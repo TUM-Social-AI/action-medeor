@@ -107,16 +107,31 @@ def test_name_similarity_and_normalized_ranking_do_not_replace_search_score():
     assert automatic_candidate(ProductDomain.EQUIPMENT, (best,)) is None
 
 
-@pytest.mark.parametrize("domain,score,ingredient,selected", [
-    (ProductDomain.MEDICINE, 51, "match", True),
-    (ProductDomain.MEDICINE, 50, "match", False),
-    (ProductDomain.MEDICINE, None, None, False),
-    (ProductDomain.EQUIPMENT, 51, None, True),
-    (ProductDomain.EQUIPMENT, 50, None, False),
-    (ProductDomain.EQUIPMENT, None, None, False),
+@pytest.mark.parametrize("domain,ingredient", [
+    (ProductDomain.MEDICINE, "match"),
+    (ProductDomain.EQUIPMENT, None),
 ])
-async def test_worker_saves_selection_or_no_match(monkeypatch, domain, score, ingredient, selected):
+@pytest.mark.parametrize("score,decision_type", [
+    (0, None),
+    (49, None),
+    (50, None),
+    (50.01, DecisionType.ACCEPT_SUGGESTION),
+    (51, DecisionType.ACCEPT_SUGGESTION),
+    (None, DecisionType.NO_MATCH),
+])
+@pytest.mark.parametrize("legacy_score", [False, True])
+@pytest.mark.parametrize("candidate_type", [CandidateType.CATALOG, CandidateType.HISTORICAL_OFFER])
+async def test_worker_leaves_low_scores_undecided(
+    monkeypatch, domain, score, ingredient, decision_type, legacy_score, candidate_type,
+):
     best = candidate(score, ingredient=ingredient) if score is not None else None
+    if best:
+        updates = {"candidate_type": candidate_type}
+        if candidate_type is CandidateType.HISTORICAL_OFFER:
+            updates["item_number"] = None
+        if legacy_score:
+            updates["score_components"] = {"lexical": score / 100}
+        best = best.model_copy(update=updates)
     run = SimpleNamespace(match_run_id=uuid4(), candidates=(best,) if best else ())
     service = SimpleNamespace(get_run=AsyncMock(return_value=run), save_decision=AsyncMock())
     monkeypatch.setattr(auto_select, "get_matching_service", lambda session: service)
@@ -125,13 +140,14 @@ async def test_worker_saves_selection_or_no_match(monkeypatch, domain, score, in
         id=1, domain=domain.value, current_match_run_id=run.match_run_id, match_status="completed",
         item_number="410001", name="Exact requested article",
     )
-    assert await auto_select.auto_select_item(session, item)
+    assert await auto_select.auto_select_item(session, item) == (decision_type is not None)
+    if decision_type is None:
+        service.save_decision.assert_not_called()
+        return
     decision = service.save_decision.call_args.args[0]
-    assert decision.decision_type == (
-        DecisionType.ACCEPT_SUGGESTION if selected else DecisionType.NO_MATCH
-    )
-    assert decision.candidate_id == (best.candidate_id if selected else None)
-    assert decision.selected_item_number == (best.item_number if selected else None)
+    assert decision.decision_type == decision_type
+    assert decision.candidate_id == (best.candidate_id if best else None)
+    assert decision.selected_item_number == (best.item_number if best else None)
     assert decision.actor == "automatic"
     assert decision.inquiry_line_id == str(item.id)
 

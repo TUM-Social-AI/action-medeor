@@ -522,9 +522,10 @@ excluded and disallowed candidates are never selected. Exact references, name si
 strength and form comparisons do not bypass or add to these automatic selection rules;
 the matching engine's existing constraints still apply before ranking.
 
-Medicine lines whose first candidate has no confirmed matching ingredient remain undecided,
-regardless of its score. Only the first candidate is considered; a confirmed ingredient on a
-lower-ranked candidate does not trigger a decision. Other completed lines receive an automatic
-`no_match` decision, including empty results.
+Lines whose first candidate has a search-similarity score of 50 or below remain undecided
+for manual review. Medicine lines whose first candidate has no confirmed matching ingredient
+also remain undecided, regardless of its score. Only the first candidate is considered; a
+confirmed ingredient on a lower-ranked candidate does not trigger a decision. Other completed
+lines receive an automatic `no_match` decision, including empty results.
 Both selections and “No match” defaults are persisted with actor `automatic`, can be changed
 during review, and never replace an existing decision when the worker resumes.

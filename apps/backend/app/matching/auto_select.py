@@ -28,6 +28,13 @@ def _has_confirmed_ingredient(candidate: MatchCandidateV1) -> bool:
     )
 
 
+def _search_similarity(candidate: MatchCandidateV1) -> float:
+    score = candidate.score_components.get("search_similarity")
+    if score is None:
+        score = search_similarity_components(candidate.score_components).get("search_similarity", 0.0)
+    return score
+
+
 def automatic_candidate(
     domain: ProductDomain,
     candidates: tuple[MatchCandidateV1, ...],
@@ -41,9 +48,7 @@ def automatic_candidate(
         or best.availability_status is AvailabilityStatus.NOT_ALLOWED
     ):
         return None
-    score = best.score_components.get("search_similarity")
-    if score is None:
-        score = search_similarity_components(best.score_components).get("search_similarity", 0.0)
+    score = _search_similarity(best)
     if domain == ProductDomain.MEDICINE:
         return best if _has_confirmed_ingredient(best) and score > 50 else None
     if domain == ProductDomain.EQUIPMENT:
@@ -52,7 +57,7 @@ def automatic_candidate(
 
 
 async def auto_select_item(session: AsyncSession, item: RequestItemRow) -> bool:
-    """Save a default for an undecided run, leaving unconfirmed ingredients for review."""
+    """Save a default, leaving low scores and unconfirmed ingredients for review."""
     if item.current_match_run_id is None or item.match_status != "completed":
         return False
     await session.execute(
@@ -68,6 +73,8 @@ async def auto_select_item(session: AsyncSession, item: RequestItemRow) -> bool:
     service = get_matching_service(session)
     run = await service.get_run(item.current_match_run_id)
     if run is None:
+        return False
+    if run.candidates and _search_similarity(run.candidates[0]) <= 50:
         return False
     if (
         item.domain == ProductDomain.MEDICINE
