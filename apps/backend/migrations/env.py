@@ -1,7 +1,7 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import get_settings
@@ -19,6 +19,10 @@ target_metadata = Base.metadata
 # --autogenerate sees them as "tables not in the metadata" and emits drop_table() for every one
 # of them. Restrict comparison to the tables Base actually owns.
 OWNED_TABLES = frozenset(Base.metadata.tables)
+
+# Stable PostgreSQL advisory-lock key (ASCII "ALLOCURA"). All online migration
+# commands share it so concurrently starting containers cannot race on the schema.
+MIGRATION_LOCK_ID = 0x414C4C4F43555241
 
 
 def include_object(object_, name, type_, reflected, compare_to) -> bool:
@@ -54,6 +58,10 @@ def do_run_migrations(connection) -> None:
     )
 
     with context.begin_transaction():
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": MIGRATION_LOCK_ID},
+        )
         context.run_migrations()
 
 
@@ -67,10 +75,11 @@ async def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-
-    await connectable.dispose()
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(do_run_migrations)
+    finally:
+        await connectable.dispose()
 
 
 if context.is_offline_mode():

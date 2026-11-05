@@ -239,9 +239,9 @@ backfill is triggered.
 The existing `20261012_0002` migration creates `import_progress` during a normal upgrade.
 Merge migration `20261105_0001` joins this feature's `20261028_0001` revision with the
 translation feature's `20261104_0001` revision. `alembic upgrade head` works from either
-feature history or their common ancestor without rewriting applied revisions. Run the upgrade
-manually against the production database before deploying the updated application. See the
-[release instructions](../README.md#deploy-translation-and-guided-review-together).
+feature history or their common ancestor without rewriting applied revisions. Both container
+images run this upgrade before serving HTTP, with a PostgreSQL advisory lock to serialize
+concurrent starts. See the [release instructions](../README.md#deploy-translation-and-guided-review-together).
 No additional repair migration is required by this feature. Databases previously migrated
 on branches with different migration ancestry may need a one-time schema reconciliation;
 `alembic upgrade head` does not recreate missing tables from already-recorded ancestors.

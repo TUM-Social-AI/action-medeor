@@ -743,9 +743,12 @@ description from being ranked with current stock or current embeddings.
 Locally, Docker Compose keeps PostgreSQL data in the named `postgres-data` volume (normally shown by
 Docker as `allocura_postgres-data`). In Azure,
 `DATABASE_URL` must point to a separately managed PostgreSQL service with pgvector enabled; rebuilding
-or replacing the application container must not delete the database. Run `alembic upgrade head` as a
-manual deployment step before serving the new application version. The containers and production
-workflow do not run migrations automatically.
+or replacing the application container must not delete the database. Both application images run
+`alembic upgrade head` before starting Uvicorn. A failed migration exits the container before it
+opens the HTTP port. Online Alembic commands take a PostgreSQL transaction advisory lock, so
+concurrently starting replicas wait for the schema upgrade and then check for remaining revisions.
+The lock is released automatically when the migration transaction commits or rolls back.
+Direct development starts with `uvicorn` still require running migrations separately.
 
 ### Deploy translation and guided review together
 
@@ -756,26 +759,17 @@ existing request data, cached translations, and review history are retained. No 
 request reimport is needed.
 
 Before release, verify the production database backup and rehearse the upgrade on a separate
-database. From a checkout containing both features and the merge migration, configure
-`DATABASE_URL` securely for production and run:
-
-```bash
-cd apps/backend
-uv run alembic current
-uv run alembic upgrade head
-uv run alembic current
-```
-
-The final revision should be `20261105_0001 (head)`. Run this once before deploying the new
-application version. The migration applies both feature branches as needed; no separate
-per-feature upgrade commands are required.
+database. The configured `DATABASE_URL` user must have the schema permissions needed by Alembic.
+Keep the Container App's command/arguments overrides unset so it uses the image's migration-first
+startup command. If an override is necessary, it must also run migrations successfully before
+starting the server.
 
 The production workflow publishes and deploys pushes to `main` only when the associated PR has
 the `deploy:production` label. Merge the translation PR without that label, update and test the
-guided-review branch with `main`, manually migrate the production database, then label and merge
-the final PR to deploy both features once. The existing revision can continue serving during
-these additive schema changes. The workflow waits for the new revision to become ready; it
-does not verify or update the schema.
+guided-review branch with `main`, then label and merge the final PR to deploy both features once.
+The new revision migrates the shared database before serving requests; the existing revision can
+continue serving during these additive schema changes. The workflow waits for the new revision
+to become ready and fails if startup cannot complete. It does not run a separate migration job.
 
 After deployment, verify an existing request, a guided-review edit and Undo, matching, and a
 translation after reload. `/api/health` checks database connectivity, not the schema revision.

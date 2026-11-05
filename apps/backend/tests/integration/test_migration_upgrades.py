@@ -89,7 +89,7 @@ async def test_upgrade_preserves_existing_requests(migration_database, starting_
                 """))
 
     await upgrade(url)
-    await upgrade(url)  # Repeating the manual upgrade must be harmless.
+    await upgrade(url)  # A restart with the same image must be harmless.
     async with engine.connect() as connection:
         assert (await connection.execute(text("SELECT version_num FROM alembic_version"))).all() == [
             ("20261105_0001",),
@@ -117,3 +117,13 @@ async def test_upgrade_preserves_existing_requests(migration_database, starting_
         else:
             assert request["review_revision"] == 0
             assert item["field_reviews"] == {}
+
+
+async def test_concurrent_container_migrations(migration_database):
+    url, engine = migration_database
+    # Race on an empty database, including creation of alembic_version itself.
+    await asyncio.gather(upgrade(url), upgrade(url))
+    async with engine.connect() as connection:
+        assert (await connection.execute(text("SELECT version_num FROM alembic_version"))).all() == [
+            ("20261105_0001",),
+        ]

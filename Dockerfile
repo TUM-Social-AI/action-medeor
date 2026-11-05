@@ -40,4 +40,6 @@ COPY --from=frontend-builder /app/apps/frontend/dist static
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Fail before opening the HTTP port if the schema cannot be upgraded. Alembic's
+# PostgreSQL advisory lock serializes migrations across concurrently starting replicas.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
