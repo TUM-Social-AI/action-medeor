@@ -37,9 +37,7 @@ function screen(api, translatedName = null, originalLanguage = 'en') {
 test('translation replaces the name, toggles back, and makes only one API call', async () => {
   let calls = 0, resolve;
   const render = screen(() => { calls++; return new Promise(done => { resolve = done; }); });
-  assert.match(render().html, /EN/);
-  assert.match(render().html, /GER/);
-  assert.equal(render().button.props['aria-checked'], false);
+  assert.equal(render().button.props.children, 'Generate translation');
   render().button.props.onClick();
   assert.equal(render().button.props.disabled, true);
   render().button.props.onClick();
@@ -48,10 +46,10 @@ test('translation replaces the name, toggles back, and makes only one API call',
   await new Promise(done => setImmediate(done));
   assert.match(render().html, /lang="de"[^>]*>Nadel 21G/);
   assert.doesNotMatch(render().html, /Needle 21G/);
-  assert.equal(render().button.props['aria-checked'], true);
+  assert.equal(render().button.props.children, 'Back to original');
   render().button.props.onClick();
   assert.match(render().html, /Needle 21G/);
-  assert.equal(render().button.props['aria-checked'], false);
+  assert.equal(render().button.props.children, 'See translation');
   render().button.props.onClick();
   assert.match(render().html, /Nadel 21G/);
   assert.equal(calls, 1);
@@ -76,11 +74,12 @@ test('saved translations are reused after reload and errors allow retry', async 
   assert.doesNotMatch(retry().html, /role="alert"/);
 });
 
-test('switch uses the source language code and falls back when unknown', () => {
-  for (const [language, label] of [['fr', 'FR'], ['ar', 'AR'], ['de', 'DE'], [null, 'ORIG']]) {
-    const render = screen(() => {}, null, language);
-    assert.match(render().html, new RegExp('>' + label + '</span>'));
-    assert.match(render().html, />GER<\/span>/);
-    assert.doesNotMatch(render().html, /English/);
+test('translation actions work for any original language without a language switch', () => {
+  for (const language of ['fr', 'ar', 'de', null]) {
+    const render = screen(() => {}, 'Nadel 21G', language);
+    assert.equal(render().button.props.children, 'See translation');
+    assert.doesNotMatch(render().html, /role="switch"/);
+    render().button.props.onClick();
+    assert.equal(render().button.props.children, 'Back to original');
   }
 });
