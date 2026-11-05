@@ -110,6 +110,64 @@ comparison. Expand the source attributes for per-row "Example case" and "Try thi
 The source also includes a missing blanket row to add manually, and a Storage conditions
 column available for custom extraction. The removed item can be restored normally.
 
+For a separate example of the guided-review cases, run:
+
+```sh
+.venv/bin/python -m app.jobs.seed_review_example --highlights
+```
+
+This creates `EXAMPLE-REVIEW-HIGHLIGHTS` / `EXAMPLE - Review highlights.xlsx` with 22 active
+items, including a simulated AI discrepancy flag, plus one removed item. It includes two
+independent missing-item warnings and preserves the
+original example and its decisions; re-running also preserves this sample's progress.
+
+Guided review labels each extracted field and shows the source value or the expected decision
+beside it. When no replacement is supported, that uncertainty is explicit: a unit check shows
+"Expected unit: Not established". General confidence checks show the row's labelled values
+on the right. The original source remains available per row.
+The All items table retains its original layout.
+
+Keeping values or confirming a source-column mapping uses one explicit action. There is no
+separate inspection checkbox or acceptance dialog, and the action label stays constant while
+saving. The server validates the same issue-scoped operation, and Undo remains available.
+Network retries reuse the operation ID; stale revisions refresh the review before a new attempt.
+Changing values still uses preview/apply. Paired actions use teal for keeping a value or
+interpretation, blue for changing it, red for removal, and a neutral Skip control. Quantity
+inputs remain visible; source type conflicts offer direct keep/source buttons. Pack checks
+keep the extracted quantity separate from the red pack-total comparison and offer an update
+to the calculation. Description tasks have individual edit/source-copy actions and no selection
+checkboxes. Item names and prominent Edit item buttons open the same editor; guided edits
+immediately highlight invalid required fields and focus the relevant input.
+
+Source-column checks name their worksheet/table and affected count. The two-item example is
+the separate Column check worksheet. Every supplied column has an editable role. Changes use
+the stored request cells, preserve protected human values, and preview the copied-field changes.
+Undo restores the source roles, copied values, provenance, and issue decisions together.
+
+Coverage tasks resolve each missing-product warning individually. Adding a filled item or
+linking an existing manual item atomically resolves that warning and displays the filled
+product in its place. Other warnings stay open; one item cannot resolve multiple warnings.
+Undo restores the warning and removes only the newly added item, while linking Undo keeps
+the existing item. A per-warning dismissal handles false positives. Keeping a suspected repeated header
+treats it as a product but exposes any missing required fields before it can become ready.
+Acceptance previews used by API clients include `keptValues` so the
+preserved fields and values are visible rather than only the product names.
+
+Completing or skipping a task advances forward from the selected timeline position, including
+when an earlier task remains unfinished. At the end, remaining tasks are offered explicitly.
+Unit checks without a source unit offer Use Stück (default), preserving the requested quantity.
+The item editor saves field changes; review acceptance stays on the guided review screen.
+
+Source references separate literal original cells from generated findings and deterministic
+validation checks. Illustrative workbooks label simulated AI and put Example case/Try this
+columns in a separate annotations disclosure. Page zero is not displayed as a real page.
+
+AI verification never changes an existing copied value, default or inference. The provider
+schema exposes issues and missing-field inferences, with no correction/source-column patches.
+Only empty product type and unit fields can be filled, at confidence >=90 with literal source
+evidence; ambiguous packaging remains empty for human review. Existing-value discrepancies
+become field-specific review issues. Summary counts distinguish fields filled from corrections.
+
 ## API
 
 `GET /api/requests/{id}/review` retains the existing response and adds `reviewRevision`,
@@ -133,10 +191,20 @@ when no action can safely be undone. Table-scoped issues have `itemId: null`, af
 }
 ```
 
-Actions are `edit`, `quantity_rule`, `verify`, `accept`, `remove`, and `restore`. Optional
+`POST /api/requests/{id}/review/missing-items` accepts `operationId`, `expectedRevision`,
+`issueId`, and exactly one of `item` (a complete manual item) or `itemId` (an existing manual
+item). It returns the updated `review`, `operationId`, and filled `itemId`. The operation is
+idempotent, revision checked, and reversible through the standard Undo endpoint.
+
+Actions are `edit`, `quantity_rule`, `verify`, `accept`, `remove`, `restore`, and `column_mapping`. Optional
 `itemChanges` maps selected item IDs to individual field patches. `accept` requires explicit
 `issueIds`. Quantity rules are `requested_total` and `pack_calculation`; each uses that row's
-own source value. Setting a unit label does not convert a quantity.
+own source value. Rule `explicit` requires `changes: {quantity: <positive integer>}` and records
+the custom quantity interpretation. Setting a unit label does not convert a quantity.
+`column_mapping` requires one table-scoped `issueId` in `issueIds` and `columnRoles` mapping every
+supplied column key to its role; it applies to all affected items in that table. Duplicate core
+roles, unknown columns, and partial-table changes are rejected. This updates retained review
+evidence; an explicit future worksheet re-extraction runs the extraction mapping workflow again.
 
 Preview returns before/after changes, `eligibleItemIds`, and `blockers`. It does not persist
 changes. Mixed verification selections must be resubmitted with the explicitly chosen eligible

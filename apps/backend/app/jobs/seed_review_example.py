@@ -7,6 +7,7 @@ The stored workbook and all AI findings are illustrative, clearly labelled sampl
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 from datetime import UTC, datetime
 from io import BytesIO
@@ -24,6 +25,8 @@ from app.review.engine import synchronize
 
 REQUEST_ID = "EXAMPLE-REVIEW-ALL-CASES"
 FILE_NAME = "EXAMPLE - All review cases.xlsx"
+HIGHLIGHTS_REQUEST_ID = "EXAMPLE-REVIEW-HIGHLIGHTS"
+HIGHLIGHTS_FILE_NAME = "EXAMPLE - Review highlights.xlsx"
 HEADERS = [
     "Product",
     "Requested total",
@@ -53,7 +56,7 @@ ROLES = {
 }
 
 
-def build_review_example() -> tuple[ParsedDocument, bytes]:
+def build_review_example(*, highlights: bool = False) -> tuple[ParsedDocument, bytes]:
     """Build frozen extraction results as well as the actual source workbook."""
     workbook = Workbook()
     workbook.active.title = "Review cases"
@@ -194,9 +197,9 @@ def build_review_example() -> tuple[ParsedDocument, bytes]:
     add(
         "Unclear unit",
         "Wound dressings",
-        "Set the unit to pcs. Quantity must stay 10.",
+        "The source omits a unit. Choose Stück (default) or enter a unit; quantity stays 10." if highlights else "Set the unit to pcs. Quantity must stay 10.",
         unit="?",
-        source={2: "pcs"},
+        source={2: "" if highlights else "pcs"},
     )
     add(
         "Conflicting unit",
@@ -244,12 +247,12 @@ def build_review_example() -> tuple[ParsedDocument, bytes]:
             verification_source=None,
         )
         item.review_source["mappingUncertain"] = True
-    add(
+    coverage = add(
         "Source coverage",
         "Sterile dressing kit",
-        "Source also contains Emergency blanket, quantity 7, pcs. Add the missing item, then acknowledge reconciliation.",
+        "Source also contains Emergency blanket, quantity 7, pcs. Add this item in guided review to resolve its warning.",
         code="coverage_uncertain",
-        message="A source row may be missing: Emergency blanket, quantity 7, pcs. Reconcile the source before accepting.",
+        message="A source row may be missing: Emergency blanket, quantity 7, pcs.",
     )
     add(
         "Other uncertainty",
@@ -294,6 +297,22 @@ def build_review_example() -> tuple[ParsedDocument, bytes]:
         domain=None,
         source={4: 10, 5: 100},
     )
+    if highlights:
+        add(
+            "AI discrepancy flagged",
+            "Diagnostic scanner model C",
+            "AI flags the discrepancy without changing the quantity. Keep 10 or change to the source total of 12.",
+            source={1: 12},
+            code="quantity_conflict",
+            fields=["quantity"],
+            message="Copied quantity is 10; the source requests 12. A human must decide whether to update it.",
+            status="needs_review",
+            verification_source=None,
+        )
+        coverage.review_findings.append({
+            "code": "coverage_uncertain", "fields": [], "origin": "ai",
+            "message": "A source row may be missing: Trauma scissors, quantity 4, pcs.",
+        })
     add(
         "Removed item",
         "Example item removed earlier",
@@ -309,10 +328,16 @@ def build_review_example() -> tuple[ParsedDocument, bytes]:
             "",
             "Missing from extraction — add manually",
             "Coverage example",
-            "Add from the item table",
+            "Add this item in guided review",
         ]
     )
-    document.rows_detected = len(document.items) + 1
+    if highlights:
+        workbook["Review cases"].append([
+            "Trauma scissors", 4, "pcs", "equipment", "", "",
+            "Missing from extraction — add manually", "Coverage example",
+            "Resolve this missing item independently in guided review",
+        ])
+    document.rows_detected = len(document.items) + (2 if highlights else 1)
     document.sheets = [{"name": s.title, "rows": s.max_row - 1} for s in workbook]
     document.review_summary["checked"] = len(document.items)
     for sheet in workbook:
@@ -338,17 +363,21 @@ def build_review_example() -> tuple[ParsedDocument, bytes]:
     return document, buffer.getvalue()
 
 
-async def seed_review_example(session: AsyncSession) -> tuple[ImportRequestRow, bool]:
+async def seed_review_example(
+    session: AsyncSession, *, highlights: bool = False
+) -> tuple[ImportRequestRow, bool]:
+    request_id = HIGHLIGHTS_REQUEST_ID if highlights else REQUEST_ID
+    file_name = HIGHLIGHTS_FILE_NAME if highlights else FILE_NAME
     # A fixed identity and transaction lock prevent duplicate examples on concurrent/repeated runs.
-    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": REQUEST_ID})
-    existing = await get_request_by_id(session, REQUEST_ID)
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": request_id})
+    existing = await get_request_by_id(session, request_id)
     if existing:
-        if existing.source_file_name != FILE_NAME:
+        if existing.source_file_name != file_name:
             raise ValueError("The example ID belongs to another request; refusing to overwrite it")
         return existing, False
-    document, raw_file = build_review_example()
+    document, raw_file = build_review_example(highlights=highlights)
     draft = ImportRequestRow(
-        request_id=REQUEST_ID,
+        request_id=request_id,
         source_file_name="",
         workflow_status="draft",
         items=[],
@@ -357,7 +386,7 @@ async def seed_review_example(session: AsyncSession) -> tuple[ImportRequestRow, 
     session.add(draft)
     await session.flush()
     request = await save_parsed_request(
-        session, parsed=document, file_name=FILE_NAME, raw_file=raw_file, request_id=REQUEST_ID
+        session, parsed=document, file_name=file_name, raw_file=raw_file, request_id=request_id
     )
     # The example includes a removal that predates this review session, without fabricating an undo.
     removed = request.items[-1]
@@ -368,10 +397,10 @@ async def seed_review_example(session: AsyncSession) -> tuple[ImportRequestRow, 
     return request, True
 
 
-async def _main() -> None:
+async def _main(*, highlights: bool = False) -> None:
     try:
         async with async_session() as session:
-            request, created = await seed_review_example(session)
+            request, created = await seed_review_example(session, highlights=highlights)
             print(
                 f"{request.request_id}: {'created' if created else 'already exists; progress preserved'}"
             )
@@ -381,4 +410,6 @@ async def _main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(_main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--highlights", action="store_true", help="Create a separate sample including read-only AI discrepancy flags and multiple missing items")
+    asyncio.run(_main(highlights=parser.parse_args().highlights))

@@ -128,6 +128,22 @@ def test_quantity_rule_keeps_different_row_values_and_records_conflict_decision(
     assert request.items[8].quantity == 800
 
 
+def test_explicit_quantity_choice_resolves_totals_without_changing_units_or_other_items():
+    request = review_fixture()
+    synchronize(request)
+    state, _, _, preview = evaluate(request, operation(
+        request, "quantity_rule", [9], rule="explicit", changes={"quantity": 17},
+    ))
+    assert state.items[8].quantity == 17
+    assert state.items[8].unit == request.items[8].unit
+    assert state.items[9].quantity == 800
+    assert 9 in project(state)["readyIds"]
+    assert preview["changes"][0]["fields"]["quantity"]["after"] == 17
+    for changes in ({"quantity": 0}, {"quantity": 1.5}, {"quantity": 4, "unit": "boxes"}):
+        with pytest.raises(HTTPException):
+            evaluate(request, operation(request, "quantity_rule", [9], rule="explicit", changes=changes))
+
+
 def test_unit_label_change_never_changes_quantity():
     request = review_fixture()
     synchronize(request)
@@ -150,6 +166,16 @@ def test_acceptance_reopens_when_evidence_changes_but_not_unrelated_rows():
     assert 16 in project(state)["readyIds"]
     state.ai_review["sources"]["16"]["cells"]["0"] = "Changed source identity"
     assert 16 not in project(state)["readyIds"]
+
+
+def test_acceptance_preview_names_the_preserved_field_and_value():
+    request = review_fixture()
+    projection = synchronize(request)
+    issue = next(i for i in projection["issues"] if i["itemId"] == 14 and i["category"] == "unit")
+    _, _, _, preview = evaluate(request, operation(request, "accept", [14], issueIds=[issue["id"]]))
+    assert preview["changes"][0]["keptValues"] == {"unit": "?"}
+    assert preview["changes"][0]["fields"] == {}
+    assert request.items[13].unit == "?"
 
 
 def test_required_values_cannot_be_accepted_and_invalid_batches_do_not_mutate():
@@ -281,7 +307,15 @@ def test_repeated_header_is_one_removal_task_not_missing_product_fields():
     result = project(request)
     issues = [i for i in result["issues"] if i["itemId"] == 1]
     assert [i["code"] for i in issues] == ["non_item_row"]
-    assert issues[0]["canAccept"] is False
+    assert issues[0]["canAccept"] is True
+    synchronize(request)
+    kept, _, _, _ = evaluate(request, operation(request, "accept", [1], issueIds=[issues[0]["id"]]))
+    remaining = [i for i in project(kept)["issues"] if i["itemId"] == 1 and i["state"] == "open"]
+    assert any(i["code"] == "quantity_required" for i in remaining)
+    assert 1 not in project(kept)["readyIds"]
+    kept.workflow_status, kept.review_revision = "review", 0
+    corrected, _, _, _ = evaluate(kept, operation(kept, "edit", [1], changes={"quantity": 10, "domain": "equipment"}))
+    assert not any(i["code"] == "non_item_row" and i["state"] == "open" for i in project(corrected)["issues"])
 
 
 def test_correcting_a_specific_ai_flagged_note_resolves_it_without_clearing_other_fields():

@@ -40,6 +40,7 @@ import type {
   PartnerDetails,
   Priority,
   ReviewResponse,
+  ReviewIssue,
   SourceReference,
 } from '../../api/types';
 import { ErrorPanel, LoadingPanel } from '../ScreenState';
@@ -189,6 +190,9 @@ export function ReviewWorkspace({
   const [removingItemId, setRemovingItemId] = useState<number | null>(null);
   const [itemError, setItemError] = useState<string | null>(null);
   const [showItemValidation, setShowItemValidation] = useState(false);
+  const [editFocus, setEditFocus] = useState<string | null>(null);
+  const [addSourceContext, setAddSourceContext] = useState<string | null>(null);
+  const [missingIssueId, setMissingIssueId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Partial<ExtractedItem>>({});
   const unitInferred = Boolean(editingItem?.inferredFields?.unit) && editValues.unit === editingItem?.unit;
   const typeInferred =
@@ -197,7 +201,9 @@ export function ReviewWorkspace({
     const dialog = itemDialog.current;
     if (!editingItem || !dialog) return;
     const previous = document.activeElement;
-    if (!dialog.contains(previous)) dialog.focus();
+    const target = editFocus ? dialog.querySelector<HTMLElement>(`#${editFocus}`) : null;
+    if (target) { target.focus(); target.scrollIntoView({ block: 'center' }); }
+    else if (!dialog.contains(previous)) dialog.focus();
     const trapFocus = (event: KeyboardEvent) => {
       if (event.key !== 'Tab') return;
       const controls = Array.from(
@@ -224,7 +230,7 @@ export function ReviewWorkspace({
       dialog.removeEventListener('keydown', trapFocus);
       if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
-  }, [editingItem?.id]);
+  }, [editingItem?.id, editFocus]);
   useEffect(() => {
     if (!editingItem || isNewItem) return;
     const handleEscape = (event: KeyboardEvent) => {
@@ -498,6 +504,9 @@ export function ReviewWorkspace({
     setIsNewItem(false);
     setItemError(null);
     setShowItemValidation(false);
+    setEditFocus(null);
+    setAddSourceContext(null);
+    setMissingIssueId(null);
     setEditingItem(item);
     setEditValues({
       name: item.name,
@@ -529,6 +538,14 @@ export function ReviewWorkspace({
     };
     openEdit(item);
     setIsNewItem(true);
+  };
+
+  const openGuidedEdit = (item: ExtractedItem, fields: string[] = []) => {
+    openEdit(item);
+    setShowItemValidation(true);
+    const field = fields.find(field => ['name', 'quantity', 'domain', 'unit'].includes(field))
+      ?? (!item.name.trim() ? 'name' : !Number.isInteger(item.quantity) || (item.quantity ?? 0) <= 0 ? 'quantity' : !item.domain ? 'domain' : 'name');
+    setEditFocus(`item-${field === 'domain' ? 'type' : field}`);
   };
 
   const validName = !!editValues.name?.trim();
@@ -589,6 +606,10 @@ export function ReviewWorkspace({
           return;
         }
         await operations.preview({ action: 'edit', itemIds: [editingItem.id], changes });
+        return;
+      }
+      if (isNewItem && missingIssueId) {
+        if (await operations.resolveMissing({ issueId: missingIssueId, item: payload })) setEditingItem(null);
         return;
       }
       const updated = isNewItem
@@ -921,7 +942,7 @@ export function ReviewWorkspace({
                     {data.reviewSummary?.status && (
                       <p>
                         {data.reviewSummary.checked ?? 0} rows AI checked ·{' '}
-                        {data.reviewSummary.corrected ?? 0} corrected ·{' '}
+                        {data.reviewSummary.filled ?? 0} missing fields filled ·{' '}
                         {items.filter((item) => item.status !== 'verified').length} unresolved
                       </p>
                     )}
@@ -1057,7 +1078,8 @@ export function ReviewWorkspace({
             data={data}
             hidden={view !== 'guided'}
             operations={operations}
-            onEdit={openEdit}
+            onEdit={openGuidedEdit}
+            onAdd={(issueId, context) => { openAdd(); setShowItemValidation(true); setEditFocus('item-name'); setAddSourceContext(context ?? null); setMissingIssueId(issueId); }}
             onAll={() => setView('all')}
             requestDetails={{
               content: requestDetailsCard,
@@ -1736,36 +1758,16 @@ export function ReviewWorkspace({
             </div>
 
             <div className="px-6 py-5 min-h-0 overflow-y-auto overscroll-contain">
-              {itemError && (
+              {(itemError || (missingIssueId && operations.error)) && (
                 <div className="mb-4">
-                  <ErrorPanel message={itemError} />
+                  <ErrorPanel message={itemError || operations.error!} />
                 </div>
               )}
-              <SourceReferencePanel item={editingItem} reference={sourceReferences[editingItem.id]} />
-              {structuredReview &&
-                (data.issues ?? [])
-                  .filter(
-                    (issue) => issue.itemId === editingItem.id && issue.state === 'open' && issue.canAccept,
-                  )
-                  .map((issue) => (
-                    <div key={issue.id} className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
-                      <p className="text-xs text-amber-900 mb-2">{issue.message}</p>
-                      <button
-                        type="button"
-                        className={reviewButton}
-                        disabled={itemMutationPending}
-                        onClick={() =>
-                          void operations.preview({
-                            action: 'accept',
-                            itemIds: [editingItem.id],
-                            issueIds: [issue.id],
-                          })
-                        }
-                      >
-                        I inspected the source — accept current value
-                      </button>
-                    </div>
-                  ))}
+              <SourceReferencePanel item={editingItem} reference={sourceReferences[editingItem.id]}
+                issues={(data.issues ?? []).filter(issue => issue.itemId === editingItem.id && issue.state === 'open')} />
+              {isNewItem && addSourceContext && <div className="mb-4 border border-blue-200 bg-blue-50 rounded-lg p-3 text-sm text-blue-900 whitespace-pre-wrap">
+                <p className="font-semibold mb-1">Missing-item review finding · check against the source</p>{addSourceContext}
+              </div>}
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -2031,62 +2033,42 @@ export function ReviewWorkspace({
   );
 }
 
-function SourceReferencePanel({ item, reference }: { item: ExtractedItem; reference?: SourceReference }) {
-  const isMissing = item.status === 'missing';
-
-  if (item.manual) {
-    return (
-      <div className="border border-dashed border-slate-300 bg-slate-50 rounded-xl p-4 mb-5 flex items-start gap-2.5">
-        <PenLine size={14} className="text-slate-500 mt-0.5 flex-shrink-0" />
-        <div className="text-xs text-slate-600 leading-relaxed">
-          <span className="font-bold">Manual entry.</span> This item is added by you and will be marked as
-          verified. Name, a positive whole-number quantity and product type are required.
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={`border rounded-xl p-4 mb-5 ${isMissing ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}
-    >
-      <div className="flex items-center gap-2 mb-2">
-        <BookOpen size={14} className={isMissing ? 'text-red-500' : 'text-amber-600'} />
-        <span
-          className={`text-xs ${isMissing ? 'text-red-800' : 'text-amber-800'}`}
-          style={{ fontWeight: 700 }}
-        >
-          Source Reference - Page {reference?.page ?? '-'}, Row {reference?.row ?? '-'}
-        </span>
-      </div>
-      <div
-        className={`mt-1.5 rounded-lg px-3 py-2 text-xs leading-relaxed italic ${
-          isMissing ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
-        }`}
-      >
-        {reference?.excerpt ?? 'No source reference available'}
-      </div>
-      {!!item.reviewReasons?.length && (
-        <ul className="mt-3 text-xs text-amber-800 list-disc pl-4">
-          {item.reviewReasons.map((reason, index) => (
-            <li key={index}>{reason}</li>
-          ))}
-        </ul>
-      )}
-      <div
-        className={`flex items-center gap-1.5 mt-2 text-xs ${isMissing ? 'text-red-600' : 'text-amber-600'}`}
-      >
-        <Info size={11} />
-        {isMissing
-          ? 'Item name extracted. Quantity could not be read. Please enter it manually.'
-          : item.verificationSource === 'ai'
-            ? `AI checked against the source${item.confidence == null ? '' : ` · ${item.confidence}% confidence`}`
-            : item.confidence == null
-              ? 'Check against the original source'
-              : `Extracted with ${item.confidence}% confidence`}
-      </div>
+export function SourceReferencePanel({ item, reference, issues = [] }: { item: ExtractedItem; reference?: SourceReference; issues?: ReviewIssue[] }) {
+  if (item.manual) return <div className="border border-dashed border-slate-300 bg-slate-50 rounded-xl p-4 mb-5 flex items-start gap-2.5">
+    <PenLine size={14} className="text-slate-500 mt-0.5 shrink-0" />
+    <p className="text-xs text-slate-600"><strong>Manual entry.</strong> These values were entered by a person. Name, a positive whole-number quantity and product type are required.</p>
+  </div>;
+  const cells = reference?.cells ?? [];
+  const sourceCells = cells.filter(cell => !cell.exampleNote);
+  const exampleNotes = cells.filter(cell => cell.exampleNote);
+  const findings = issues.length ? issues.map(issue => ({ message: issue.message, origins: issue.origins ?? [] }))
+    : (item.reviewReasons ?? []).map(message => ({ message, origins: [] as string[] }));
+  const location = [reference?.worksheet, (reference?.page ?? 0) > 0 ? `Page ${reference!.page}` : null,
+    (reference?.row ?? 0) > 0 ? `Row ${reference!.row}` : null].filter(Boolean).join(' · ');
+  return <section aria-label="Source reference" className="border border-gray-200 rounded-xl mb-5 overflow-hidden">
+    <div className="p-4 bg-slate-50">
+      <div className="flex items-center gap-2 text-xs font-semibold text-slate-700"><BookOpen size={14} />Source reference{location ? ` · ${location}` : ''}</div>
+      {reference?.illustrative && <p className="mt-2 text-xs text-violet-700">Illustrative example · source values and AI results are simulated.</p>}
+      <h4 className="mt-3 mb-2 text-xs font-semibold text-slate-600">{reference?.literal ? sourceCells.length ? 'Original source row' : 'Original source text' : 'Stored excerpt'}</h4>
+      {sourceCells.length ? <dl className="rounded-lg bg-white border border-slate-200 p-3 space-y-2 text-xs">
+        {sourceCells.map(cell => <div key={cell.index} className="grid grid-cols-[minmax(6rem,1fr)_2fr] gap-3">
+          <dt className="text-gray-500">{cell.label}</dt><dd className="text-gray-900 whitespace-pre-wrap break-words">{cell.value}</dd>
+        </div>)}
+      </dl> : <p className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-gray-800 whitespace-pre-wrap">{reference?.excerpt || 'No source reference available.'}</p>}
+      {!!exampleNotes.length && <details className="mt-3 text-xs text-violet-800">
+        <summary className="cursor-pointer font-medium">Example annotations (fixture instructions)</summary>
+        <dl className="mt-2 space-y-2">{exampleNotes.map(cell => <div key={cell.index}><dt className="font-medium">{cell.label}</dt><dd>{cell.value}</dd></div>)}</dl>
+      </details>}
     </div>
-  );
+    <div className="p-4 border-t border-gray-200 bg-white">
+      {!!findings.length && <><h4 className="text-xs font-semibold text-gray-700 mb-2">Review findings</h4>
+        <ul className="space-y-2">{findings.map((finding, index) => <li key={index} className="text-xs">
+          <span className="font-semibold text-amber-800">{finding.origins.includes('ai') ? reference?.illustrative ? 'Simulated AI finding' : 'AI-generated finding' : finding.origins.includes('rules') ? 'Validation check' : 'Review note'}: </span>
+          <span className="text-gray-700">{finding.message}</span>
+        </li>)}</ul></>}
+      <p className="mt-2 text-xs text-gray-500">{reference?.illustrative && item.verificationSource === 'ai' ? 'Simulated AI check' : item.verificationSource === 'ai' ? 'AI verification recorded' : item.verificationSource === 'human' ? 'Human verification recorded' : 'Source check pending'}{item.confidence != null ? ` · Recorded confidence: ${item.confidence}%` : ''}</p>
+    </div>
+  </section>;
 }
 
 function partnerLabel(key: keyof Pick<PartnerDetails, 'partner' | 'region' | 'requestId' | 'contact'>) {

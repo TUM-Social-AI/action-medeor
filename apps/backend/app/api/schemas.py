@@ -59,11 +59,22 @@ class PartnerDetails(BaseModel):
     sourceFile: str | None = None
 
 
+class SourceCell(BaseModel):
+    index: int
+    label: str
+    value: str
+    exampleNote: bool = False
+
+
 class SourceReference(BaseModel):
     itemId: int
     page: int
     row: int
     excerpt: str
+    worksheet: str | None = None
+    illustrative: bool = False
+    literal: bool = False
+    cells: list[SourceCell] = Field(default_factory=list)
 
 
 class ExtractedItem(BaseModel):
@@ -183,6 +194,14 @@ class ManualItemCreate(BaseModel):
     shelfLife: str = ""
     priority: Priority = "medium"
     domain: Literal["medicine", "equipment"]
+
+
+class MissingItemResolution(BaseModel):
+    operationId: str = Field(min_length=1, max_length=100)
+    expectedRevision: int = Field(ge=0)
+    issueId: str = Field(min_length=1)
+    item: ManualItemCreate | None = None
+    itemId: int | None = Field(default=None, gt=0)
 
 
 class RequestCreate(BaseModel):

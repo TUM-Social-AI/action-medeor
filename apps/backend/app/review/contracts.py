@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ReviewAction = Literal["edit", "quantity_rule", "verify", "accept", "remove", "restore"]
+ReviewAction = Literal["edit", "quantity_rule", "verify", "accept", "remove", "restore", "column_mapping"]
 
 
 class ReviewOperation(BaseModel):
@@ -14,7 +14,8 @@ class ReviewOperation(BaseModel):
     issueIds: list[str] = Field(default_factory=list, max_length=10000)
     changes: dict = Field(default_factory=dict)
     itemChanges: dict[int, dict] = Field(default_factory=dict)
-    rule: Literal["requested_total", "pack_calculation"] | None = None
+    rule: Literal["requested_total", "pack_calculation", "explicit"] | None = None
+    columnRoles: dict[str, str] = Field(default_factory=dict)
 
 
 class UndoOperation(BaseModel):

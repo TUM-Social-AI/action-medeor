@@ -4,6 +4,7 @@ from dataclasses import asdict
 from io import BytesIO
 from types import SimpleNamespace
 
+import pytest
 from openpyxl import load_workbook
 
 from app.jobs.seed_review_example import build_review_example
@@ -59,6 +60,51 @@ def test_example_covers_all_problem_codes_and_has_real_source_evidence():
             source["cells"]["0"] or None
         )
     assert "simulated" in request.parser_warnings[0]
+
+
+def test_highlights_example_flags_a_discrepancy_without_changing_the_copied_value():
+    original, _ = build_review_example()
+    highlights, raw = build_review_example(highlights=True)
+    assert len(highlights.items) == len(original.items) + 1
+    flagged = next(i for i in highlights.items if i.attributes["Example case"] == "AI discrepancy flagged")
+    assert flagged.verification_source is None
+    assert flagged.review_findings[0]["code"] == "quantity_conflict"
+    source = load_workbook(BytesIO(raw))["Review cases"]
+    assert source.cell(flagged.row, 1).value == flagged.name
+    assert flagged.quantity == 10 and source.cell(flagged.row, 2).value == 12
+    coverage = next(i for i in highlights.items if i.attributes["Example case"] == "Source coverage")
+    assert len(coverage.review_findings) == 2
+    assert all(finding["code"] == "coverage_uncertain" for finding in coverage.review_findings)
+    assert highlights.items[-1].attributes["Example case"] == "Removed item"
+
+
+def test_issue_source_comparisons_use_actual_mapped_cells():
+    request, _ = example_state()
+    projection = project(request)
+    for case, field, expected in (
+        ("Conflicting product type", "domain", "equipment"),
+        ("Conflicting unit", "unit", "bottles"),
+        ("Missing product name", "name", "Adult blood pressure cuff"),
+    ):
+        item = next(i for i in request.items if i.attributes["Example case"] == case)
+        issue = next(i for i in projection["issues"] if i["itemId"] == item.id)
+        assert issue["sourceValues"][field] == expected
+
+
+@pytest.mark.parametrize("reason", [
+    "AI correction for type cited a source column mapped to a different field; check the source column mapping or retry AI verification",
+    "AI correction for quantity cited a missing or empty source cell; check the source or retry AI verification",
+])
+def test_rejected_citation_stays_visible_as_a_row_issue(reason):
+    request, _ = example_state()
+    item = request.items[0]
+    item.review_reasons = [reason]
+    item.verification_source = None
+    item.status = "needs_review"
+    issues = [i for i in project(request)["issues"] if i["itemId"] == item.id]
+    assert len(issues) == 1
+    assert issues[0]["code"] == "other"
+    assert issues[0]["message"] == reason
 
 
 def test_example_overlap_requires_both_decisions_and_column_confirmation_is_shared():

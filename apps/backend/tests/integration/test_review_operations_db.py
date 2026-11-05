@@ -6,6 +6,8 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.db.repository import get_request_by_id
+from app.db.session import async_session
 from app.main import app
 from tests.test_parsing import build_xlsx
 
@@ -58,6 +60,38 @@ def payload(body, action, ids, **extra):
         itemIds=ids,
         **extra,
     )
+
+
+async def test_column_mapping_preview_apply_and_undo_restore_source_roles(saved_review):
+    client, body = saved_review
+    root = f"/api/requests/{body['requestId']}"
+    async with async_session() as session:
+        request = await get_request_by_id(session, body["requestId"])
+        sources = {key: {**source, "mappingUncertain": True} for key, source in request.ai_review["sources"].items()}
+        request.ai_review = {**request.ai_review, "sources": sources}
+        await session.commit()
+    original = (await client.get(root + "/review")).json()
+    issue = next(i for i in original["issues"] if i.get("scope") == "table")
+    roles = {col["key"]: col["role"] for col in issue["columns"]}
+    product = next(col["key"] for col in issue["columns"] if col["role"] == "name")
+    brand = next(col["key"] for col in issue["columns"] if col["label"] == "Brand")
+    roles[product], roles[brand] = "attribute", "name"
+    operation = payload(original, "column_mapping", issue["itemIds"], issueIds=[issue["id"]], columnRoles=roles)
+    preview = await client.post(root + "/review/operations/preview", json=operation)
+    assert preview.status_code == 200, preview.text
+    assert all(change["fields"]["name"]["after"] == "Source brand" for change in preview.json()["changes"])
+    applied = await client.post(root + "/review/operations", json=operation)
+    assert applied.status_code == 200, applied.text
+    updated = applied.json()["review"]
+    assert all(item["name"] == "Source brand" for item in updated["items"])
+    assert updated["lastUndoOperationId"] == operation["operationId"]
+    undone = await client.post(root + f"/review/operations/{operation['operationId']}/undo", json={
+        "operationId": str(uuid4()), "expectedRevision": updated["reviewRevision"],
+    })
+    assert undone.status_code == 200, undone.text
+    restored = undone.json()["review"]
+    assert [item["name"] for item in restored["items"]] == [item["name"] for item in original["items"]]
+    assert any(i.get("scope") == "table" and i["state"] == "open" for i in restored["issues"])
 
 
 async def test_empty_request_details_can_be_saved_and_confirmed_without_verifying_items(saved_review):

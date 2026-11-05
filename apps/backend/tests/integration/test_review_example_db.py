@@ -15,17 +15,19 @@ from app.review.taxonomy import CATEGORIES
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-async def test_example_seed_preserves_progress_on_replay(monkeypatch):
+@pytest.mark.parametrize("highlights", [False, True])
+async def test_example_seed_preserves_progress_on_replay(monkeypatch, highlights):
     if not os.getenv("MATCHING_TEST_DATABASE_URL"):
         pytest.skip("MATCHING_TEST_DATABASE_URL is not configured")
     example_id = f"EXAMPLE-TEST-{uuid4().hex[:10]}"
     monkeypatch.setattr(example, "REQUEST_ID", example_id)
+    monkeypatch.setattr(example, "HIGHLIGHTS_REQUEST_ID", example_id)
     async with async_session() as session:
         try:
-            request, created = await example.seed_review_example(session)
+            request, created = await example.seed_review_example(session, highlights=highlights)
             assert created
             response = to_review_response(request)
-            assert len(response.items) == 21
+            assert len(response.items) == (22 if highlights else 21)
             assert len(response.removedItems) == 1
             assert request.raw_file.startswith(b"PK")
             assert {i["code"] for i in response.issues} == set(CATEGORIES)
@@ -42,7 +44,7 @@ async def test_example_seed_preserves_progress_on_replay(monkeypatch):
                 ),
             )
             saved_revision = request.review_revision
-            replay, created = await example.seed_review_example(session)
+            replay, created = await example.seed_review_example(session, highlights=highlights)
             assert not created
             assert replay.review_revision == saved_revision
             assert (

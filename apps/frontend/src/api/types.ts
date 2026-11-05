@@ -65,6 +65,10 @@ export type SourceReference = {
   page: number;
   row: number;
   excerpt: string;
+  worksheet?: string | null;
+  illustrative?: boolean;
+  literal?: boolean;
+  cells?: { index: number; label: string; value: string; exampleNote?: boolean }[];
 };
 
 export type ExtractedItem = {
@@ -95,6 +99,11 @@ export type ReviewIssue = {
   sampleRows?: { itemId: number; name: string; quantity: number | null; row: number | null; cells: Record<string, string> }[];
   id: string; itemId: number | null; code: string; category: string; fields: string[];
   message: string; state: 'open' | 'accepted'; canAccept: boolean; evidence?: string;
+  sourceValues?: Record<string, string>;
+  sourceType?: 'medicine' | 'equipment' | null;
+  sourceScope?: string;
+  addedItemId?: number | null;
+  origins?: string[];
   requestedTotal?: number | null; packs?: number | null; unitsPerPack?: number | null;
   calculatedTotal?: number | null; suggestedValue?: string | null;
 };
@@ -106,16 +115,17 @@ export type ReviewTask = {
 
 export type ReviewOperation = {
   operationId: string; expectedRevision: number;
-  action: 'edit' | 'quantity_rule' | 'verify' | 'accept' | 'remove' | 'restore';
+  action: 'edit' | 'quantity_rule' | 'verify' | 'accept' | 'remove' | 'restore' | 'column_mapping';
   itemIds: number[]; issueIds?: string[];
   changes?: ItemUpdate; itemChanges?: Record<number, ItemUpdate>;
-  rule?: 'requested_total' | 'pack_calculation';
+  rule?: 'requested_total' | 'pack_calculation' | 'explicit';
+  columnRoles?: Record<string, string>;
 };
 
 export type ReviewPreview = {
   tableDecision?: { worksheet: string | null; affectedItems: number; columns: { label: string; role: string }[] } | null;
   eligibleItemIds: number[]; blockers: { itemId: number; message: string }[];
-  changes: { itemId: number; name: string; fields: Record<string, { before: unknown; after: unknown }> }[];
+  changes: { itemId: number; name: string; fields: Record<string, { before: unknown; after: unknown }>; keptValues?: Record<string, unknown> }[];
 };
 
 export type ReviewCounts = {
@@ -151,6 +161,7 @@ export type ReviewResponse = {
     status?: 'completed' | 'partial' | 'unavailable';
     checked?: number;
     corrected?: number;
+    filled?: number;
     unresolved?: number;
     message?: string;
   };
@@ -190,6 +201,11 @@ export type PartnerUpdate = Pick<PartnerDetails, 'partner' | 'region' | 'request
 export type ManualItemCreate = Omit<Required<ItemUpdate>, 'quantity' | 'domain'> & {
   quantity: number;
   domain: 'medicine' | 'equipment';
+};
+
+export type MissingItemSubmission = {
+  operationId: string; expectedRevision: number; issueId: string;
+  item?: ManualItemCreate; itemId?: number;
 };
 
 /** A field the user wants extracted, requested after the initial extraction from the review

@@ -25,6 +25,7 @@ from app.api.schemas import (
     MatchingResponse,
     MatchSelection,
     MatchSelectionResponse,
+    MissingItemResolution,
     OfferResponse,
     PartnerDetails,
     PartnerUpdate,
@@ -315,6 +316,20 @@ async def add_manual_item(
         raise HTTPException(status_code=409, detail="Items can only be added during review")
     item = await repository.add_manual_item(session, request, payload)
     return repository.to_extracted_item(item)
+
+
+@router.post("/requests/{request_id}/review/missing-items", status_code=201)
+async def resolve_missing_item(
+    request_id: str, payload: MissingItemResolution, http_request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    request = await repository.get_request_by_id(session, request_id, lock=True)
+    if request is None:
+        raise HTTPException(404, "Request not found")
+    actor = http_request.headers.get("x-ms-client-principal-id") or "local"
+    record = await review_service.resolve_missing_item(session, request, payload, actor)
+    return {"review": await review_response_with_history(session, request), "operationId": record.id,
+        "itemId": record.payload["resolvedItemId"]}
 
 
 @router.delete("/requests/{request_id}/items/{item_id}", status_code=204)

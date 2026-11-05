@@ -488,16 +488,25 @@ def to_review_response(row: ImportRequestRow) -> ReviewResponse:
         "status": "verified" if item.id in ready_ids else "missing" if not item.name.strip() or item.quantity is None else "needs_review",
         "readyForMatching": item.id in ready_ids,
     }) for item in row.active_items]
-    source_references = [
-        SourceReference(
+    source_references = []
+    illustrative = any("Illustrative review example:" in warning for warning in row.parser_warnings or [])
+    for item in row.active_items:
+        if item.source_reference is None:
+            continue
+        source = (row.ai_review or {}).get("sources", {}).get(str(item.id), {})
+        headers = source.get("headers", {})
+        cells = [{"index": int(column) + 1 if str(column).isdigit() else index + 1,
+            "label": str(headers.get(column, f"Column {column}")), "value": str(value),
+            "exampleNote": illustrative and str(headers.get(column, "")).casefold() in {"example case", "try this"}}
+            for index, (column, value) in enumerate(source.get("cells", {}).items()) if value not in (None, "")]
+        source_references.append(SourceReference(
             itemId=item.id,
             page=item.source_reference.page,
             row=item.source_reference.row,
-            excerpt=item.source_reference.excerpt,
-        )
-        for item in row.active_items
-        if item.source_reference is not None
-    ]
+            excerpt=source.get("text") or item.source_reference.excerpt,
+            worksheet=source.get("worksheet"), illustrative=illustrative, cells=cells,
+            literal=bool(cells or source.get("text")),
+        ))
 
     return ReviewResponse(
         reviewRevision=row.review_revision,

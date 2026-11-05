@@ -5,7 +5,7 @@ import json
 from collections import defaultdict
 
 from app.parsing.ai_review import FIELDS, deterministic_issues, source_quantity
-from app.parsing.domain_inference import suggest_domain
+from app.parsing.domain_inference import explicit_domain, suggest_domain
 from app.parsing.table_mapping import strict_quantity
 from app.parsing.table_parser import repeated_header
 from app.parsing.types import ParsedLineItem
@@ -57,6 +57,8 @@ def source_facts(parsed) -> dict:
     packs = strict_quantity(role_value("quantity_packs"))
     per_pack = strict_quantity(role_value("units_per_pack"))
     return {
+        "sourceValues": {field: value for field in FIELDS if (value := role_value(field))},
+        "sourceType": explicit_domain(role_value("domain")),
         "requestedTotal": source_quantity(parsed),
         "packs": packs,
         "unitsPerPack": per_pack,
@@ -97,9 +99,14 @@ def project(request) -> dict:
                 "roles": source.get("roles", {}),
             }
         )[:16]
-        non_item = repeated_header(
+        header_row = repeated_header(
             source.get("cells", {}), source.get("headers", {}), source.get("roles", {})
         )
+        header_fingerprint = digest(["non_item_row", source])
+        kept_header = any(row.item_id == item.id and row.detail.get("code") == "non_item_row"
+            and row.resolution and row.resolution.get("fingerprint") == header_fingerprint
+            for row in request.review_issues)
+        non_item = header_row and not kept_header
         mapping_problem = bool(
             source.get("mappingUncertain")
             or any(
@@ -138,7 +145,7 @@ def project(request) -> dict:
                 if category in {"type", "quantity", "totals", "unit", "description"}
                 else fields or ISSUE_FIELDS[category]
             )
-            key = (code, tuple(sorted(fields)))
+            key = (code, tuple(sorted(fields)), reason) if code == "coverage_uncertain" else (code, tuple(sorted(fields)))
             if key in findings:
                 findings[key]["origins"] = sorted(set(findings[key]["origins"] + [origin]))
                 return
@@ -150,8 +157,8 @@ def project(request) -> dict:
                 "origins": [origin],
             }
 
-        if non_item:
-            add("This is a repeated column header, not a requested product.", code="non_item_row")
+        if header_row:
+            add("This row appears to repeat the column headings. Remove it or keep it as a product.", code="non_item_row")
         for reason in [] if non_item else deterministic_issues(parsed):
             if item.manual and not item.unit and reason == "Requested unit is unclear":
                 continue
@@ -199,22 +206,34 @@ def project(request) -> dict:
                 item.status != "verified" or "confirmation_required" in saved_codes[item.id]
             ):
                 add("Confirm this item against the source", code="confirmation_required")
+        coverage_seen = False
         for finding in findings.values():
             code = finding["code"]
-            issue_id = digest([request.request_id, item.id, code, sorted(finding["fields"])])[:32]
-            evidence_hash = issue_fingerprint(item, finding["fields"], source)
+            identity = [request.request_id, item.id, code, sorted(finding["fields"])]
+            if code == "coverage_uncertain":
+                if coverage_seen:
+                    identity.append(finding["message"])
+                coverage_seen = True
+            issue_id = digest(identity)[:32]
+            evidence_hash = (header_fingerprint if code == "non_item_row" else
+                digest(["coverage_uncertain", source, finding["message"]]) if code == "coverage_uncertain" else
+                issue_fingerprint(item, finding["fields"], source))
             prior = saved.get(issue_id)
             resolution = prior.resolution if prior is not None else None
             accepted = bool(resolution and resolution.get("fingerprint") == evidence_hash)
+            added_item_id = (resolution or {}).get("addedItemId")
+            if added_item_id is not None and added_item_id not in item_order:
+                accepted = False
             suggested = suggest_domain(item.name, item.unit) if code == "type_required" else None
             issue = {
                 **finding,
                 "id": issue_id,
                 "itemId": item.id,
                 "blocking": True,
-                "canAccept": code not in HARD and code != "non_item_row",
+                "canAccept": code not in HARD,
                 "fingerprint": evidence_hash,
                 "state": "accepted" if accepted else "open",
+                "addedItemId": added_item_id,
                 "sourceScope": source_scope,
                 "suggestedValue": suggested,
                 "evidence": parsed.excerpt,
@@ -269,6 +288,9 @@ def project(request) -> dict:
             accepted = bool(
                 prior and prior.resolution and prior.resolution.get("fingerprint") == fp
             )
+            added_item_id = (prior.resolution or {}).get("addedItemId") if prior else None
+            if added_item_id is not None and added_item_id not in item_order:
+                accepted = False
             issues.append(
                 {
                     "id": issue_id,
@@ -282,6 +304,7 @@ def project(request) -> dict:
                     "canAccept": True,
                     "fingerprint": fp,
                     "state": "accepted" if accepted else "open",
+                    "addedItemId": added_item_id,
                     "sourceScope": "document",
                     "suggestedValue": None,
                     "evidence": warning,
@@ -344,7 +367,7 @@ def project(request) -> dict:
                     "coverage_uncertain": "Reconcile source coverage",
                     "confirmation_required": "Confirm unchecked items",
                     "mapping_uncertain": "Confirm source columns",
-                    "non_item_row": "Remove repeated header rows",
+                    "non_item_row": "Check suspected header rows",
                     "low_confidence": "Check uncertain copied values",
                 }.get(key[1], LABELS[key[0]]),
                 "itemIds": item_ids,

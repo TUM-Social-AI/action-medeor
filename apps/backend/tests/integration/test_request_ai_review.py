@@ -378,12 +378,7 @@ async def test_failure_is_visible_and_retryable(client, monkeypatch, failure):
             return_value=ReviewBatch(
                 confidence=95,
                 completed=True,
-                reviewed_count=1,
-                corrections=[
-                    Correction(
-                        row_id="row-0001", field="quantity", value=999, inferred=False, evidence="2"
-                    )
-                ],
+                reviewed_count=0,
                 issues=[],
             )
         )
@@ -506,7 +501,7 @@ async def test_legacy_values_are_preserved_but_gaps_can_be_filled(client, monkey
         assert result.status_code == 200, result.text
         item = result.json()["items"][0]
         assert item["notes"] == "Legacy notes"
-        assert item["domain"] == "equipment" and item["unit"] == "pcs"
+        assert item["domain"] == "equipment" and item["unit"] == "Stück"
         assert item["status"] == "needs_review"
     finally:
         await client.delete(f"/api/requests/{rid}")

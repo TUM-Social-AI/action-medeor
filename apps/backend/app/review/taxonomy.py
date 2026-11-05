@@ -34,6 +34,8 @@ def classify(reason: str, code: str | None = None) -> str:
     if code in CATEGORIES and code != "other":
         return code
     text = reason.casefold()
+    if "ai correction for" in text and ("source cell" in text or "source column" in text):
+        return "other"  # A rejected AI citation is not a newly discovered source-mapping problem.
     if "confirm this item against the source" in text:
         return "confirmation_required"
     if "packs ×" in text or "pack" in text and "total" in text and "conflict" in text:

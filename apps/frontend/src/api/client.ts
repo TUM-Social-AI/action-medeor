@@ -7,6 +7,7 @@ import type {
   ImportFileType,
   ItemUpdate,
   ManualItemCreate,
+  MissingItemSubmission,
   MatchingResponse,
   OfferResponse,
   PartnerDetails,
@@ -65,6 +66,12 @@ export function previewReviewOperation(requestId: string, operation: ReviewOpera
 export function applyReviewOperation(requestId: string, operation: ReviewOperation) {
   return requestJson<{ review: ReviewResponse; operationId: string }>(`/api/requests/${requestId}/review/operations`, {
     method: 'POST', body: JSON.stringify(operation),
+  });
+}
+
+export function resolveMissingItem(requestId: string, submission: MissingItemSubmission) {
+  return requestJson<{ review: ReviewResponse; operationId: string; itemId: number }>(`/api/requests/${requestId}/review/missing-items`, {
+    method: 'POST', body: JSON.stringify(submission),
   });
 }
 

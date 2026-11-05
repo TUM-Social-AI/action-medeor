@@ -23,8 +23,10 @@ function compile(path, overrides = {}) {
 const model = compile('../src/features/review/model.ts');
 const queue = compile('../src/features/review/task-queue.ts');
 const timeline = compile('../src/components/review/TaskTimeline.tsx');
+const guidedValues = compile('../src/features/review/guided-values.ts');
 const tools = compile('../src/components/review/ReviewTools.tsx', {
   '../../features/review/task-queue': queue,
+  '../../features/review/guided-values': guidedValues,
   './TaskTimeline': timeline,
 });
 const items = [
@@ -153,7 +155,7 @@ test('request metadata is a separate guided step with no item issues', () => {
 // Render the actual guided component across server refreshes, with reduced motion to make
 // navigation deterministic. A pure nextTask test would miss an automatically selected task
 // never being saved as the current task.
-function guidedHarness() {
+function guidedHarness(componentName = 'GuidedReview') {
   const slots = [];
   let cursor = 0, effects = [], dirty = false;
   const hooks = {
@@ -178,7 +180,8 @@ function guidedHarness() {
   };
   const component = compile('../src/components/review/ReviewTools.tsx', {
     react: hooks, '../../features/review/task-queue': queue, './TaskTimeline': timeline,
-  }).GuidedReview;
+    '../../features/review/guided-values': guidedValues,
+  })[componentName];
   const saved = new Map();
   const previousWindow = globalThis.window, previousStorage = globalThis.sessionStorage;
   globalThis.window = { matchMedia: () => ({ matches: true }) };
@@ -212,6 +215,150 @@ const guidedData = {
   items: [1, 2, 3].map(id => ({ id, name: `Supply ${id}`, quantity: id === 2 ? null : 10, unit: 'pcs' })),
   issues: [],
 };
+
+const unitData = {
+  requestId: 'guided-test', sourceReferences: [],
+  items: [{ id: 1, name: 'Clotrimazole cream', quantity: 15000, unit: 'units', domain: 'medicine' }],
+  tasks: [{ id: 'units', category: 'unit', code: 'unit_unclear', title: 'Check requested units',
+    itemIds: [1], issueIds: ['unit-1'], suggestedValue: null, canAccept: true }],
+  issues: [{ id: 'unit-1', itemId: 1, code: 'unit_unclear', category: 'unit', fields: ['unit'],
+    message: 'The counted packaging unit is unclear.', canAccept: true, state: 'open' }],
+};
+
+test('guided unit review names the field, makes uncertainty visible and keeps one stable action', async () => {
+  const screen = guidedHarness();
+  try {
+    const accepted = [];
+    const operations = { busy: false, accept: async input => accepted.push(input) };
+    let tree = screen.render(unitData, { operations });
+    const html = renderToStaticMarkup(tree);
+    assert.match(html, /Extracted unit/);
+    assert.match(html, /Unit: /);
+    assert.match(html, /Expected unit/);
+    assert.match(html, /Not established/);
+    assert.match(html, /Confirm what one “units” counts/);
+    assert.doesNotMatch(html, /Current value|I reviewed|after inspection|Inspect each/);
+    const keep = findElement(tree, e => e.type === 'button' && e.props.children === 'Keep unit');
+    assert.equal(keep.props.disabled, false);
+    await keep.props.onClick();
+    assert.deepEqual(accepted, [{ itemIds: [1], issueIds: ['unit-1'] }]);
+    tree = screen.render(unitData, { operations: { ...operations, busy: true } });
+    const saving = findElement(tree, e => e.type === 'button' && e.props.children === 'Keep unit');
+    assert.equal(saving.props.disabled, true);
+    const noSelection = findElement(tree, e => e.props?.label === 'Select all task items');
+    noSelection.props.onChange(false);
+    tree = screen.render(unitData, { operations });
+    assert.equal(findElement(tree, e => e.type === 'button' && e.props.children === 'Keep unit').props.disabled, true);
+  } finally { screen.restore(); }
+});
+
+test('generic uncertainty labels every value and makes the absence of an alternative explicit', () => {
+  const task = { ...unitData.tasks[0], category: 'other', code: 'low_confidence' };
+  assert.equal(guidedValues.guidedColumnLabel(task), 'Extracted details');
+  assert.deepEqual(guidedValues.guidedValues(task, unitData.items[0]), [
+    { field: 'quantity', label: 'Quantity', value: '15,000' },
+    { field: 'unit', label: 'Unit', value: 'units' },
+    { field: 'domain', label: 'Product type', value: 'medicine' },
+  ]);
+  assert.match(guidedValues.guidedExpectation(task, unitData.items[0], { code: 'low_confidence' }).value,
+    /Compare this row/);
+  assert.deepEqual(guidedValues.guidedExpectation(unitData.tasks[0], unitData.items[0], {
+    sourceValues: { unit: 'tubes' },
+  }), { label: 'Source unit', value: 'tubes' });
+});
+
+test('acceptance preview identifies the field and the exact value being kept', () => {
+  const html = renderToStaticMarkup(React.createElement(tools.OperationPreview, { operations: {
+    pending: { operation: { action: 'accept', itemIds: [1] }, preview: {
+      changes: [{ itemId: 1, name: 'Clotrimazole cream', fields: {}, keptValues: { unit: 'units' } }],
+      blockers: [], eligibleItemIds: [1],
+    } }, busy: false,
+  } }));
+  assert.match(html, /Keep Unit:/);
+  assert.match(html, />units</);
+});
+
+test('type conflicts offer keep/source actions without a hidden type picker', () => {
+  const screen = guidedHarness(), calls = [];
+  const data = structuredClone(unitData);
+  data.tasks[0].category = 'type'; data.tasks[0].code = 'type_conflict';
+  data.issues[0] = { ...data.issues[0], category: 'type', code: 'type_conflict', fields: ['domain'], sourceType: 'equipment', sourceValues: { domain: 'Equipment' } };
+  try {
+    const tree = screen.render(data, { operations: { preview: operation => calls.push(operation) } });
+    assert.ok(buttonWithText(tree, 'Keep type'));
+    assert.doesNotMatch(renderToStaticMarkup(tree), /Choose type|Change product type for selected/);
+    buttonWithText(tree, 'Change to source type').props.onClick();
+    assert.deepEqual(calls, [{ action: 'edit', itemIds: [1], itemChanges: { 1: { domain: 'equipment' } } }]);
+  } finally { screen.restore(); }
+});
+
+test('description checks are individual and names open the editor with field context', () => {
+  const screen = guidedHarness(), edited = [], calls = [];
+  const data = structuredClone(unitData);
+  data.tasks[0].category = 'description'; data.tasks[0].code = 'name_unclear';
+  data.issues[0] = { ...data.issues[0], category: 'description', code: 'name_unclear', fields: ['name'], sourceValues: { name: 'Complete source description' } };
+  try {
+    const tree = screen.render(data, { onEdit: (...args) => edited.push(args), operations: { preview: operation => calls.push(operation) } });
+    const html = renderToStaticMarkup(tree);
+    assert.doesNotMatch(html, /type="checkbox"/);
+    buttonWithText(tree, 'Clotrimazole cream').props.onClick();
+    assert.deepEqual(edited, [[data.items[0], ['name']]]);
+    buttonWithText(tree, 'Use source description').props.onClick();
+    assert.deepEqual(calls, [{ action: 'edit', itemIds: [1], changes: { name: 'Complete source description' } }]);
+  } finally { screen.restore(); }
+});
+
+test('missing items are added individually and completed entries show their filled values', () => {
+  const screen = guidedHarness('MissingItemsReview'), calls = [];
+  const first = { ...unitData.issues[0], id: 'missing-1', code: 'coverage_uncertain', message: 'Missing blanket, 7 pcs' };
+  const second = { ...first, id: 'missing-2', message: 'Missing gauze, 20 pcs' };
+  const props = { issues: [first, second], items: [], operations: { busy: false }, onAdd: (...args) => calls.push(args) };
+  try {
+    let tree = screen.render(undefined, props);
+    const addButtons = [];
+    function collect(element) {
+      if (!element || typeof element !== 'object') return;
+      if (Array.isArray(element)) { element.forEach(collect); return; }
+      if (element.type === 'button' && element.props.children === 'Add this item') addButtons.push(element);
+      collect(element.props?.children);
+    }
+    collect(tree);
+    assert.equal(addButtons.length, 2);
+    addButtons[1].props.onClick();
+    assert.deepEqual(calls, [['missing-2', 'Missing gauze, 20 pcs']]);
+    tree = screen.render(undefined, { ...props, issues: [{ ...first, state: 'accepted', addedItemId: 7 }, second],
+      items: [{ id: 7, name: 'Emergency blanket', quantity: 7, unit: 'pcs', domain: 'equipment', manual: true }] });
+    const html = renderToStaticMarkup(tree);
+    assert.match(html, /Emergency blanket/);
+    assert.match(html, /Item 1 · Added/);
+    assert.doesNotMatch(html, /Missing blanket, 7 pcs/);
+    assert.match(html, /Missing gauze, 20 pcs/);
+    assert.doesNotMatch(html, /No rows are missing/);
+  } finally { screen.restore(); }
+});
+
+test('source-column review names its table scope and exposes mapping edits with a change preview', () => {
+  const screen = guidedHarness('SourceColumnReview'), calls = [];
+  const issue = { id: 'mapping', itemIds: [1, 2], worksheet: 'Column check', columns: [
+    { key: '0', index: 1, label: 'Product', role: 'name' },
+    { key: '1', index: 2, label: 'Amount', role: 'quantity' },
+    { key: '2', index: 3, label: 'Other amount', role: 'attribute' },
+  ], sampleRows: [] };
+  const props = { issue, total: 22, operations: { busy: false, preview: operation => calls.push(operation) } };
+  try {
+    let tree = screen.render(undefined, props);
+    assert.match(renderToStaticMarkup(tree), /Column check/);
+    assert.match(renderToStaticMarkup(tree), /2 affected items out of 22/);
+    assert.equal(buttonWithText(tree, 'Change column mapping').props.disabled, true);
+    findElement(tree, e => e.props?.['aria-label'] === 'Map Amount').props.onChange({ target: { value: 'attribute' } });
+    tree = screen.render(undefined, props);
+    findElement(tree, e => e.props?.['aria-label'] === 'Map Other amount').props.onChange({ target: { value: 'quantity' } });
+    tree = screen.render(undefined, props);
+    assert.equal(buttonWithText(tree, 'Keep existing mapping').props.disabled, false);
+    buttonWithText(tree, 'Change column mapping').props.onClick();
+    assert.deepEqual(calls, [{ action: 'column_mapping', itemIds: [1, 2], issueIds: ['mapping'], columnRoles: { 0: 'name', 1: 'attribute', 2: 'quantity' } }]);
+  } finally { screen.restore(); }
+});
 
 function findElement(tree, predicate) {
   if (!tree || typeof tree !== 'object') return undefined;
@@ -248,10 +395,11 @@ test('explicit guided navigation, skipping, and request-details navigation overr
     tree.props.children[0].props.onSelect('quantities');
     tree = screen.render(guidedData);
     assert.equal(screen.current(tree), 'quantities');
-    const skip = findElement(tree, element => element.type === 'button' && renderToStaticMarkup(element).includes('Review later'));
+    const skip = findElement(tree, element => element.type === 'button' && renderToStaticMarkup(element).includes('Skip'));
     skip.props.onClick();
     tree = screen.render(guidedData);
-    assert.equal(screen.current(tree), 'types');
+    assert.equal(screen.current(tree), null);
+    assert.match(renderToStaticMarkup(tree), /End of review sequence/);
     const details = { confirmed: false, open: true, visit: 1, content: React.createElement('p', {}, 'Request metadata') };
     tree = screen.render(guidedData, { requestDetails: details });
     assert.equal(screen.current(tree), 'request-details');
@@ -267,6 +415,33 @@ test('opening request details on first guided entry takes priority over automati
     });
     assert.equal(screen.current(tree), 'request-details');
     assert.equal(screen.savedCurrent(), 'request-details');
+  } finally { screen.restore(); }
+});
+
+test('finishing a middle timeline task advances forward even when earlier tasks are open', () => {
+  const screen = guidedHarness();
+  const later = { ...quantityTask, id: 'later', title: 'Later task', issueIds: ['later-1'], itemIds: [3] };
+  const data = { ...guidedData, tasks: [typeTask, quantityTask, later] };
+  try {
+    let tree = screen.render(data);
+    tree.props.children[0].props.onSelect(quantityTask.id);
+    tree = screen.render(data);
+    assert.equal(screen.current(tree), quantityTask.id);
+    tree = screen.render({ ...data, tasks: [typeTask, later] });
+    assert.equal(screen.current(tree), later.id);
+    tree = screen.render({ ...data, tasks: [typeTask] });
+    assert.equal(screen.current(tree), null);
+    assert.match(renderToStaticMarkup(tree), /End of review sequence/);
+    assert.equal(queue.nextTask([typeTask], { current: later.id, deferred: [], history: data.tasks }), undefined);
+  } finally { screen.restore(); }
+});
+
+test('unit review offers the approved Stück default without altering quantity', () => {
+  const screen = guidedHarness(), calls = [];
+  try {
+    const tree = screen.render(unitData, { operations: { preview: operation => calls.push(operation) } });
+    buttonWithText(tree, 'Use Stück (default)').props.onClick();
+    assert.deepEqual(calls, [{ action: 'edit', itemIds: [1], changes: { unit: 'Stück' } }]);
   } finally { screen.restore(); }
 });
 
@@ -286,64 +461,59 @@ function quantityData(facts) {
   };
 }
 
-const buttonWithText = (tree, label) => findElement(tree, element => element.type === 'button' && element.props.children === label);
+const buttonWithText = (tree, label) => findElement(tree, element => element.type === 'button' && renderToStaticMarkup(element).replace(/<[^>]*>/g, '').trim() === label);
 
-test('a copied-quantity mismatch offers its real source value without empty pack math or an unavailable action', () => {
-  const screen = guidedHarness();
-  const calls = [];
+test('copied quantities offer adjacent keep/change choices with an editable quantity', () => {
+  const screen = guidedHarness(), calls = [];
   try {
-    const tree = screen.render(quantityData([{}]), { operations: { preview: operation => calls.push(operation) } });
+    let tree = screen.render(quantityData([{}]), { operations: { preview: operation => calls.push(operation) } });
     const html = renderToStaticMarkup(tree);
-    assert.match(html, /Source quantity: 12/);
+    assert.match(html, /Source quantity/);
+    assert.match(html, />12</);
     assert.doesNotMatch(html, /×|pack calculation/);
-    const useSource = buttonWithText(tree, 'Use source quantity (12)');
-    assert.equal(useSource.props.disabled, false);
-    useSource.props.onClick();
+    const keep = buttonWithText(tree, 'Keep extracted value');
+    const change = buttonWithText(tree, 'Change quantity');
+    assert.match(keep.props.className, /teal/);
+    assert.match(change.props.className, /1B4E8A/);
+    change.props.onClick();
     assert.deepEqual(calls, [{ action: 'quantity_rule', itemIds: [1], rule: 'requested_total' }]);
-    assert.match(html, /Or enter a quantity/);
+    const input = findElement(tree, e => e.type === 'input' && e.props.type === 'number');
+    assert.ok(input);
+    input.props.onChange({ target: { value: '17' } });
+    tree = screen.render(quantityData([{}]), { operations: { preview: operation => calls.push(operation) } });
+    buttonWithText(tree, 'Change quantity').props.onClick();
+    assert.deepEqual(calls[1], { action: 'quantity_rule', itemIds: [1], rule: 'explicit', changes: { quantity: 17 } });
   } finally { screen.restore(); }
 });
 
-test('real differing pack totals stay available while duplicate, incomplete, and invalid calculations are omitted', () => {
-  const screen = guidedHarness();
+test('pack conflicts show extracted quantity separately from the red calculation and use per-row totals', () => {
+  const screen = guidedHarness(), calls = [];
+  const data = quantityData([{ requestedTotal: 800, packs: 10, unitsPerPack: 100, calculatedTotal: 1000 }]);
+  data.tasks[0].code = 'pack_total_conflict'; data.issues[0].code = 'pack_total_conflict'; data.items[0].quantity = 800;
   try {
-    let tree = screen.render(quantityData([{ requestedTotal: 800, packs: 10, unitsPerPack: 100, calculatedTotal: 1000 }]));
-    assert.match(renderToStaticMarkup(tree), /Packs: 10 × 100 = 1000/);
-    assert.equal(buttonWithText(tree, 'Use source quantity (800)').props.disabled, false);
-    assert.equal(buttonWithText(tree, 'Use pack calculation (1000)').props.disabled, false);
-    tree = screen.render(quantityData([{ packs: 2, unitsPerPack: 6, calculatedTotal: 12 }]));
-    assert.match(renderToStaticMarkup(tree), /Packs: 2 × 6 = 12/);
-    assert.equal(buttonWithText(tree, 'Use pack calculation (12)'), undefined);
-    for (const values of [{ packs: 0, unitsPerPack: 100, calculatedTotal: 0 }, { calculatedTotal: 1000 }]) {
-      tree = screen.render(quantityData([values]));
-      assert.doesNotMatch(renderToStaticMarkup(tree), /×|pack calculation/);
-    }
-    tree = screen.render(quantityData([{ requestedTotal: null }]));
-    assert.match(renderToStaticMarkup(tree), />Enter a quantity</);
-    assert.doesNotMatch(renderToStaticMarkup(tree), /Use source quantity|pack calculation/);
-  } finally { screen.restore(); }
-});
-
-test('quantity-rule choices follow the selected rows and preserve per-row source rules', () => {
-  const screen = guidedHarness();
-  const data = quantityData([
-    { packs: 2, unitsPerPack: 10, calculatedTotal: 20 },
-    { requestedTotal: 24 },
-  ]);
-  const calls = [], operations = { preview: operation => calls.push(operation) };
-  try {
-    let tree = screen.render(data, { operations });
-    assert.ok(buttonWithText(tree, 'Use each row’s requested total'));
-    assert.equal(buttonWithText(tree, 'Use each row’s pack calculation'), undefined);
-    findElement(tree, element => element.props?.label === 'Select Copied item 2').props.onChange(false);
-    tree = screen.render(data, { operations });
-    const usePacks = buttonWithText(tree, 'Use pack calculation (20)');
-    assert.equal(usePacks.props.disabled, false);
-    usePacks.props.onClick();
+    let tree = screen.render(data, { operations: { preview: operation => calls.push(operation) } });
+    const html = renderToStaticMarkup(tree);
+    assert.match(html, /10 × 100 = 1,000 ≠ 800/);
+    assert.match(html, /text-red-700/);
+    assert.ok(buttonWithText(tree, 'Keep extracted value'));
+    const update = findElement(tree, e => e.type === 'button' && renderToStaticMarkup(e).includes('Update to 1,000'));
+    update.props.onClick();
     assert.deepEqual(calls, [{ action: 'quantity_rule', itemIds: [1], rule: 'pack_calculation' }]);
-    findElement(tree, element => element.props?.label === 'Select Copied item 2').props.onChange(true);
-    tree = screen.render(data, { operations });
-    assert.equal(buttonWithText(tree, 'Use each row’s pack calculation'), undefined);
+    const missing = structuredClone(data); missing.issues[0].calculatedTotal = null;
+    tree = screen.render(missing);
+    const disabled = findElement(tree, e => e.type === 'button' && renderToStaticMarkup(e).includes('Update to '));
+    assert.equal(disabled.props.disabled, true);
+    assert.doesNotMatch(renderToStaticMarkup(tree), /×/);
+  } finally { screen.restore(); }
+});
+
+test('source quantity changes preserve different source values across selected rows', () => {
+  const screen = guidedHarness(), calls = [];
+  try {
+    const tree = screen.render(quantityData([{ requestedTotal: 12 }, { requestedTotal: 24 }]),
+      { operations: { preview: operation => calls.push(operation) } });
+    buttonWithText(tree, 'Change quantity').props.onClick();
+    assert.deepEqual(calls, [{ action: 'quantity_rule', itemIds: [1, 2], rule: 'requested_total' }]);
   } finally { screen.restore(); }
 });
 

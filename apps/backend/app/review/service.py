@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import RequestReviewIssueRow, RequestReviewOperationRow
+from app.review.column_mapping import apply_mapping
 from app.review.contracts import ReviewOperation, UndoOperation
 from app.review.engine import EDIT_FIELDS, digest, parsed_item, source_facts, synchronize
 
@@ -101,9 +102,9 @@ def validate_changes(changes):
     return normalized
 
 
-def snapshot(request, ids, issue_ids=()):
+def snapshot(request, ids, issue_ids=(), *, source_data=False):
     selected = set(ids)
-    return {
+    result = {
         "items": {
             str(i.id): {
                 k: (
@@ -130,6 +131,9 @@ def snapshot(request, ids, issue_ids=()):
             for i in ids
         },
     }
+    if source_data:
+        result["sourceData"] = {str(i): copy.deepcopy((request.ai_review or {}).get("sources", {}).get(str(i), {})) for i in ids}
+    return result
 
 
 def accept(state, issues, ids, actor):
@@ -159,6 +163,16 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
     if any(i not in issue_by_id for i in operation.issueIds):
         raise HTTPException(409, "Selected issues changed. Refresh the review.")
     ids = set(operation.itemIds)
+    mapping_issue = None
+    if operation.action == "column_mapping":
+        if len(operation.issueIds) != 1:
+            raise HTTPException(422, "Choose one source table to remap")
+        mapping_issue = issue_by_id[operation.issueIds[0]]
+        if mapping_issue.get("scope") != "table" or mapping_issue["code"] != "mapping_uncertain":
+            raise HTTPException(422, "Column changes require a source-column issue")
+        if ids and ids != set(mapping_issue["itemIds"]):
+            raise HTTPException(422, "Column changes apply to every affected item in this source table")
+        ids = set(mapping_issue["itemIds"])
     if operation.action == "accept":
         ids |= {
             issue_by_id[i]["itemId"]
@@ -171,11 +185,16 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
         raise HTTPException(404, "Selected item does not belong to this request")
     if set(operation.itemChanges) - ids:
         raise HTTPException(422, "Individual changes must reference selected items")
-    if operation.action != "edit" and (operation.changes or operation.itemChanges):
+    explicit_quantity = operation.action == "quantity_rule" and operation.rule == "explicit"
+    if explicit_quantity and (set(operation.changes) != {"quantity"} or operation.itemChanges):
+        raise HTTPException(422, "An explicit quantity choice requires only one positive quantity")
+    if operation.action != "edit" and not explicit_quantity and (operation.changes or operation.itemChanges):
         raise HTTPException(422, "Field changes require an edit operation")
     if operation.rule is not None and operation.action != "quantity_rule":
         raise HTTPException(422, "Quantity rules require a quantity-rule operation")
-    if operation.issueIds and operation.action != "accept":
+    if operation.columnRoles and operation.action != "column_mapping":
+        raise HTTPException(422, "Column roles require a column-mapping operation")
+    if operation.issueIds and operation.action not in {"accept", "column_mapping"}:
         raise HTTPException(422, "Issue decisions require an acceptance operation")
     if len(ids) > 1 and any(
         PUBLIC.get(field, field) in {"name", "item_number"}
@@ -189,7 +208,9 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
             item.removed_at is not None
         ):
             raise HTTPException(409, "Selection contains removed or inactive items")
-    before = snapshot(state, ids, operation.issueIds)
+    before = snapshot(state, ids, operation.issueIds, source_data=mapping_issue is not None)
+    if mapping_issue:
+        apply_mapping(state, mapping_issue, operation.columnRoles, actor)
     eligible = [i for i in operation.itemIds if i in initial["readyIds"]]
     blockers = []
     if operation.action == "verify":
@@ -217,7 +238,7 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
             if submitted.get("unit") == item.unit == "":
                 submitted.pop("unit", None)  # optional empty unit on existing manual rows
             changes = validate_changes(submitted)
-            if operation.action == "quantity_rule":
+            if operation.action == "quantity_rule" and not explicit_quantity:
                 facts = source_facts(parsed_item(state, item))
                 key = {
                     "requested_total": "requestedTotal",
@@ -291,7 +312,7 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
         elif operation.action == "restore":
             item.removed_at, item.removed_by = None, None
     final = synchronize(state)
-    after = snapshot(state, ids, operation.issueIds)
+    after = snapshot(state, ids, operation.issueIds, source_data=mapping_issue is not None)
     previews = []
     for item_id in sorted(ids):
         old, new = before["items"][str(item_id)], after["items"][str(item_id)]
@@ -300,7 +321,17 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
             for k in (*EDIT_FIELDS, "removed_at", "verification_source")
             if old[k] != new[k] or operation.action == "quantity_rule" and k == "quantity"
         }
-        previews.append({"itemId": item_id, "name": by_id[item_id].name, "fields": changes})
+        preview = {"itemId": item_id, "name": by_id[item_id].name, "fields": changes}
+        if operation.action == "accept":
+            fields = {
+                field
+                for issue in initial["issues"]
+                if issue["id"] in operation.issueIds and issue["itemId"] == item_id
+                for field in (issue["fields"] or ("name", "quantity", "unit", "domain"))
+                if field in EDIT_FIELDS
+            }
+            preview["keptValues"] = {field: old[field] for field in sorted(fields)}
+        previews.append(preview)
     return (
         state,
         before,
@@ -314,7 +345,8 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
                 (
                     {
                         "worksheet": issue.get("worksheet"),
-                        "columns": issue.get("columns", []),
+                        "columns": [{**col, "role": operation.columnRoles.get(col["key"], col["role"])}
+                            for col in issue.get("columns", [])] if mapping_issue else issue.get("columns", []),
                         "affectedItems": len(issue.get("itemIds", [])),
                     }
                     for issue in initial["issues"]
@@ -327,6 +359,10 @@ def evaluate(request, operation: ReviewOperation, actor="local"):
 
 
 def restore_snapshot(request, value):
+    if "sourceData" in value:
+        request.ai_review = {**(request.ai_review or {}), "sources": {
+            **(request.ai_review or {}).get("sources", {}), **copy.deepcopy(value["sourceData"]),
+        }}
     by_id = {i.id: i for i in request.items}
     for item_id, fields in value["items"].items():
         item = by_id[int(item_id)]
@@ -362,7 +398,7 @@ async def apply(session: AsyncSession, request, operation: ReviewOperation, acto
     prior = await session.get(RequestReviewOperationRow, operation.operationId)
     payload = operation.model_dump(mode="json")
     if prior:
-        if prior.request_id != request.request_id or prior.payload != payload:
+        if prior.request_id != request.request_id or {"columnRoles": {}, **prior.payload} != payload:
             raise HTTPException(409, "Operation ID has already been used")
         return prior
     state, before, after, preview = evaluate(request, operation, actor)
@@ -392,6 +428,58 @@ async def apply(session: AsyncSession, request, operation: ReviewOperation, acto
     return record
 
 
+async def resolve_missing_item(session: AsyncSession, request, payload, actor="local"):
+    """Create/link one filled row and resolve exactly its missing-row warning atomically."""
+    from app.db.repository import append_manual_item
+
+    submitted = payload.model_dump(mode="json")
+    prior = await session.get(RequestReviewOperationRow, payload.operationId)
+    if prior:
+        original = {key: value for key, value in prior.payload.items() if key != "resolvedItemId"}
+        if prior.request_id != request.request_id or prior.action != "add_missing" or original != submitted:
+            raise HTTPException(409, "Operation ID has already been used")
+        return prior
+    check_revision(request, payload.expectedRevision)
+    if (payload.item is None) == (payload.itemId is None):
+        raise HTTPException(422, "Provide the filled item or select an existing manual item")
+    initial = synchronize(request)
+    issue = next((issue for issue in initial["issues"] if issue["id"] == payload.issueId
+        and issue["code"] == "coverage_uncertain" and issue["state"] == "open"), None)
+    if issue is None:
+        raise HTTPException(409, "This missing-row warning changed or was already resolved")
+    created = payload.item is not None
+    if created:
+        item = append_manual_item(request, payload.item)
+        item.source_reference = None
+        await session.flush()
+        item.removed_at, item.removed_by = dt.datetime.now(dt.UTC), actor
+    else:
+        item = next((item for item in request.active_items if item.id == payload.itemId and item.manual), None)
+        if item is None:
+            raise HTTPException(422, "Select an active manual item from this request")
+        if any(other["id"] != issue["id"] and other["state"] == "accepted"
+            and other.get("addedItemId") == item.id for other in initial["issues"]):
+            raise HTTPException(422, "This item already fills another missing-row warning")
+    affected = {item.id} | ({issue["itemId"]} if issue["itemId"] is not None else set())
+    before = snapshot(request, affected, [issue["id"]])
+    if created:
+        item.removed_at, item.removed_by = None, None
+    accept(request, initial["issues"], {issue["id"]}, actor)
+    saved = next(row for row in request.review_issues if row.id == issue["id"])
+    saved.resolution = {**saved.resolution, "addedItemId": item.id}
+    synchronize(request)
+    after = snapshot(request, affected, [issue["id"]])
+    record = RequestReviewOperationRow(
+        id=payload.operationId, request_id=request.request_id, actor=actor, action="add_missing",
+        payload={**submitted, "resolvedItemId": item.id}, before=before, after=after,
+    )
+    session.add(record)
+    if not created:
+        request.review_revision += 1
+    await session.commit()
+    return record
+
+
 async def undo(
     session: AsyncSession, request, operation_id: str, payload: UndoOperation, actor="local"
 ):
@@ -411,7 +499,7 @@ async def undo(
         raise HTTPException(409, "This operation cannot be undone")
     state = clone(request)
     synchronize(state)
-    current = snapshot(state, {int(i) for i in original.after["items"]}, original.after["issues"])
+    current = snapshot(state, {int(i) for i in original.after["items"]}, original.after["issues"], source_data="sourceData" in original.after)
     # Newly detected issues after a real edit are included; unrelated rows are not.
     if current != original.after:
         raise HTTPException(
@@ -442,5 +530,5 @@ def undo_available(request, operation) -> bool:
         return False
     state = clone(request)
     synchronize(state)
-    current = snapshot(state, {int(i) for i in operation.after["items"]}, operation.after["issues"])
+    current = snapshot(state, {int(i) for i in operation.after["items"]}, operation.after["issues"], source_data="sourceData" in operation.after)
     return current == operation.after

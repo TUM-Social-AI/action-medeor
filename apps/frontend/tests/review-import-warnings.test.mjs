@@ -330,6 +330,30 @@ for (const manual of [false, true]) {
   });
 }
 
+test('guided editors immediately show invalid required fields and coverage opens the add form', () => {
+  const item = { id: 1, name: 'Gauze', quantity: 0, unit: 'pcs', domain: 'equipment', notes: '',
+    itemNumber: '', shelfLife: '', attributes: {}, priority: 'medium', status: 'needs_review', manual: false };
+  const previousDocument = globalThis.document;
+  globalThis.document = { addEventListener() {}, removeEventListener() {} };
+  try {
+    const renderTree = interactiveScreen({ ...data, reviewRevision: 0, items: [item], tasks: [], issues: [] });
+    let tree = renderTree();
+    const guided = findElement(tree, e => e.props?.onAdd && e.props?.requestDetails);
+    guided.props.onEdit(item, ['quantity']);
+    tree = renderTree();
+    const quantity = findElement(tree, e => e.props?.id === 'item-quantity');
+    assert.equal(quantity.props['aria-invalid'], true);
+    assert.match(quantity.props.className, /border-red-500/);
+    const close = findElement(tree, e => e.props?.['aria-label'] === 'Close item dialog');
+    close.props.onClick();
+    tree = renderTree();
+    findElement(tree, e => e.props?.onAdd && e.props?.requestDetails).props.onAdd();
+    tree = renderTree();
+    assert.equal(findElement(tree, e => e.props?.id === 'item-name').props['aria-invalid'], true);
+    assert.match(renderToStaticMarkup(tree), /Add Item Manually/);
+  } finally { globalThis.document = previousDocument; }
+});
+
 test('inferred controls show their values, stop highlighting edited values, and the item dialog dismisses safely', () => {
   const item = {
     id: 1, name: 'Diagnostic scanner', quantity: 2, unit: 'pcs', domain: 'equipment', notes: '',
@@ -441,4 +465,26 @@ test('a defaulted unit is visibly marked as a default, not as source data', () =
   assert.ok(html.includes('>default<'));
   assert.ok(!html.includes('No unit in the request'));
   assert.ok(!html.includes('Medicine packaging requires'));
+});
+
+test('source rows, example annotations and generated findings are labelled separately', () => {
+  const item = { id: 1, name: 'Cannula', quantity: 9, unit: 'pcs', manual: false,
+    verificationSource: 'ai', confidence: 95, reviewReasons: [] };
+  const reference = { itemId: 1, page: 0, row: 8, literal: true, illustrative: true, cells: [
+    { index: 1, label: 'Product', value: 'Cannula' },
+    { index: 2, label: 'Requested total', value: '12' },
+    { index: 8, label: 'Example case', value: 'Copied total conflict', exampleNote: true },
+  ] };
+  const html = renderToStaticMarkup(React.createElement(exports.SourceReferencePanel, { item, reference, issues: [
+    { message: 'Copied quantity differs from source', origins: ['rules'] },
+    { message: 'Possible packaging ambiguity', origins: ['ai'] },
+  ] }));
+  const source = html.slice(html.indexOf('Original source row'), html.indexOf('</dl>'));
+  assert.match(source, /Requested total/);
+  assert.doesNotMatch(source, /Copied total conflict|Possible packaging ambiguity/);
+  assert.match(html, /Example annotations \(fixture instructions\)/);
+  assert.match(html, /Validation check/);
+  assert.match(html, /Simulated AI finding/);
+  assert.match(html, /Simulated AI check/);
+  assert.doesNotMatch(html, /Page 0|Keep these values/);
 });
