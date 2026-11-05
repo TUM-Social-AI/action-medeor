@@ -141,7 +141,7 @@ test('unresolved row issues are shown next to the source item', () => {
 });
 
 
-function interactiveScreen(initialData = data, client = {}, summary = false) {
+function interactiveScreen(initialData = data, client = {}, summary = false, operations = inactiveOperations()) {
   const slots = [];
   let cursor = 0;
   let effects = [];
@@ -169,7 +169,7 @@ function interactiveScreen(initialData = data, client = {}, summary = false) {
     if (name === './ReviewTools') return reviewTools;
     if (name.endsWith('/features/review/model')) return reviewModel;
     if (name.endsWith('/features/review/task-queue')) return reviewQueue;
-    if (name.endsWith('/features/review/use-review-operations')) return { useReviewOperations: inactiveOperations };
+    if (name.endsWith('/features/review/use-review-operations')) return { useReviewOperations: () => operations };
     if (name === 'react-dom') return { createPortal: element => element };
     if (name.endsWith('/api/client')) return client;
     if (summary && name === '../api/workflow') return { getRequestSummary: async () => initialData };
@@ -351,6 +351,31 @@ test('guided editors immediately show invalid required fields and coverage opens
     tree = renderTree();
     assert.equal(findElement(tree, e => e.props?.id === 'item-name').props['aria-invalid'], true);
     assert.match(renderToStaticMarkup(tree), /Add Item Manually/);
+  } finally { globalThis.document = previousDocument; }
+});
+
+test('guided item editor says Done without changes and previews actual edits', async () => {
+  const item = { id: 1, name: 'Gauze', quantity: 10, unit: 'pcs', domain: 'equipment', notes: '',
+    itemNumber: '', shelfLife: '', attributes: {}, priority: 'medium', status: 'verified', manual: false };
+  const previousDocument = globalThis.document;
+  globalThis.document = { addEventListener() {}, removeEventListener() {} };
+  const calls = [];
+  try {
+    const renderTree = interactiveScreen({ ...data, reviewRevision: 0, items: [item], tasks: [], issues: [] },
+      {}, false, { ...inactiveOperations(), preview: async input => calls.push(input) });
+    const dialog = tree => findElement(tree, e => e.props?.['aria-labelledby'] === 'item-dialog-title');
+    const submit = tree => findElement(dialog(tree), e => e.type === 'button' && e.props.type === 'submit');
+    const open = () => findElement(renderTree(), e => e.props?.requestDetails).props.onEdit(item);
+    open();
+    assert.equal(submit(renderTree()).props.children, 'Done');
+    await dialog(renderTree()).props.onSubmit({ preventDefault() {} });
+    assert.equal(dialog(renderTree()), undefined);
+    assert.deepEqual(calls, []);
+    open();
+    findElement(dialog(renderTree()), e => e.props?.id === 'item-quantity').props.onChange({ target: { value: '12' } });
+    assert.equal(submit(renderTree()).props.children, 'Preview item changes');
+    await dialog(renderTree()).props.onSubmit({ preventDefault() {} });
+    assert.deepEqual(calls, [{ action: 'edit', itemIds: [1], changes: { quantity: 12 } }]);
   } finally { globalThis.document = previousDocument; }
 });
 

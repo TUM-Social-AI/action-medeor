@@ -66,6 +66,17 @@ test('review statuses distinguish readiness from AI and human provenance', () =>
   ]).label, 'Shared check pending');
   assert.equal(model.reviewPresentation(item, [
     { itemId: null, itemIds: [item.id], scope: 'table', state: 'accepted' },
+  ]).label, 'Checks passed');
+  const mapped = { ...item, fieldReviews: { quantity: { source: 'column_mapping' } } };
+  assert.equal(model.reviewPresentation(mapped).label, 'Checks passed');
+  assert.equal(model.reviewPresentation(mapped, [
+    { itemId: null, itemIds: [item.id], scope: 'table', state: 'accepted' },
+  ]).label, 'Checks passed');
+  assert.equal(model.reviewPresentation(mapped, [
+    { itemId: item.id, state: 'accepted' },
+  ]).label, 'Human reviewed');
+  assert.equal(model.reviewPresentation(edited, [
+    { itemId: null, itemIds: [item.id], scope: 'table', state: 'accepted' },
   ]).label, 'Human reviewed');
 });
 
@@ -105,8 +116,36 @@ test('mixed verification previews block application and offer an explicit eligib
     }),
   );
   assert.match(html, /Preview 1 eligible items only/);
-  assert.match(html, /disabled=""[^>]*>Confirm changes/);
+  assert.match(html, /disabled=""[^>]*>Verify items/);
 });
+
+for (const [action, itemIds, tableDecision, label] of [
+  ['edit', [1], null, 'Save changes'],
+  ['quantity_rule', [1, 2], null, 'Update quantities'],
+  ['verify', [1], null, 'Verify item'],
+  ['verify', [1, 2], null, 'Verify items'],
+  ['accept', [1], null, 'Keep values'],
+  ['accept', [], { affectedItems: 2, columns: [] }, 'Confirm column mapping'],
+  ['remove', [1], null, 'Remove item'],
+  ['remove', [1, 2], null, 'Remove items'],
+  ['restore', [1], null, 'Restore item'],
+  ['restore', [1, 2], null, 'Restore items'],
+  ['column_mapping', [1, 2], { affectedItems: 2, columns: [] }, 'Apply column mapping'],
+]) {
+  test(`${action} confirmation says ${label} and applies the pending operation`, async () => {
+    let applied = 0;
+    const tree = tools.OperationPreview({ operations: {
+      pending: { operation: { action, itemIds }, preview: {
+        changes: [], eligibleItemIds: itemIds, blockers: [], tableDecision,
+      } }, busy: false, apply: async () => { applied++; },
+    } });
+    const button = buttonWithText(tree, label);
+    assert.ok(button);
+    assert.equal(button.props.disabled, false);
+    await button.props.onClick();
+    assert.equal(applied, 1);
+  });
+}
 
 test('removal preview identifies affected items and describes recoverable removal', () => {
   const html = renderToStaticMarkup(

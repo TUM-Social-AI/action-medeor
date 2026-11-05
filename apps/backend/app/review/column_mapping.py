@@ -81,7 +81,7 @@ def apply_mapping(state, issue, roles, actor):
         priority = detect_priority_from_column_value(values.get("priority", ""))
         if priority and "priority" not in protected:
             item.priority = priority
-            item.field_reviews["priority"] = {"source": "human", "actor": actor, "at": now}
+            item.field_reviews["priority"] = {"source": "column_mapping", "actor": actor, "at": now}
         item.attributes = {
             **(item.attributes or {}),
             **{
@@ -100,7 +100,8 @@ def apply_mapping(state, issue, roles, actor):
             item.inferred_fields.pop(public, None)
             if public in parsed.inferred_fields:
                 item.inferred_fields[public] = parsed.inferred_fields[public]
-            item.field_reviews[field] = {"source": "human", "actor": actor, "at": now}
+            # Reviewing a table layout does not review each copied item value.
+            item.field_reviews[field] = {"source": "column_mapping", "actor": actor, "at": now}
         source["roles"] = {col: role for col, role in roles.items() if role != "attribute"}
         source["mappingUncertain"] = False
         item.review_findings = [

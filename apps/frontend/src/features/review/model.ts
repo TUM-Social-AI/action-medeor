@@ -39,11 +39,11 @@ export function reviewPresentation(item: ExtractedItem, issues: ReviewIssue[] = 
     };
   if (
     Object.values(item.fieldReviews ?? {}).some((review) => review.source === 'human') ||
-    related.some((issue) => issue.state === 'accepted')
+    related.some((issue) => issue.itemId === item.id && issue.scope !== 'table' && issue.state === 'accepted')
   ) {
     return {
       label: 'Human reviewed',
-      description: 'Flagged fields or source layout were reviewed by a person. All remaining checks passed.',
+      description: 'This item’s flagged fields were reviewed by a person. All remaining checks passed.',
       tone: 'ready' as const,
     };
   }

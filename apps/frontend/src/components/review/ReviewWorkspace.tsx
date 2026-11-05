@@ -561,6 +561,20 @@ export function ReviewWorkspace({
     !validType && 'Product type',
   ].filter(Boolean);
 
+  const itemPayload = {
+    name: editValues.name?.trim() ?? '',
+    quantity: editValues.quantity!,
+    unit: editValues.unit ?? '',
+    notes: editValues.notes ?? '',
+    itemNumber: editValues.itemNumber ?? '',
+    shelfLife: editValues.shelfLife ?? '',
+    priority: editValues.priority ?? 'medium',
+    domain: editValues.domain!,
+  };
+  const itemChanges = Object.fromEntries(
+    Object.entries(itemPayload).filter(([key, value]) => value !== editingItem?.[key as keyof ExtractedItem]),
+  );
+
   const saveEdit = async () => {
     if (!editingItem || isSavingItem) {
       return;
@@ -577,16 +591,7 @@ export function ReviewWorkspace({
     setIsSavingItem(true);
     setItemError(null);
     try {
-      const payload = {
-        name: editValues.name!.trim(),
-        quantity: editValues.quantity!,
-        unit: editValues.unit ?? '',
-        notes: editValues.notes ?? '',
-        itemNumber: editValues.itemNumber ?? '',
-        shelfLife: editValues.shelfLife ?? '',
-        priority: editValues.priority ?? 'medium',
-        domain: editValues.domain!,
-      };
+      const payload = itemPayload;
       if (!requestId) {
         if (!isNewItem || !onCreateManual || !partnerDetails) return;
         await onCreateManual(
@@ -598,14 +603,11 @@ export function ReviewWorkspace({
         return;
       }
       if (structuredReview && !isNewItem) {
-        const changes = Object.fromEntries(
-          Object.entries(payload).filter(([key, value]) => value !== editingItem[key as keyof ExtractedItem]),
-        );
-        if (!Object.keys(changes).length) {
+        if (!Object.keys(itemChanges).length) {
           setEditingItem(null);
           return;
         }
-        await operations.preview({ action: 'edit', itemIds: [editingItem.id], changes });
+        await operations.preview({ action: 'edit', itemIds: [editingItem.id], changes: itemChanges });
         return;
       }
       if (isNewItem && missingIssueId) {
@@ -1978,7 +1980,9 @@ export function ReviewWorkspace({
                     : isNewItem
                       ? 'Add Item'
                       : structuredReview
-                        ? 'Preview changes'
+                        ? Object.keys(itemChanges).length
+                          ? 'Preview item changes'
+                          : 'Done'
                         : 'Save & Mark Verified'}
                 </button>
               </div>

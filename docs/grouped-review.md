@@ -47,8 +47,10 @@ continue through the existing preview/apply flow. Optional item and request-meta
 retain their existing rules.
 
 The final table uses backend readiness to distinguish items needing human review from items
-already checked by AI or reviewed by a person. Field and source-layout decisions say
-"Human reviewed"; only explicit whole-item verification says "Human verified". Historical
+already checked by AI or reviewed by a person. Item-specific field decisions say
+"Human reviewed"; only explicit whole-item verification says "Human verified". Confirming or
+changing a table's column mapping does not mark its items as human reviewed. Copied values
+record column-mapping provenance; existing protected human field reviews are preserved. Historical
 rows with no recorded verifier say "Checks passed" rather than inventing provenance. Ready
 rows have no Verify button. Optional additional human verification remains under the selection
 toolbar's More actions menu. Confidence remains available in item details instead of taking a
@@ -138,6 +140,9 @@ keep the extracted quantity separate from the red pack-total comparison and offe
 to the calculation. Description tasks have individual edit/source-copy actions and no selection
 checkboxes. Item names and prominent Edit item buttons open the same editor; guided edits
 immediately highlight invalid required fields and focus the relevant input.
+The unchanged item editor says Done; edits say Preview item changes. Preview confirmation
+buttons name the operation: Save changes, Update quantities, Verify, Keep values, Remove,
+Restore, Confirm column mapping, or Apply column mapping.
 
 Source-column checks name their worksheet/table and affected count. The two-item example is
 the separate Column check worksheet. Every supplied column has an editable role. Changes use

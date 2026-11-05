@@ -788,17 +788,28 @@ export function OperationPreview({ operations }: { operations: ReviewOperations 
   const pending = operations.pending;
   if (!pending) return null;
   const { preview, operation } = pending;
+  const itemLabel = operation.itemIds.length === 1 ? 'item' : 'items';
+  const title = {
+    edit: 'Review item changes',
+    quantity_rule: 'Review quantity changes',
+    verify: `Verify ${itemLabel}?`,
+    accept: preview.tableDecision ? 'Confirm column mapping' : 'Confirm source check',
+    remove: `Remove ${operation.itemIds.length} ${itemLabel}?`,
+    restore: `Restore ${itemLabel}?`,
+    column_mapping: 'Change source columns',
+  }[operation.action];
+  const confirmLabel = {
+    edit: 'Save changes',
+    quantity_rule: 'Update quantities',
+    verify: `Verify ${itemLabel}`,
+    accept: preview.tableDecision ? 'Confirm column mapping' : 'Keep values',
+    remove: `Remove ${itemLabel}`,
+    restore: `Restore ${itemLabel}`,
+    column_mapping: 'Apply column mapping',
+  }[operation.action];
   return (
     <ReviewDialog
-      title={
-        operation.action === 'column_mapping' ? 'Change source columns' : preview.tableDecision
-          ? 'Confirm source columns'
-          : operation.action === 'remove'
-            ? `Remove ${operation.itemIds.length} items?`
-            : operation.action === 'accept'
-              ? 'Confirm source check'
-            : 'Review changes'
-      }
+      title={title}
       busy={operations.busy}
       onClose={() => operations.setPending(null)}
     >
@@ -898,7 +909,7 @@ export function OperationPreview({ operations }: { operations: ReviewOperations 
           disabled={operations.busy || !!preview.blockers.length}
           onClick={() => void operations.apply()}
         >
-          {operations.busy ? 'Saving…' : operation.action === 'remove' ? 'Remove items' : 'Confirm changes'}
+          {operations.busy ? 'Saving…' : confirmLabel}
         </button>
       </div>
     </ReviewDialog>
